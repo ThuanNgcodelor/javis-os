@@ -318,11 +318,6 @@ javis-os/
 - Pattern Second Brain + Bullet Journal số hoá.
 
 ---
-
-## 📄 Giấy phép
-
-Mã nguồn mở theo giấy phép **MIT** - dùng, sửa, phân phối tự do. Xem [LICENSE](LICENSE).
-
 ---
 
 <div align="center">
