@@ -13,7 +13,7 @@ Javis OS là một AI agent cá nhân + Second Brain. "Bộ não" của nó là 
 
 VPS Hostinger → **Docker Manager → Compose → URL** → dán link rồi **Deploy**:
 ```
-https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.yml
+https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/docker-compose.yml
 ```
 Hostinger pull image + chạy. Mở app bằng `http://<ip-vps>:7777` (IP xem ở hPanel → VPS) → ra
 màn **tạo tài khoản admin**.
@@ -43,7 +43,7 @@ màn **tạo tài khoản admin**.
 Cần Docker. Chưa có? `curl -fsSL https://get.docker.com | sh`
 ```bash
 mkdir javis && cd javis
-curl -fsSLO https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/docker-compose.yml
 
 docker compose run --rm javis claude auth login --claudeai   # ĐĂNG NHẬP CLAUDE 1 LẦN (link + code)
 docker compose up -d                                          # pull image GHCR + chạy
@@ -86,7 +86,7 @@ link riêng chạy HTTPS mà không cần mua tên miền. **Lưu ý (đã kiể
 1. Xem **hostname VPS** ở hPanel → VPS (vd `srv1782015.hstgr.cloud`).
 2. Docker Manager → Compose → URL:
    ```
-   https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.hostinger.yml
+   https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/docker-compose.hostinger.yml
    ```
 3. Ô **Environment** của mẫu mới chỉ còn 3 trường có ý nghĩa:
    - `DOMAIN_NAME`: đặt `javis.<hostname-vps>.hstgr.cloud`
@@ -158,7 +158,7 @@ máy**:
 
 ```bash
 docker network create javis-web
-curl -fsSLO https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.proxy.yml
+curl -fsSLO https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/docker-compose.proxy.yml
 docker compose -f docker-compose.proxy.yml -p javis-proxy up -d
 ```
 
@@ -166,8 +166,8 @@ Rồi mỗi bản một **thư mục riêng**:
 
 ```bash
 mkdir -p ~/javis-shop && cd ~/javis-shop
-curl -fsSLO https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.yml
-curl -fsSLO https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.multi.yml
+curl -fsSLO https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/docker-compose.multi.yml
 cat > .env <<'EOF'
 JAVIS_NAME=javis-shop
 JAVIS_HOST_PORT=7777
@@ -234,7 +234,7 @@ Mở giao diện Javis từ máy khác mà KHÔNG cần mở port / không cần
 ## Cách 2 - Cài trực tiếp lên Linux/macOS (không Docker)
 
 ```bash
-git clone https://github.com/blogminhquy/javis-os.git javis && cd javis
+git clone https://github.com/ThuanNgcodelor/javis-os.git javis && cd javis
 chmod +x install.sh && ./install.sh
 ```
 

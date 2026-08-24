@@ -9,7 +9,7 @@ services:
       context: .
       args:
         CLAUDE_CLI_VERSION: ${CLAUDE_CLI_VERSION:-latest}
-    image: ghcr.io/blogminhquy/javis-os:latest
+    image: ghcr.io/ThuanNgcodelor/javis-os:latest
     container_name: ${JAVIS_NAME:-javis}          # đổi trong .env khi chạy nhiều bản trên một máy
     restart: unless-stopped
     env_file:

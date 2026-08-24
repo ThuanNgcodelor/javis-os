@@ -7,7 +7,7 @@
 #
 # CÁCH DÙNG:
 #   1) Docker Manager > Compose > URL > dán:
-#      https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.hostinger.yml
+#      https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/docker-compose.hostinger.yml
 #   2) Ô Environment chỉ còn 3 trường hữu ích:
 #        DOMAIN_NAME, JAVIS_ADMIN_USER, JAVIS_ADMIN_PASSWORD.
 #      (Thêm 2 trường CHỈ CẦN KHI cài bản Javis THỨ HAI trở đi trên cùng VPS - xem cuối file:
@@ -29,7 +29,7 @@
 # ============================================================================
 services:
   javis:
-    image: ghcr.io/blogminhquy/javis-os:latest
+    image: ghcr.io/ThuanNgcodelor/javis-os:latest
     # Tên container + tên router/service Traefik đều lấy từ JAVIS_NAME. Bỏ trống = "javis" như cũ.
     # Cài bản THỨ HAI trên cùng VPS thì đặt tên khác (vd javis-shop), nếu không Docker báo tên đã
     # dùng và Traefik có hai router trùng tên nên chỉ lái được về một bản.
@@ -51,10 +51,10 @@ services:
       - "${JAVIS_HOST_PORT:-7777}:7777"
     labels:
       # Guide (Documentation / Quick start) trong Docker Manager - trỏ docs GitHub.
-      - org.opencontainers.image.documentation=https://github.com/blogminhquy/javis-os/blob/main/docs/README.md
-      - org.opencontainers.image.source=https://github.com/blogminhquy/javis-os
-      - com.hostinger.documentation=https://github.com/blogminhquy/javis-os/blob/main/docs/README.md
-      - com.hostinger.quickstart=https://github.com/blogminhquy/javis-os/blob/main/QUICKSTART.md
+      - org.opencontainers.image.documentation=https://github.com/ThuanNgcodelor/javis-os/blob/main/docs/README.md
+      - org.opencontainers.image.source=https://github.com/ThuanNgcodelor/javis-os
+      - com.hostinger.documentation=https://github.com/ThuanNgcodelor/javis-os/blob/main/docs/README.md
+      - com.hostinger.quickstart=https://github.com/ThuanNgcodelor/javis-os/blob/main/QUICKSTART.md
       # Router/service mang TÊN CỦA BẢN (JAVIS_NAME) chứ không đóng cứng "javis": Traefik đặt tên
       # router theo phạm vi toàn máy, hai bản cùng tên router là bản sau đè bản trước và một
       # trong hai tên miền chết. Bỏ trống JAVIS_NAME thì vẫn ra "javis" y như trước.

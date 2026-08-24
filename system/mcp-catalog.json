@@ -99,7 +99,7 @@
             "label": "URL hồ sơ agent UCP (nâng cao - không rõ thì để nguyên)",
             "placeholder": "Ví dụ: https://trang-cua-ban.com/ucp-agent-profile.json",
             "optional": true,
-            "default": "https://raw.githubusercontent.com/blogminhquy/javis-os/main/system/ucp-agent-profile.json"
+            "default": "https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/system/ucp-agent-profile.json"
           }
         ],
         "guide": "Chỉ cần địa chỉ cửa hàng, KHÔNG cần API key và không cần bạn là chủ shop - endpoint này công khai.\n\n1. Lấy địa chỉ cửa hàng: tên miền riêng (vd shop-cua-ban.com) hoặc dạng ...myshopify.com đều được.\n2. Dán vào ô dưới rồi bấm Kết nối. Gõ kiểu nào cũng được (thiếu https://, thừa gạch chéo, dán nguyên URL đang mở) - Javis tự cắt về đúng tên miền.\n\nÔ thứ hai đã điền sẵn, cứ để nguyên. Đó là hồ sơ khai báo Javis biết làm gì, phía Shopify tải về để thoả thuận năng lực; mỗi lời gọi Javis tự đính kèm, bạn không phải làm gì.\n\nLƯU Ý: cửa hàng phải bật kênh bán cho agent (Shopify bật sẵn cho phần lớn shop). Shop nào tắt thì Test sẽ báo không kết nối được - đó là thiết lập bên Shopify, không phải lỗi Javis.",
@@ -152,7 +152,7 @@
         "type": "qr",
         "fields": [],
         "guide": "Cần Node.js 20+. Bấm Kết nối, quét QR bằng app Zalo rồi dùng trực tiếp 7 tool MCP của zalo-agent-cli. Không còn listener/webhook/luật Zalo riêng của Javis.",
-        "guide_url": "https://github.com/blogminhquy/javis-os/blob/main/docs/12-zalo.md"
+        "guide_url": "https://github.com/ThuanNgcodelor/javis-os/blob/main/docs/12-zalo.md"
       },
       "tool_meta": {
         "read": [
@@ -1245,6 +1245,34 @@
       },
       "default_perm": "readonly",
       "risk": "Mức Ghi nháp cho phép Javis TẠO và SỬA workflow thật trên n8n của bạn.\n\nMức Toàn quyền thêm quyền CHẠY workflow - đây là chỗ nguy hiểm nhất.\nMột workflow chạy lên có thể gửi mail, đăng bài, gọi API tính tiền, đẩy dữ liệu ra ngoài.\nJavis không nhìn được bên trong workflow làm gì, và chạy rồi thì không hoàn tác được.\n\nChỉ cần xem và soạn workflow thì giữ mức Chỉ đọc hoặc Ghi nháp.\n\nLưu ý: token này thấy MỌI workflow và cả danh sách credential mà tài khoản n8n của bạn thấy."
+    },
+    {
+      "id": "redis",
+      "name": "Redis Database",
+      "icon": "database",
+      "category": "Văn phòng",
+      "description": "Quản lý và tra cứu cơ sở dữ liệu Redis: tra cứu key-value, snapshot FAQ ZeO/CFC, vector RAG, cache Shopee qua MCP server chính thức.",
+      "status": "ready",
+      "transport": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-redis", "redis://:crS9Lb7f/ywrTCiRP22gc32QCLZpirWIkczbnhjYIdU1o02Z@127.0.0.1:6379"],
+      "requires": { "node": ">=18" },
+      "auth": {
+        "type": "none",
+        "fields": [],
+        "guide": "Kết nối trực tiếp vào cơ sở dữ liệu Redis local của hệ thống (127.0.0.1:6379). Bấm Kết nối là xong.",
+        "steps": [
+          { "text": "Hệ thống đã tự động cấu hình sẵn địa chỉ Redis local (127.0.0.1:6379) và mật khẩu của bạn." },
+          { "text": "Bấm nút 'Kết nối' để kích hoạt kết nối Redis MCP cho Javis OS." }
+        ]
+      },
+      "tool_meta": {
+        "read": ["get", "list_keys", "hget", "hgetall", "lrange", "smembers", "zrange", "keys", "ttl", "*get*", "*list*"],
+        "write": ["set", "hset", "lpush", "rpush", "sadd", "zadd", "expire", "*set*"],
+        "danger": ["del", "delete", "flushdb", "flushall", "*del*"]
+      },
+      "default_perm": "safe",
+      "risk": "Mức Ghi nháp (mặc định) cho phép đọc và ghi dữ liệu key-value trong Redis.\nMức Chỉ đọc: chỉ tra cứu giá trị và liệt kê key, không sửa đổi dữ liệu.\nMức Toàn quyền: cho phép xoá key (del, flushdb)."
     }
   ]
 }

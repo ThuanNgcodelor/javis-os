@@ -67,7 +67,7 @@ Bạn đấu các **kết nối** của riêng mình vào (bán hàng/POS, quả
 
 VPS Hostinger → **Docker Manager → Compose → URL** → dán **file Hostinger** rồi **Deploy**:
 ```
-https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.hostinger.yml
+https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/deploy/docker/docker-compose.hostinger.yml
 ```
 Ô **Environment** của mẫu mới chỉ còn 3 trường cần thiết: `DOMAIN_NAME`,
 `JAVIS_ADMIN_USER`, `JAVIS_ADMIN_PASSWORD`. Các biến kỹ thuật về cổng, state,
@@ -94,7 +94,7 @@ Deploy → đợi 1-3 phút Traefik cấp SSL → mở `https://<DOMAIN_NAME>`. 
 ```bash
 # Cần Docker (chưa có?  curl -fsSL https://get.docker.com | sh)
 mkdir javis && cd javis
-curl -fsSLO https://raw.githubusercontent.com/blogminhquy/javis-os/main/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/ThuanNgcodelor/javis-os/main/deploy/docker/docker-compose.yml
 
 docker compose run --rm javis claude auth login --claudeai   # đăng nhập Claude 1 lần
 docker compose up -d                                          # pull image + chạy
@@ -104,8 +104,8 @@ Mở `http://<ip-vps>:7777` → màn tạo tài khoản admin (xem MÃ THIẾT L
 ### Cách 3 - Cài trực tiếp lên Linux/macOS (không Docker)
 
 ```bash
-git clone https://github.com/blogminhquy/javis-os.git javis && cd javis
-chmod +x install.sh && ./install.sh
+git clone https://github.com/ThuanNgcodelor/javis-os.git javis && cd javis
+chmod +x deploy/linux/install.sh && ./deploy/linux/install.sh
 ```
 Script tự cài Python + Node + hai engine CLI (Claude Code, Codex), tạo venv, đăng ký dịch vụ systemd tự chạy khi boot, in ra địa chỉ. Báo Claude chưa đăng nhập thì chạy 1 lần: `claude auth login --claudeai`.
 
@@ -321,26 +321,13 @@ javis-os/
 
 ## 📄 Giấy phép
 
-Mã nguồn mở theo giấy phép **MIT** - dùng, sửa, phân phối tự do, chỉ cần giữ dòng ghi công. Xem [LICENSE](LICENSE).
-
----
-
-## ☕ Ủng hộ Javis OS
-
-Javis OS mã nguồn mở, dùng miễn phí, và mình vẫn đang một mình vừa code vừa gánh chi phí server chạy thử mỗi ngày. Nếu Javis đang giúp được gì cho công việc hay cuộc sống của bạn, một chút ủng hộ sẽ giúp mình có thêm thời gian ngồi sửa bug, viết tính năng mới, thay vì lo tiền server.
-
-Không bắt buộc, không đổi lấy quyền lợi gì cả - đơn giản là một lời cảm ơn gửi bằng tiền cho người đang âm thầm code buổi tối.
-
-- 🏦 **MB Bank**: `6636966369`
-- 📱 **Ví MoMo**: `0372752740`
-- 🌍 **PayPal**: [paypal.me/quy01](https://paypal.me/quy01)
-
-Không tiện donate cũng không sao - dùng Javis, góp ý, hay gửi một Pull Request cũng đã là ủng hộ rồi.
+Mã nguồn mở theo giấy phép **MIT** - dùng, sửa, phân phối tự do. Xem [LICENSE](LICENSE).
 
 ---
 
 <div align="center">
 
-Made with ☕ by **[Minh Quý](https://minhquy.vn)** · Repo: `github.com/blogminhquy/javis-os`
+Developed & Maintained by **[David Nguyễn](https://github.com/ThuanNgcodelor)** · Repo: `github.com/ThuanNgcodelor/javis-os`
 
 </div>
+

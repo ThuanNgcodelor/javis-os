@@ -208,7 +208,7 @@ Bước đang chạy có dấu ⏳, bước đã qua có ✅. Trong lúc chạy,
 Javis có sẵn đường lùi, không bỏ bạn kẹt ở bản lỗi:
 
 - **Tự lùi:** nếu bản mới không qua được bước Kiểm tra sức khoẻ, Javis tự quay về bản cũ. Thanh tiến trình hiện "↩ Bản mới lỗi, đang tự quay về bản cũ…", xong thì báo "↩ Bản mới lỗi, đã **tự quay về bản cũ**."
-- **Lùi tay trên Docker:** nếu sau một lúc phiên bản vẫn chưa đổi, Javis báo "⚠ Bản mới chưa lên sau một lúc - có thể lỗi." rồi hiện khối **Cách lùi bản Docker** với lệnh `docker compose pull && docker compose up -d`, kèm gợi ý pin image `ghcr.io/blogminhquy/javis-os:<phiên-bản-cũ>` rồi Redeploy.
+- **Lùi tay trên Docker:** nếu sau một lúc phiên bản vẫn chưa đổi, Javis báo "⚠ Bản mới chưa lên sau một lúc - có thể lỗi." rồi hiện khối **Cách lùi bản Docker** với lệnh `docker compose pull && docker compose up -d`, kèm gợi ý pin image `ghcr.io/ThuanNgcodelor/javis-os:<phiên-bản-cũ>` rồi Redeploy.
 - **Lỗi khác:** khung báo lỗi cụ thể và nhắc xem file `update.log`. Nếu server không lên lại sau khoảng 3 phút, khung ghi "Server chưa lên lại sau khoảng 3 phút - thử tải lại trang."
 
 Bên dưới khung cập nhật là nhật ký phiên bản: từng bản có gì mới, chia trang, bản đang cài được đánh dấu.

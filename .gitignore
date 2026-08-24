@@ -123,3 +123,31 @@ parse_ads*.ps1
 Thumbs.db
 desktop.ini
 server/stop-last.log
+
+# Logs & 1-click launcher logs
+logs/
+*.log
+
+# Code tools & agent caches
+.codegraph/
+.agent/
+.agents/
+google_upload/
+local-n8n/
+
+# Infrastructure secrets & local credentials (bảo mật mật khẩu Redis & Cloudflare certs)
+infra/**/.env
+infra/**/.env.*
+!infra/**/.env.example
+infra/**/*.local.json
+infra/**/redis_data/
+infra/**/data/
+infra/cloudflared/*.json
+infra/cloudflared/cert.pem
+
+# Server state & SQLite indexes
+server/state/
+server/*.db*
+server/*.jsonl*
+server/.mcp_*.json
+

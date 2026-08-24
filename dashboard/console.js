@@ -836,7 +836,7 @@
             if (rollback) {
               const prev = root.dataset.previousVersion || v.previous_version || "";
               rollback.style.display = "";
-              rollback.innerHTML = "<b>Cách lùi bản Docker:</b><br><code>docker compose pull && docker compose up -d</code>" + (prev ? `<br>Hoặc pin image <code>ghcr.io/blogminhquy/javis-os:${esc(prev)}</code> rồi Redeploy.` : "");
+              rollback.innerHTML = "<b>Cách lùi bản Docker:</b><br><code>docker compose pull && docker compose up -d</code>" + (prev ? `<br>Hoặc pin image <code>ghcr.io/thuanngcodelor/javis-os:${esc(prev)}</code> rồi Redeploy.` : "");
             }
             update.disabled = false; return;
           }
@@ -2136,7 +2136,7 @@
 
       <div class="si-log" id="lnBackupBox">
         <h3 style="font-size:15px;color:var(--text)">⇅ Đồng bộ brain với GitHub (2 chiều)</h3>
-        <p style="color:var(--text3);font-size:14px;max-width:680px;margin:2px 0 10px">Đồng bộ <b>TẤT CẢ brain trong thư mục brains</b> (mọi bộ não, ghi chú, Wiki, ký ức) với 1 repo GitHub <b>riêng tư</b>: vừa đẩy thay đổi của máy này lên, vừa kéo thay đổi từ máy khác về (dùng chung cho máy nhà + VPS, các máy tự khớp nhau). Sửa trùng 1 file ở 2 nơi thì bản mới hơn thắng, bản kia được giữ thành file <code>.conflict-*</code> ngay cạnh. Máy mới cấu hình repo rồi bấm đồng bộ là khôi phục được toàn bộ. Hướng dẫn: <a href="https://github.com/blogminhquy/javis-os/blob/main/docs/18-sao-luu-github.md" target="_blank" style="color:var(--link-ink)">docs/18-sao-luu-github.md</a>.</p>
+        <p style="color:var(--text3);font-size:14px;max-width:680px;margin:2px 0 10px">Đồng bộ <b>TẤT CẢ brain trong thư mục brains</b> (mọi bộ não, ghi chú, Wiki, ký ức) với 1 repo GitHub <b>riêng tư</b>: vừa đẩy thay đổi của máy này lên, vừa kéo thay đổi từ máy khác về (dùng chung cho máy nhà + VPS, các máy tự khớp nhau). Sửa trùng 1 file ở 2 nơi thì bản mới hơn thắng, bản kia được giữ thành file <code>.conflict-*</code> ngay cạnh. Máy mới cấu hình repo rồi bấm đồng bộ là khôi phục được toàn bộ. Hướng dẫn: <a href="https://github.com/ThuanNgcodelor/javis-os/blob/main/docs/18-sao-luu-github.md" target="_blank" style="color:var(--link-ink)">docs/18-sao-luu-github.md</a>.</p>
         <ol style="color:var(--text3);font-size:13.5px;line-height:1.7;max-width:680px;margin:0 0 12px;padding-left:20px">
           <li>Tạo repo GitHub <b>Private</b> (trống, KHÔNG thêm README) - vd <code>javis-brain-backup</code>.</li>
           <li>Tạo token: GitHub → Settings → Developer settings → <b>Fine-grained tokens</b> → chọn đúng repo đó → quyền <b>Contents: Read and write</b> → tạo và copy token (dạng <code>github_pat_...</code>).</li>
@@ -2793,7 +2793,7 @@
               rb.style.display = "";
               rb.innerHTML = "<b>Cách lùi về bản cũ (Docker):</b><br>Pin tag phiên bản cũ rồi kéo lại:"
                 + "<br><code>docker compose pull && docker compose up -d</code>"
-                + (prev ? "<br>Hoặc sửa image thành <code>ghcr.io/blogminhquy/javis-os:" + esc(prev) + "</code> rồi Redeploy." : "");
+                + (prev ? "<br>Hoặc sửa image thành <code>ghcr.io/thuanngcodelor/javis-os:" + esc(prev) + "</code> rồi Redeploy." : "");
             }
             verUpd.disabled = false; return;
           }
@@ -4509,8 +4509,8 @@
           <div id="tkNew"></div>
           <div id="tkList" class="tk-list"></div>
           <div class="tk-docs">
-            <a href="https://github.com/blogminhquy/javis-os/blob/main/docs/24-cli-terminal.md" target="_blank" rel="noopener">Hướng dẫn Javis CLI ↗</a>
-            <a href="https://github.com/blogminhquy/javis-os/blob/main/docs/14-bao-mat-tai-khoan.md" target="_blank" rel="noopener">Bảo mật &amp; tài khoản ↗</a>
+            <a href="https://github.com/ThuanNgcodelor/javis-os/blob/main/docs/24-cli-terminal.md" target="_blank" rel="noopener">Hướng dẫn Javis CLI ↗</a>
+            <a href="https://github.com/ThuanNgcodelor/javis-os/blob/main/docs/14-bao-mat-tai-khoan.md" target="_blank" rel="noopener">Bảo mật &amp; tài khoản ↗</a>
           </div>
         </div>
       </div>`;
@@ -4538,7 +4538,7 @@
             <button class="gcard-btn ghost" id="tkHide">Ẩn đi</button>
           </div>
           <div class="gcard-meta">Dán vào máy kia: <code>javis login ${esc(location.origin)} --token &lt;token&gt;</code></div>
-          <div class="gcard-meta">Chưa cài CLI? <code>pip install javis-cli</code> · <a class="tk-doclink" href="https://github.com/blogminhquy/javis-os/blob/main/docs/24-cli-terminal.md" target="_blank" rel="noopener">xem hướng dẫn ↗</a></div>
+          <div class="gcard-meta">Chưa cài CLI? <code>pip install javis-cli</code> · <a class="tk-doclink" href="https://github.com/ThuanNgcodelor/javis-os/blob/main/docs/24-cli-terminal.md" target="_blank" rel="noopener">xem hướng dẫn ↗</a></div>
         </div>`;
       document.getElementById("tkCopy").onclick = () => {
         const c = document.getElementById("tkCopy");

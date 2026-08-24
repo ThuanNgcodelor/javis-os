@@ -9,7 +9,7 @@ ghi trực tiếp, chỉ cần fork về tài khoản của mình, code, rồi m
 2. Tạo nhánh mới đặt tên gợi nhớ việc đang làm (vd `fix-zoom-mobile`, `them-mcp-notion`).
 3. Code, rồi tự chạy test trước khi mở PR (xem mục Test bên dưới) - PR chưa chạy test
    local dễ vướng lỗi vặt mà CI mới bắt được.
-4. Mở PR nhắm vào `main` của repo gốc (`blogminhquy/javis-os`), mô tả rõ **vì sao** cần
+4. Mở PR nhắm vào `main` của repo gốc (`ThuanNgcodelor/javis-os`), mô tả rõ **vì sao** cần
    thay đổi này, không chỉ **cái gì** đã đổi (cái gì thì đọc diff là thấy).
 5. CI (GitHub Actions) tự chạy. PR xanh + được duyệt mới merge - không có merge tự động,
    người giữ repo sẽ tự xem qua từng PR.
