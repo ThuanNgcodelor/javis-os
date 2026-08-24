@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
+# pyrefly: ignore [missing-import]
 import httpx
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, HTTPException, Query
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel
 
 import config as cfgmod
