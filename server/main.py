@@ -146,10 +146,13 @@ app.add_middleware(CORSMiddleware,
 
 # Đường dẫn KHÔNG cần đăng nhập. CHỈ các auth endpoint công khai (status/login/setup) -
 # KHÔNG để cả prefix /auth public vì /auth/disable, /auth/logout phải yêu cầu đăng nhập.
-_AUTH_PUBLIC_PREFIX = ("/static", "/health")
+# Bao gồm các endpoint Webhook/Chatbot API để n8n và các gateway bên ngoài gọi vào xử lý:
+_AUTH_PUBLIC_PREFIX = ("/static", "/health", "/api/chat-pipeline", "/sync", "/search", "/rewrite",
+                       "/api/shopee", "/legacy-javis", "/javis-control")
 # /brand-logo: hiện trên màn đăng nhập (trước session). /tls-check: Caddy gọi (không đăng nhập được).
 _AUTH_PUBLIC_EXACT = ("/", "/favicon.ico", "/auth/status", "/auth/login", "/auth/setup",
                       "/brand-logo", "/tls-check",
+                      "/api/chat-pipeline", "/sync", "/search", "/rewrite",
                       # /hub/mcp: Claude CLI/Codex gọi bằng Bearer hub_token riêng (không có cookie).
                       # /connect/oauth/callback: browser redirect từ provider OAuth về.
                       "/hub/mcp", "/connect/oauth/callback")
@@ -162,7 +165,8 @@ _AUTH_PUBLIC_EXACT = ("/", "/favicon.ico", "/auth/status", "/auth/login", "/auth
 # (op=update) gọi từ chính máy này khi user nói "đổi giờ việc đó sang 8h" - thiếu nó thì sửa lịch
 # bằng chat trả 401 câm. /reminders/delete CỐ Ý không có ở đây: xoá hẳn thì để dashboard (có
 # session) làm, chat chỉ cần huỷ.
-_AUTH_LOCAL_EXACT = ("/telegram/send-file", "/reminders", "/reminders/cancel", "/reminders/update")
+_AUTH_LOCAL_EXACT = ("/telegram/send-file", "/reminders", "/reminders/cancel", "/reminders/update",
+                     "/api/chat-pipeline", "/sync", "/search", "/rewrite")
 
 
 @app.middleware("http")
@@ -8559,6 +8563,12 @@ async def branding_logo_reset():
 # Vị trí lời gọi register quyết định thứ tự route - xem routes/__init__.py.
 import routes.domain as domain_routes   # noqa: E402
 domain_routes.register(app, domain_routes.DomainDeps(deploy_mode=lambda: _deploy_mode()))
+
+import routes.javis_legacy as legacy_routes   # noqa: E402
+legacy_routes.register(app)
+
+import routes.javis_control as control_routes   # noqa: E402
+control_routes.register(app)
 
 
 # ============================================
