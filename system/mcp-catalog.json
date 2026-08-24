@@ -1250,20 +1250,53 @@
       "id": "redis",
       "name": "Redis Database",
       "icon": "database",
-      "category": "Văn phòng",
+      "category": "Cơ sở dữ liệu",
       "description": "Quản lý và tra cứu cơ sở dữ liệu Redis: tra cứu key-value, snapshot FAQ ZeO/CFC, vector RAG, cache Shopee qua MCP server chính thức.",
       "status": "ready",
       "transport": "stdio",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-redis", "redis://:crS9Lb7f/ywrTCiRP22gc32QCLZpirWIkczbnhjYIdU1o02Z@127.0.0.1:6379"],
+      "args_template": ["-y", "@modelcontextprotocol/server-redis", "{redis_url}"],
       "requires": { "node": ">=18" },
       "auth": {
-        "type": "none",
-        "fields": [],
-        "guide": "Kết nối trực tiếp vào cơ sở dữ liệu Redis local của hệ thống (127.0.0.1:6379). Bấm Kết nối là xong.",
+        "type": "apikey",
+        "fields": [
+          {
+            "key": "host",
+            "label": "Địa chỉ Host",
+            "placeholder": "127.0.0.1",
+            "default": "127.0.0.1"
+          },
+          {
+            "key": "port",
+            "label": "Cổng Port",
+            "placeholder": "6379",
+            "default": "6379"
+          },
+          {
+            "key": "password",
+            "label": "Mật khẩu Redis (Password)",
+            "placeholder": "Nhập mật khẩu...",
+            "default": "crS9Lb7f/ywrTCiRP22gc32QCLZpirWIkczbnhjYIdU1o02Z"
+          },
+          {
+            "key": "db",
+            "label": "Database Index (0-15)",
+            "placeholder": "0",
+            "default": "0"
+          },
+          {
+            "key": "redis_url",
+            "label": "Hoặc chuỗi URL kết nối đầy đủ (tuỳ chọn)",
+            "placeholder": "redis://:password@127.0.0.1:6379/0",
+            "default": "redis://:crS9Lb7f%2FywrTCiRP22gc32QCLZpirWIkczbnhjYIdU1o02Z@127.0.0.1:6379/0",
+            "optional": true
+          }
+        ],
+        "guide": "Hệ thống đã tự động điền sẵn toàn bộ thông số kết nối Redis local của bạn (Host, Port, Password, Database và URL đã mã hoá an toàn). Bạn có thể kiểm tra hoặc sửa đổi nếu muốn kết nối Redis khác, sau đó bấm Kết nối.",
         "steps": [
-          { "text": "Hệ thống đã tự động cấu hình sẵn địa chỉ Redis local (127.0.0.1:6379) và mật khẩu của bạn." },
-          { "text": "Bấm nút 'Kết nối' để kích hoạt kết nối Redis MCP cho Javis OS." }
+          { "text": "Hệ thống đã tự động điền sẵn Host (127.0.0.1), Port (6379) và mật khẩu bảo mật của bạn." },
+          { "text": "Nếu bạn kết nối Redis local thì chỉ cần giữ nguyên các ô và bấm 'Kết nối'." },
+          { "text": "Nếu kết nối Redis từ xa/VPS, hãy thay đổi Host, Port và Password tương ứng." }
         ]
       },
       "tool_meta": {

@@ -226,7 +226,10 @@ def add_connection(connector_id, data):
                 or mcp_catalog.build_url(con, data.get("fields") or {})
                 or (con or {}).get("url") or "").strip(),
         "command": (data.get("command") or (con or {}).get("command") or "").strip(),
-        "args": data.get("args") if data.get("args") is not None else list((con or {}).get("args") or []),
+        "args": data.get("args") if data.get("args") is not None else (
+            mcp_catalog.build_args(con, data.get("fields") or {}) if (con or {}).get("args_template")
+            else list((con or {}).get("args") or [])
+        ),
         "headers": secrets_store.encrypt_map(data.get("headers") or {}),
         "env": secrets_store.encrypt_map(data.get("env") or {}),
         "secrets": secrets_store.encrypt_map(data.get("fields") or {}),
@@ -487,7 +490,9 @@ def resolved(enabled_only=True):
             # là kết nối đi theo ngay - y như headers vốn đã dựng lại mỗi lần resolve.
             "url": (mcp_catalog.build_url(con, secrets) if (con or {}).get("url_template")
                     else "") or c.get("url", ""),
-            "command": c.get("command", ""), "args": args,
+            "command": c.get("command", ""),
+            "args": (mcp_catalog.build_args(con, secrets) if (con or {}).get("args_template")
+                     else list(c.get("args") or [])),
             "headers": headers, "env": env,
             "internal": (con or {}).get("internal") or "",
             # Tham số kỹ thuật connector tự chèn vào MỌI tool call (vd meta['ucp-agent'] của

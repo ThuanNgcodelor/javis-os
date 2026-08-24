@@ -174,6 +174,65 @@ def normalize_base_url(raw):
     return f"{p.scheme}://{p.netloc.lower()}"
 
 
+def sanitize_redis_url(raw_url: str) -> str:
+    """Chuẩn hoá và mã hoá URL Redis an toàn, tránh lỗi URL parse khi mật khẩu chứa ký tự đặc biệt như '/'."""
+    import urllib.parse
+    raw = (raw_url or "").strip()
+    if not raw:
+        return ""
+    try:
+        if "@" in raw and "://" in raw:
+            prefix, rest = raw.split("://", 1)
+            auth_part, host_part = rest.rsplit("@", 1)
+            if ":" in auth_part:
+                user_part, pass_part = auth_part.split(":", 1)
+                pass_encoded = urllib.parse.quote(urllib.parse.unquote(pass_part), safe="")
+                return f"{prefix}://{user_part}:{pass_encoded}@{host_part}"
+    except Exception:
+        pass
+    return raw
+
+
+def build_args(connector, secrets):
+    """Dựng args động cho connector khai `args_template`."""
+    tpl = (connector or {}).get("args_template")
+    if not tpl or not isinstance(tpl, list):
+        return list((connector or {}).get("args") or [])
+
+    import urllib.parse
+    vals = {}
+    for f in ((connector or {}).get("auth") or {}).get("fields", []):
+        key = f.get("key")
+        if key:
+            val = str((secrets or {}).get(key, "") or "").strip()
+            if not val:
+                val = str(f.get("default", "") or "").strip()
+            if key == "redis_url" or "redis://" in val:
+                val = sanitize_redis_url(val)
+            vals[key] = val
+
+    # Nếu có các trường rời rạc: host, port, password, db
+    if "host" in vals or "password" in vals:
+        h = vals.get("host") or "127.0.0.1"
+        p = vals.get("port") or "6379"
+        pwd = vals.get("password") or ""
+        db = vals.get("db") or "0"
+        if pwd:
+            pwd_enc = urllib.parse.quote(pwd, safe="")
+            composed = f"redis://:{pwd_enc}@{h}:{p}/{db}"
+        else:
+            composed = f"redis://{h}:{p}/{db}"
+        vals.setdefault("redis_url", composed)
+
+    out = []
+    for item in tpl:
+        s = str(item)
+        for k, v in vals.items():
+            s = s.replace("{" + k + "}", str(v))
+        out.append(s)
+    return out
+
+
 def _fill_tpl(node, vals):
     """Thay {key} trong MỌI chuỗi của một cây dict/list. Trả (cây_mới, thiếu_ô_nào)."""
     thieu = []
@@ -181,22 +240,23 @@ def _fill_tpl(node, vals):
         out = {}
         for k, v in node.items():
             sub, t = _fill_tpl(v, vals)
-            thieu += t
+            thieu.extend(t)
             if sub is not None:
                 out[k] = sub
-        return (out or None), thieu
+        return out, thieu
     if isinstance(node, list):
         out = []
         for v in node:
             sub, t = _fill_tpl(v, vals)
-            thieu += t
+            thieu.extend(t)
             if sub is not None:
                 out.append(sub)
-        return (out or None), thieu
+        return out, thieu
     if not isinstance(node, str):
         return node, thieu
-    out = node
-    for key in re.findall(r"\{([A-Za-z0-9_]+)\}", node):
+    out = str(node)
+    for m in re.finditer(r"\{([a-zA-Z0-9_]+)\}", str(node)):
+        key = m.group(1)
         val = str(vals.get(key, "") or "").strip()
         if not val:
             thieu.append(key)
