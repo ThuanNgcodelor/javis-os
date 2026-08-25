@@ -37,7 +37,7 @@ open_tab "🔁 n8n :5678" "export WEBHOOK_URL=https://n8n.dinhduongcantho.io.vn/
 sleep 1
 
 echo "   [4/4] Mở Terminal JAVIS OS Core (:7777) & Cloudflare Tunnel..."
-open_tab "🧠 Javis OS :7777" "(cloudflared tunnel --config \"$CF_CFG\" run n8n-dinhduongcantho &); cd \"$SERVER_DIR\" && source ../.venv/bin/activate && python -m uvicorn main:app --host 0.0.0.0 --port 7777 --reload"
+open_tab "🧠 Javis OS :7777" "(cloudflared tunnel --config \"$CF_CFG\" run n8n-dinhduongcantho &); cd \"$SERVER_DIR\" && source ../.venv/bin/activate && python -m uvicorn main:app --host 0.0.0.0 --port 7777 --reload --reload-dir \"$SERVER_DIR\" --reload-dir \"$APP_DIR/chatbot/server\""
 
 echo ""
 echo "✅ Đã mở thành công 4 Terminal!"

@@ -127,10 +127,16 @@ async def refresh_shopee_cache(brand: str = "all", settings: dict | None = None)
 def status(settings: dict | None = None) -> dict[str, Any]:
     server_dir = legacy_server_dir(settings)
     loaded = _MODULES is not None and _MODULES.server_dir == server_dir
+    chat_pipeline_source = (
+        str(Path(_MODULES.chat_pipeline.__file__).resolve())
+        if loaded and getattr(_MODULES.chat_pipeline, "__file__", None)
+        else str((server_dir / "chat_pipeline.py").resolve())
+    )
     return {
         "enabled": True,
         "mode": "in_process",
         "server_dir": str(server_dir),
+        "chat_pipeline_source": chat_pipeline_source,
         "available": (server_dir / "chat_pipeline.py").exists(),
         "loaded": loaded,
         "endpoints": ["/api/chat-pipeline", "/sync", "/search", "/api/shopee/refresh-cache"],

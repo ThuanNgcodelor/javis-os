@@ -181,6 +181,7 @@ async def call_ollama(
     system_prompt: str = "",
     model: str = "qwen2.5:7b-instruct",
     temperature: float = 0.3,
+    num_predict: int = 1024,
 ) -> Optional[str]:
     """Gọi Ollama Local (Mặc định chạy offline)."""
     cfg = _load_settings().get("ollama", {})
@@ -196,7 +197,7 @@ async def call_ollama(
     payload = {
         "model": model_name,
         "stream": False,
-        "options": {"temperature": temperature, "num_predict": 1024},
+        "options": {"temperature": temperature, "num_predict": max(32, min(int(num_predict), 2048))},
         "messages": messages,
     }
 
@@ -284,7 +285,13 @@ Chỉ xuất JSON object đúng schema."""
 
     try:
         raw = await asyncio.wait_for(
-            call_ollama(prompt, system_prompt=system_prompt, model=model, temperature=0.0),
+            call_ollama(
+                prompt,
+                system_prompt=system_prompt,
+                model=model,
+                temperature=0.0,
+                num_predict=256,
+            ),
             timeout=timeout,
         )
     except Exception as exc:

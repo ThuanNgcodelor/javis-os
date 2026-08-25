@@ -12,10 +12,15 @@
     "fallback_embed_model": "qwen2.5:7b-instruct"
   },
   "llm_nlu": {
-    "mode": "off",
+    "mode": "shadow",
     "model": "qwen2.5:7b-instruct",
     "timeout_seconds": 1.6,
-    "min_confidence": 0.72
+    "min_confidence": 0.72,
+    "shadow_timeout_seconds": 20.0,
+    "shadow_max_pending": 2,
+    "shadow_max_observations": 500,
+    "shadow_retention_seconds": 604800,
+    "shadow_sample_rate": 1.0
   },
   "rag": {
     "top_k": 5,

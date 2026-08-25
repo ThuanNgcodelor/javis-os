@@ -1,7 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 SERVER_DIR = Path(__file__).resolve().parents[1]
@@ -166,33 +166,23 @@ class ConversationRegressionGuardTests(unittest.IsolatedAsyncioTestCase):
             "in_stock": True,
             "link_shopee": "https://shopee.vn/max",
         }]
-        planner = AsyncMock(return_value={
-            "intent": "product_link",
-            "confidence": 0.95,
-            "sort": "",
-            "need_type": "",
-            "category": "",
-            "product": "",
-            "reference": False,
-            "reason": "shadow prediction must not control response",
-            "provider": "ollama",
-            "model": "fake",
-        })
+        shadow_scheduler = Mock(return_value="scheduled")
 
         with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=FakeRedis())), \
                 patch("chat_pipeline._async_save_session", new=AsyncMock()), \
                 patch("chat_pipeline._llm_nlu_config", return_value=("shadow", 0.3, 0.72)), \
-                patch("chat_pipeline.plan_chat_intent_with_ollama", planner), \
+                patch("chat_pipeline.schedule_nlu_shadow", shadow_scheduler), \
                 patch("shopee_matcher.load_shopee_catalog", return_value=catalog):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="zeo", sender_id="shadow-flow", text="sản phẩm nào mắc nhất nhỉ"
             ))
 
         self.assertEqual(result.intent, "shopee_price_extreme")
-        planner.assert_awaited_once()
+        shadow_scheduler.assert_called_once()
         trace = chat_pipeline._local_session_cache["zeo:session:messenger:shadow-flow"]["last_trace"]
         self.assertEqual(trace["llm_nlu"]["mode"], "shadow")
-        self.assertEqual(trace["llm_nlu"]["intent"], "product_link")
+        self.assertEqual(trace["llm_nlu"]["status"], "scheduled")
+        self.assertFalse(trace["llm_nlu"]["affects_response"])
 
 
 if __name__ == "__main__":

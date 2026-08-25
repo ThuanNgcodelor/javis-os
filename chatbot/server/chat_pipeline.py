@@ -58,6 +58,7 @@ from shopee_matcher import (
     match_fabric_softener_products,
 )
 from ai_engine import synthesize_cskh_answer, reason_and_answer_cskh, plan_chat_intent_with_ollama
+from nlu_shadow import schedule_nlu_shadow
 from query_understanding import build_query_plan
 from telegram_notifier import notify_new_lead, notify_admin_unanswered, notify_urgent_complaint
 
@@ -2131,18 +2132,36 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
         # 0.2. Ollama NLU planner (optional): hiểu câu hỏi tự nhiên -> chọn deterministic tool.
         llm_nlu_plan: Optional[dict[str, Any]] = None
         llm_nlu_mode, llm_nlu_timeout, llm_nlu_threshold = _llm_nlu_config()
-        if (
+        should_try_llm_nlu = bool(
             llm_nlu_mode in {"assist", "shadow"}
             and not is_return_or_claim
             and _should_try_llm_nlu(norm_text, brand)
-        ):
+        )
+        nlu_conversation_summary = (
+            f"previous_intent={previous_intent}; "
+            f"last_products={json.dumps(conversation_state.get('last_products_shown', [])[:3], ensure_ascii=False)}"
+        )
+        if should_try_llm_nlu and llm_nlu_mode == "shadow":
+            shadow_status = schedule_nlu_shadow(
+                brand=brand,
+                sender_id=sender_id,
+                message_id=str(req.message_id or ""),
+                raw_text=raw_text,
+                normalized_text=norm_text,
+                conversation_summary=nlu_conversation_summary,
+                deterministic_plan=query_plan_dict,
+                confidence_threshold=llm_nlu_threshold,
+            )
+            pipeline_trace_extra["llm_nlu"] = {
+                "mode": "shadow",
+                "status": shadow_status,
+                "affects_response": False,
+            }
+        elif should_try_llm_nlu and llm_nlu_mode == "assist":
             llm_nlu_plan = await plan_chat_intent_with_ollama(
                 user_query=raw_text,
                 brand=brand,
-                conversation_summary=(
-                    f"previous_intent={previous_intent}; "
-                    f"last_products={json.dumps(conversation_state.get('last_products_shown', [])[:3], ensure_ascii=False)}"
-                ),
+                conversation_summary=nlu_conversation_summary,
                 timeout=llm_nlu_timeout,
             )
 
