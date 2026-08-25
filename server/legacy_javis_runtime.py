@@ -16,7 +16,9 @@ from typing import Any
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_LEGACY_SERVER = _ROOT.parent / "N8n" / "ChatbotN8n" / "javis" / "server"
+_DEFAULT_LEGACY_SERVER = _ROOT / "chatbot" / "server"
+if not _DEFAULT_LEGACY_SERVER.exists():
+    _DEFAULT_LEGACY_SERVER = _ROOT.parent / "N8n" / "ChatbotN8n" / "javis" / "server"
 _MODULE_NAMES = ("chat_pipeline", "rag_search", "knowledge_sync", "shopee_matcher")
 
 
