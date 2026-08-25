@@ -23,7 +23,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+# pyrefly: ignore [missing-import]
 import redis.asyncio as aioredis
+# pyrefly: ignore [missing-import]
 from pydantic import BaseModel
 
 from rag_search import get_redis, get_faq_by_intent, semantic_search, refresh_knowledge_cache
