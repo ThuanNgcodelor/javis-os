@@ -79,6 +79,14 @@ class QueryUnderstandingTests(unittest.TestCase):
         )
         self.assertEqual(plan.intent, "brand_ecosystem_overview")
 
+    def test_cskh_phone_request_is_company_contact(self):
+        plan = self._plan(
+            "Cho số chăm sóc kh cty ZeO Cần Thơ",
+            "cho so cham soc khach hang cong ty zeo can tho",
+        )
+        self.assertEqual(plan.intent, "company_contact_information")
+        self.assertFalse(plan.needs_product_tool)
+
 
 if __name__ == "__main__":
     unittest.main()

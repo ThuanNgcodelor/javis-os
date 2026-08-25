@@ -112,6 +112,7 @@ TEST_CASES = [
     {"q": "CFC homecare là của cty luôn đúng không", "category": "regression_company", "expected_intent": "company_overview"},
     {"q": "Sdt", "category": "regression_contact", "expected_intent": "company_contact_information"},
     {"q": "Sdt công tu", "category": "regression_contact", "expected_intent": "company_contact_information"},
+    {"q": "Cho số chăm sóc kh cty zeo cần thơ", "category": "regression_contact", "expected_intent": "company_contact_information"},
     {"q": "Có bột giặt Omo không", "category": "regression_unsupported", "expected_intent": "competitor_product_unavailable"},
     {"q": "Tiktok", "category": "regression_channel", "expected_intent": "official_channel_unverified"},
     {"q": "Zalo", "category": "regression_channel", "expected_intent": "official_channel_unverified"},

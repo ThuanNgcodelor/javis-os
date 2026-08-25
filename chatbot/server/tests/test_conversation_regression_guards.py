@@ -23,6 +23,10 @@ class FakeRedis:
 
 
 FAQS = {
+    "company_contact_information": (
+        "Địa chỉ Công ty: Trục Chính Khu Công Nghiệp Trà Nóc 1, Cần Thơ | "
+        "Hotline CSKH: 1900 5307 | Website: https://zeo.vn/"
+    ),
     "return_eligible_cases": "Hàng lỗi sản xuất, giao sai hoặc hư hỏng vận chuyển đủ điều kiện để CSKH kiểm tra đổi trả.",
     "return_process": "Quy trình đổi trả: liên hệ hotline 1900 5307, gửi mã đơn và ảnh/video; CSKH xác nhận rồi thu hồi hoặc hoàn tiền.",
     "return_claim_deadlines": "Lỗi vận chuyển cần báo trong 24 giờ; lỗi chất lượng cần báo trong 7 ngày.",
@@ -155,6 +159,39 @@ class ConversationRegressionGuardTests(unittest.IsolatedAsyncioTestCase):
     def test_availability_detector_does_not_confuse_co_san_pham(self):
         self.assertFalse(_looks_like_availability_request(_normalize_vn("có sản phẩm nào thế")))
         self.assertTrue(_looks_like_availability_request(_normalize_vn("có sẵn hàng không")))
+
+    async def test_cskh_abbreviation_routes_to_sheet_contact_without_fake_area(self):
+        redis_patch, save_patch, faq_patch, nlu_patch = self._common_patches()
+        with redis_patch, save_patch, faq_patch, nlu_patch:
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="zeo",
+                sender_id="contact-abbreviation",
+                text="Cho số chăm sóc kh cty zeo cần thơ",
+            ))
+
+        self.assertEqual(
+            _normalize_vn("Cho số chăm sóc kh cty zeo cần thơ"),
+            "cho so cham soc khach hang cong ty zeo can tho",
+        )
+        self.assertEqual(_normalize_vn("còn hàng kh"), "con hang khong")
+        for query in (
+            "Số CSKH ZeO",
+            "Xin số chăm sóc khách hàng công ty",
+            "Cho mình số của cty",
+            "CSKH ZeO số mấy",
+        ):
+            with self.subTest(query=query):
+                self.assertEqual(
+                    chat_pipeline._detect_contact_intent(_normalize_vn(query), "zeo"),
+                    "company_contact_information",
+                )
+        self.assertEqual(result.intent, "company_contact_information")
+        self.assertIn("1900 5307", result.answer)
+        self.assertEqual(result.area, "")
+        trace = chat_pipeline._local_session_cache[
+            "zeo:session:messenger:contact-abbreviation"
+        ]["last_trace"]
+        self.assertEqual(trace["source_id"], "test:company_contact_information")
 
     async def test_shadow_nlu_records_trace_without_overriding_legacy_route(self):
         catalog = self.catalog + [{

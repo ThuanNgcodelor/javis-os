@@ -116,6 +116,11 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
 
 def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand: str) -> tuple[str, float]:
     mentioned = set(entities.get("mentioned_brands", []))
+    if brand == "zeo" and re.search(
+        r"\b(hotline|tong dai|so dien thoai|so lien he|so cham soc|cham soc khach hang)\b",
+        text,
+    ):
+        return "company_contact_information", 0.94
     if {"zeo", "pano", "oplus"}.issubset(mentioned) and re.search(r"\b(khac nhau|hay sao|la sao|cung|thuoc|hang|thuong hieu)\b", text):
         return "brand_ecosystem_overview", 0.90
     if _has_any(text, ["tra hang", "doi tra", "hoan tien", "khieu nai"]):

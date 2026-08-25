@@ -102,6 +102,8 @@ def _normalize_vi_query(text: str) -> str:
     t = re.sub(r"[\u0300-\u036f]", "", t)
     t = t.replace("đ", "d").replace("Đ", "d")
     t = re.sub(r"[^a-zA-Z0-9\s]", " ", t).lower()
+    t = re.sub(r"\bcskh\b", "cham soc khach hang", t)
+    t = re.sub(r"\b(cham soc|ho tro)\s+kh\b", r"\1 khach hang", t)
     tokens = [VI_QUERY_ALIASES.get(token, token) for token in t.split() if token]
     return " ".join(tokens).strip()
 

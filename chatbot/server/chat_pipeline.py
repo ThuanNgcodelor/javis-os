@@ -265,6 +265,9 @@ def _normalize_vn(text: str) -> str:
     text = "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
     text = text.replace("đ", "d").replace("Đ", "d").lower()
     text = re.sub(r"[^a-z0-9\s]", " ", text)
+    # "kh" thường là "không", nhưng trong ngữ cảnh CSKH lại là "khách hàng".
+    text = re.sub(r"\bcskh\b", "cham soc khach hang", text)
+    text = re.sub(r"\b(cham soc|ho tro)\s+kh\b", r"\1 khach hang", text)
     tokens = [VIETNAMESE_ALIASES.get(t, t) for t in text.split() if t]
     return " ".join(tokens)
 
@@ -284,7 +287,14 @@ def _extract_phone_and_area(text: str, norm: str) -> Tuple[str, str]:
         re.search(r"(dia chi|khu vuc|noi o|tinh thanh).*(cua )?(toi|minh|em|anh|chi)", norm)
         or re.search(r"(o dau|tai dau|cho nao|dia chi.*o dau|mua o dau|ban o dau)", norm)
     )
-    if asks_area_question:
+    asks_company_contact = bool(
+        re.search(r"\b(so cham soc|cham soc khach hang|hotline|tong dai)\b", norm)
+        or re.search(
+            r"(so dien thoai|so lien he).{0,30}(cong ty|zeo|pano|oplus|cfc|co bay|shop|ben minh)",
+            norm,
+        )
+    )
+    if asks_area_question or asks_company_contact:
         return phone, area
 
     text_without_phone = text.replace(phone, "").strip() if phone else text
@@ -1031,12 +1041,21 @@ def _detect_address_intent(norm_text: str, brand: str) -> Optional[str]:
     return None
 
 
-def _detect_contact_intent(norm_text: str, brand: str) -> Optional[str]:
-    if _has_any(norm_text, [
+def _has_company_contact_signal(norm_text: str) -> bool:
+    return _has_any(norm_text, [
         r"^(so dien thoai|dien thoai|hotline|tong dai|lien he|sdt|sdt cong tu|sdt cong ty)$",
         r"(so dien thoai|hotline|tong dai|so lien he|lien he).{0,30}(cong ty|cong tu|cty|shop|admin|ben minh)?",
         r"(cong ty|cong tu|cty|shop|admin|ben minh).{0,30}(so dien thoai|hotline|tong dai|so lien he|lien he)",
-    ]):
+        r"\b(cho|xin)\s+so\s+(cham soc|ho tro)(\s+khach hang)?\b",
+        r"\bso\s+(cham soc|ho tro)(\s+khach hang)?\b",
+        r"\b(cho|xin)?\s*so\s+(cua\s+)?(cong ty|cty|zeo|pano|oplus|cfc|co bay|shop|ben minh)\b",
+        r"\b(cham soc khach hang|bo phan ho tro).{0,25}(so nao|so may|so dien thoai|hotline|lien he)\b",
+        r"\bcall\b",
+    ])
+
+
+def _detect_contact_intent(norm_text: str, brand: str) -> Optional[str]:
+    if _has_company_contact_signal(norm_text):
         return "company_contact_information" if brand.lower() == "zeo" else "cfc_company_website"
     return None
 
@@ -2934,7 +2953,7 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                 return bool(re.search(r"\b(dat hang|chot don|lay 1|lay 2|lay 3|mua 1|mua 2|mua 3|cho 1|cho 2|cho minh 1|cho minh 2|toi muon 2kg|toi muon mua 2kg)\b", query_norm))
             # 7. Thông tin liên hệ / Hotline
             if "contact" in target_intent or "hotline" in target_intent:
-                return bool(re.search(r"\b(hotline|so dien thoai|lien he|tong dai|sdt|call)\b", query_norm))
+                return _has_company_contact_signal(query_norm)
             # 8. Tẩy Toilet / Bồn cầu
             if target_intent == "zeo_toilet_cleaner":
                 return bool(re.search(r"\b(toilet|bon cau|be phot|men su|wc|con vit)\b", query_norm))
