@@ -132,7 +132,6 @@ logs/
 .codegraph/
 .agent/
 .agents/
-local-n8n/
 
 # Infrastructure secrets & local credentials (bảo mật mật khẩu Redis & Cloudflare certs)
 infra/**/.env

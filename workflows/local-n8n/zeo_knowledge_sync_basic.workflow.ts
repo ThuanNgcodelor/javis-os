@@ -2,7 +2,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 
 // <workflow-map>
 // Workflow : Zeo Knowledge
-// Nodes   : 11  |  Connections: 11
+// Nodes   : 15  |  Connections: 16
 //
 // NODE INDEX
 // ──────────────────────────────────────────────────────────────────
@@ -18,6 +18,10 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 // NormalizeShopeeCatalog             code
 // WriteShopeeRedisSnapshot           redis                      [creds]
 // NotifyFastapiShopeeCache           httpRequest                [onError→regular]
+// ReadWebRows                        googleSheets               [creds]
+// NormalizeWebCatalog                code
+// WriteWebRedisSnapshot              redis                      [creds]
+// NotifyFastapiWebCache              httpRequest                [onError→regular]
 //
 // ROUTING MAP
 // ──────────────────────────────────────────────────────────────────
@@ -31,9 +35,14 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 //      → NormalizeShopeeCatalog
 //        → WriteShopeeRedisSnapshot
 //          → NotifyFastapiShopeeCache
+//    → ReadWebRows
+//      → NormalizeWebCatalog
+//        → WriteWebRedisSnapshot
+//          → NotifyFastapiWebCache
 // ScheduleTrigger
 //    → ReadFaqRows (↩ loop)
 //    → ReadShopeeRows (↩ loop)
+//    → ReadWebRows (↩ loop)
 // </workflow-map>
 
 // =====================================================================
@@ -43,7 +52,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 @workflow({
     id: 'DhrLUsDsldhxtTdX',
     name: 'Zeo Knowledge',
-    active: false,
+    active: true,
     description: 'b',
     isArchived: false,
     settings: { timezone: 'Asia/Ho_Chi_Minh', executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
@@ -90,16 +99,16 @@ export class ZeoKnowledgeWorkflow {
     ReadFaqRows = {
         documentId: {
             __rl: true,
-            value: 'https://docs.google.com/spreadsheets/d/1o4vk2YwTVHbuvJxPedTAELCDeQa7iAszZ1kfDKQx0nk/edit?gid=0#gid=0',
+            value: 'https://docs.google.com/spreadsheets/d/1SkxtMEydeOgzUefNMUxQrTu9D9aYIsSvHW3xLHtxNmQ/edit?gid=654759924#gid=654759924',
             mode: 'url',
         },
         sheetName: {
             __rl: true,
-            value: 'gid=0',
+            value: 654759924,
             mode: 'list',
             cachedResultName: 'FAQ',
             cachedResultUrl:
-                'https://docs.google.com/spreadsheets/d/1o4vk2YwTVHbuvJxPedTAELCDeQa7iAszZ1kfDKQx0nk/edit#gid=0',
+                'https://docs.google.com/spreadsheets/d/1SkxtMEydeOgzUefNMUxQrTu9D9aYIsSvHW3xLHtxNmQ/edit#gid=654759924',
         },
         options: {},
     };
@@ -310,13 +319,16 @@ return [{
     ReadShopeeRows = {
         documentId: {
             __rl: true,
-            value: 'https://docs.google.com/spreadsheets/d/1o4vk2YwTVHbuvJxPedTAELCDeQa7iAszZ1kfDKQx0nk/edit?gid=0#gid=0',
+            value: 'https://docs.google.com/spreadsheets/d/1SkxtMEydeOgzUefNMUxQrTu9D9aYIsSvHW3xLHtxNmQ/edit?gid=654759924#gid=654759924',
             mode: 'url',
         },
         sheetName: {
             __rl: true,
-            value: 'Shopee',
-            mode: 'name',
+            value: 944270019,
+            mode: 'list',
+            cachedResultName: 'Shopee',
+            cachedResultUrl:
+                'https://docs.google.com/spreadsheets/d/1SkxtMEydeOgzUefNMUxQrTu9D9aYIsSvHW3xLHtxNmQ/edit#gid=944270019',
         },
         options: {},
     };
@@ -402,6 +414,107 @@ return [{ json: { snapshot_key: 'zeo:shopee:catalog:active', product_count: prod
         },
     };
 
+    @node({
+        id: '3c000001-0000-0000-0000-000000000001',
+        name: 'Read Web Rows',
+        type: 'n8n-nodes-base.googleSheets',
+        version: 4.7,
+        position: [256, 704],
+        credentials: { googleSheetsOAuth2Api: { id: 'li88zysXKFUU5A0d', name: 'Google Sheets account' } },
+    })
+    ReadWebRows = {
+        documentId: {
+            __rl: true,
+            value: 'https://docs.google.com/spreadsheets/d/1o4vk2YwTVHbuvJxPedTAELCDeQa7iAszZ1kfDKQx0nk/edit?gid=0#gid=0',
+            mode: 'url',
+        },
+        sheetName: {
+            __rl: true,
+            value: 'Web',
+            mode: 'name',
+        },
+        options: {},
+    };
+
+    @node({
+        id: '3c000001-0000-0000-0000-000000000002',
+        name: 'Normalize Web Catalog',
+        type: 'n8n-nodes-base.code',
+        version: 2,
+        position: [512, 704],
+    })
+    NormalizeWebCatalog = {
+        jsCode: `
+function text(v) {
+  return String(v || '').replace(/\\s+/g, ' ').trim();
+}
+function asBool(v) {
+  if (typeof v === 'boolean') return v;
+  return ['true', '1', 'yes', 'y'].includes(String(v || '').trim().toLowerCase());
+}
+function parseList(v) {
+  if (Array.isArray(v)) return v.map(text).filter(Boolean);
+  return String(v || '').split(/[;|,]/).map(text).filter(Boolean);
+}
+const rows = $input.all().map(item => item.json);
+const products = [];
+for (const r of rows) {
+  const active = asBool(r.active ?? true);
+  const name = text(r.name);
+  const link = text(r.link_web || r.web_url || r.link);
+  if (!active || !name || !link) continue;
+  const inStock = asBool(r.in_stock ?? true);
+  const priceNum = Number(String(r.price || 0).replace(/[^0-9]/g, ''));
+  const origPriceNum = Number(String(r.original_price || priceNum).replace(/[^0-9]/g, ''));
+  products.push({
+    item_id: text(r.item_id || name),
+    name,
+    brand: text(r.brand || 'ZeO'),
+    category: text(r.category || 'Tẩy rửa & Giặt giũ'),
+    price: priceNum,
+    original_price: origPriceNum,
+    link_web: link,
+    in_stock: inStock,
+    keywords: parseList(r.keywords),
+    updated_at: new Date().toISOString(),
+  });
+}
+if (products.length < 1) throw new Error('Từ chối ghi Redis: Danh mục Web không có sản phẩm hợp lệ.');
+const snapshotJson = JSON.stringify(products);
+return [{ json: { snapshot_key: 'zeo:web:catalog:active', product_count: products.length, updated_at: new Date().toISOString(), snapshot_json: snapshotJson } }];
+`,
+    };
+
+    @node({
+        id: '3c000001-0000-0000-0000-000000000003',
+        name: 'Write Web Redis Snapshot',
+        type: 'n8n-nodes-base.redis',
+        version: 1,
+        position: [768, 704],
+        credentials: { redis: { id: 'DW6fQRCZ77RgdCqL', name: 'Zeo Redis (local)' } },
+    })
+    WriteWebRedisSnapshot = {
+        operation: 'set',
+        key: 'zeo:web:catalog:active',
+        value: '={{ $json.snapshot_json }}',
+    };
+
+    @node({
+        id: '3c000001-0000-0000-0000-000000000004',
+        name: 'Notify FastAPI Web Cache',
+        type: 'n8n-nodes-base.httpRequest',
+        version: 4.2,
+        position: [1024, 704],
+        onError: 'continueRegularOutput',
+    })
+    NotifyFastapiWebCache = {
+        method: 'POST',
+        url: 'http://127.0.0.1:7777/api/web/refresh-cache',
+        options: {
+            timeout: 10000,
+        },
+    };
+
     // =====================================================================
     // ROUTAGE ET CONNEXIONS
     // =====================================================================
@@ -410,8 +523,10 @@ return [{ json: { snapshot_key: 'zeo:shopee:catalog:active', product_count: prod
     defineRouting() {
         this.ManualTrigger.out(0).to(this.ReadFaqRows.in(0));
         this.ManualTrigger.out(0).to(this.ReadShopeeRows.in(0));
+        this.ManualTrigger.out(0).to(this.ReadWebRows.in(0));
         this.ScheduleTrigger.out(0).to(this.ReadFaqRows.in(0));
         this.ScheduleTrigger.out(0).to(this.ReadShopeeRows.in(0));
+        this.ScheduleTrigger.out(0).to(this.ReadWebRows.in(0));
         this.ReadFaqRows.out(0).to(this.NormalizeKnowledge.in(0));
         this.NormalizeKnowledge.out(0).to(this.WriteRedisSnapshot.in(0));
         this.WriteRedisSnapshot.out(0).to(this.WriteRedisSyncMetadata.in(0));
@@ -419,5 +534,8 @@ return [{ json: { snapshot_key: 'zeo:shopee:catalog:active', product_count: prod
         this.ReadShopeeRows.out(0).to(this.NormalizeShopeeCatalog.in(0));
         this.NormalizeShopeeCatalog.out(0).to(this.WriteShopeeRedisSnapshot.in(0));
         this.WriteShopeeRedisSnapshot.out(0).to(this.NotifyFastapiShopeeCache.in(0));
+        this.ReadWebRows.out(0).to(this.NormalizeWebCatalog.in(0));
+        this.NormalizeWebCatalog.out(0).to(this.WriteWebRedisSnapshot.in(0));
+        this.WriteWebRedisSnapshot.out(0).to(this.NotifyFastapiWebCache.in(0));
     }
 }

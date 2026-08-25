@@ -24,6 +24,7 @@ XLSX = BASE / "ZeoN8n.xlsx"
 OUTPUTS = {
     "FAQ":    BASE / "zeo_faq_google_sheet_from_ZeoN8n_2026_08_13.csv",
     "Shopee": BASE / "zeo_shopee_catalog_template.csv",
+    "Web":    BASE / "zeo_web_catalog.csv",
 }
 
 def export_sheet(ws, out_path: Path, decode_url_col: int = None):
@@ -59,6 +60,12 @@ def main():
         print(f"Shopee -> {OUTPUTS['Shopee'].name} ({n} rows)")
     else:
         print("Sheet 'Shopee' not found, skipping")
+
+    if "Web" in wb.sheetnames:
+        n = export_sheet(wb["Web"], OUTPUTS["Web"])
+        print(f"Web -> {OUTPUTS['Web'].name} ({n} rows)")
+    else:
+        print("Sheet 'Web' not found, skipping")
 
     print("Export done! Chatbot dung CSV moi ngay khi restart hoac /sync")
 
