@@ -132,7 +132,6 @@ logs/
 .codegraph/
 .agent/
 .agents/
-google_upload/
 local-n8n/
 
 # Infrastructure secrets & local credentials (bảo mật mật khẩu Redis & Cloudflare certs)
