@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from rag_search import get_redis, get_faq_by_intent, semantic_search, refresh_knowledge_cache
 from shopee_matcher import (
+    load_shopee_catalog,
     match_shopee_product,
     match_shopee_product_reference,
     is_shopee_inquiry,
@@ -1887,6 +1888,72 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
             if is_pure_greeting:
                 greeting = "Dạ ZeO Vietnam chào bạn! Bạn đang cần tư vấn về nước giặt sinh học, nước rửa chén hay mua hàng ạ?" if brand == "zeo" else "Dạ phân bón Cò Bay (CFC) chào bạn! Bạn đang cần tư vấn phân bón cho cây lúa, cây ăn trái hay đại lý phân phối ạ?"
                 return _fast_response(greeting, "greeting", brand, start_time)
+
+            # 2.5. Đồng ý nhận link sản phẩm khi lượt trước bot vừa hỏi 'Bạn muốn mình gửi link...'
+            previous_bot_raw = str(existing_session.get("last_bot_reply", ""))
+            previous_bot_norm = _normalize_vn(previous_bot_raw)
+            is_link_affirmation = bool(re.search(
+                r"^(ok|oke|okay|z ok|vay ok|da ok|ok nha|ok nhe|ok shop|oke shop|da|vang|u|uh|um|uk|roi|duoc|gui|gui di|gui link di|gui giup minh|cho minh xin|cho xin|co|yes|gui giup|gui nhe|xin link|gui link|co nha|co chu|gui em|gui minh|cho em xin|gui link giup|gui giup em|cho xin link di|cho minh xin link|cho em xin link|dung roi|chinh xac)\b",
+                norm_text
+            ))
+            asked_to_send_link = bool(re.search(
+                r"(gui link|link shopee|link mua|link dat hang|muon minh gui link|gui link khong|link mua hang|link san pham|link web|link website)",
+                previous_bot_norm
+            ))
+            if is_link_affirmation and asked_to_send_link:
+                candidate_product = None
+                products_shown = conversation_state.get("last_products_shown") or []
+                if products_shown and isinstance(products_shown[0], dict) and products_shown[0].get("name"):
+                    candidate_product = products_shown[0].get("name")
+                
+                # Ưu tiên tìm sản phẩm cụ thể xuất hiện trong nội dung bot vừa nói
+                catalog = load_shopee_catalog(brand=brand)
+                best_score = 0
+                for p in catalog:
+                    p_norm = _normalize_vn(p.get("name", ""))
+                    words = [w for w in p_norm.split() if len(w) > 2 and w in previous_bot_norm]
+                    score = len(words)
+                    for key_term in ["lau san", "hoa ha", "sa chanh", "chanh", "bac ha", "y lang", "baby", "bio enzyme", "vitamin e", "tiet kiem nuoc", "rua chen", "bot giat", "nuoc giat"]:
+                        if key_term in p_norm and key_term in previous_bot_norm:
+                            score += 6
+                    if "pano" in p_norm and "pano" in previous_bot_norm:
+                        score += 5
+                    if "zeo" in p_norm and "zeo" in previous_bot_norm:
+                        score += 3
+                    if "oplus" in p_norm and "oplus" in previous_bot_norm:
+                        score += 3
+                    if score > best_score:
+                        best_score = score
+                        candidate_product = p.get("name")
+
+                if not candidate_product:
+                    active_prod = conversation_state.get("active_entities", {}).get("product")
+                    if active_prod and str(active_prod).lower() not in {"pano", "zeo", "oplus", "cfc"}:
+                        candidate_product = str(active_prod)
+                
+                if candidate_product:
+                    shopee_match = match_shopee_product(candidate_product, brand=brand)
+                    if shopee_match and shopee_match.get("shopee_url"):
+                        matched_product = shopee_match.get("matched_product")
+                        _remember_response(
+                            shopee_match["suggested_reply"],
+                            shopee_match.get("intent", "shopee_product_link"),
+                            "browsing_catalog",
+                            products_shown=[matched_product] if isinstance(matched_product, dict) else None,
+                        )
+                        return ChatPipelineResponse(
+                            answer=_prettify_answer(shopee_match["suggested_reply"]),
+                            intent=shopee_match.get("intent", "shopee_product_link"),
+                            confidence="high",
+                            score=0.99,
+                            brand=brand.upper(),
+                            has_phone=has_phone,
+                            phone=phone,
+                            area=area,
+                            lead_stage="browsing_catalog",
+                            shopee_url=shopee_match.get("shopee_url"),
+                            latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                        )
 
             # 3. Xác nhận / Kết thúc hội thoại ('z ok', 'vay ok', 'da ok', 'ok nha', 'the thoi')
             if re.search(r"^(z ok|vay ok|da ok|ok nha|ok nhe|ok shop|oke shop|the thoi|the nha|vay dc roi|vay duoc roi|ok roi|ok|oke|okay|da|vang|uh|um|roi|duoc|biet roi|hieu roi)\b", norm_text) and not re.search(r"(cam on|thanks)", norm_text):
