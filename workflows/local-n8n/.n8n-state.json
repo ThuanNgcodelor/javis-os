@@ -1,0 +1,69 @@
+{
+  "workflows": {
+    "6CbomLggG6P8WLuM": {
+      "lastSyncedHash": "b73f47e0d70bc87bfc39307d92dc12adf2b07ddc7d644b66a62a99e5dced0af5",
+      "lastSyncedAt": "2026-07-29T07:07:03.336Z",
+      "filename": "zalo_messenger_bot.workflow.ts"
+    },
+    "ly85DeAVlDIYcwvj": {
+      "lastSyncedHash": "9934e63887ef4a01f52c6a803d9a140c38bec65c05049c7fecac55e45f7724f6",
+      "lastSyncedAt": "2026-07-29T07:15:14.746Z",
+      "filename": "hello_world.workflow.ts"
+    },
+    "bGI7v3dotJvgX253": {
+      "lastSyncedHash": "26a6b42e0aa07778540bbadffd2a3162c8a50fc78ea3965d32e884ed53d3ee70",
+      "lastSyncedAt": "2026-07-29T07:58:50.664Z",
+      "filename": "zeo_demo.workflow.ts"
+    },
+    "1OjWpEb2sketN3Zt": {
+      "lastSyncedHash": "e1a39cd7b0a4e9eef0bc1bd521e079c52713ff0e2ecb765db05331261f39aab8",
+      "lastSyncedAt": "2026-07-30T01:20:18.726Z",
+      "filename": "zeo_chatbot.workflow.ts"
+    },
+    "56jbp3jgUHDn0r2e": {
+      "lastSyncedHash": "2767518965e1748a236f3798ccab92e2a0be4628fd5ea15b14843daf481091b8",
+      "lastSyncedAt": "2026-07-30T01:22:29.104Z",
+      "filename": "zeo_chatbot.workflow.ts"
+    },
+    "d7fctbMhVUmhrNG0": {
+      "lastSyncedHash": "46064ec42f164615d356e1cc6a96744e00b399d21afb5589a9ccf39a8108b5a6",
+      "lastSyncedAt": "2026-08-24T01:49:44.845Z",
+      "filename": "zeo_chatbot.workflow.ts"
+    },
+    "DhrLUsDsldhxtTdX": {
+      "lastSyncedHash": "466d8c1b7d0f9b1eb0a04d627a38e90d9c2d01bcccb32414d322f466974cb623",
+      "lastSyncedAt": "2026-08-25T01:40:51.805Z",
+      "filename": "zeo_knowledge_sync_basic.workflow.ts"
+    },
+    "sUgJYuP1hj75sERu": {
+      "lastSyncedHash": "0d9696191fc5e512579fe40851702e2a7a451eb7a87bf373e1e73a67c18cbd05",
+      "lastSyncedAt": "2026-08-13T09:07:50.853Z",
+      "filename": "zeo_learning_queue_export.workflow.ts"
+    },
+    "92I5floRW5MElgu5": {
+      "lastSyncedHash": "9f25e58cdd26aafc321ab39a25d99b6f211234750ff4cc04f977f91b3f42f02e",
+      "lastSyncedAt": "2026-08-24T01:50:27.321Z",
+      "filename": "cfc_knowledge_sync_basic.workflow.ts"
+    },
+    "uJOo6NQO2mJZhUAr": {
+      "lastSyncedHash": "6670c59df79d14010d19344c7e13d3cc109bf8d07534b5f090eaa0cac29d42aa",
+      "lastSyncedAt": "2026-08-24T01:49:56.650Z",
+      "filename": "cfc_cobay_chatbot.workflow.ts"
+    },
+    "f2IjxVj9sW3KQRAw": {
+      "lastSyncedHash": "120e81c132629798adca317494e3470666f716825ef534cc9c025cfedcd3afc5",
+      "lastSyncedAt": "2026-08-12T01:20:38.168Z",
+      "filename": "chatbot_operations_alert.workflow.ts"
+    },
+    "hPY4cMva4TOCOXee": {
+      "lastSyncedHash": "3a0fd8a02dc330308c51c64720856b8021d8ffdaf34311d808e2041414cd55de",
+      "lastSyncedAt": "2026-08-14T03:28:30.270Z",
+      "filename": "cfc_learning_queue_export.workflow.ts"
+    },
+    "ivng9UpBOEGTnVvr": {
+      "lastSyncedHash": "de4633be96d5172b6e6ed58c2e268bc2150729fb76955bfbf6665a1008180904",
+      "lastSyncedAt": "2026-08-25T01:38:19.000Z",
+      "filename": "zeo_shopee_sync.workflow.ts"
+    }
+  }
+}
