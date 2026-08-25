@@ -8,6 +8,7 @@ is moved into Javis OS for good.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -124,6 +125,62 @@ async def refresh_shopee_cache(brand: str = "all", settings: dict | None = None)
     return {"status": "ok", "message": f"Shopee cache refreshed for brand={brand}"}
 
 
+async def list_chat_handoffs(brand: str = "all", settings: dict | None = None) -> dict[str, Any]:
+    mods = load_modules(settings)
+    redis_client = await mods.chat_pipeline.get_redis()
+    brands = ("zeo", "cfc") if brand == "all" else (brand,)
+    if any(item not in {"zeo", "cfc"} for item in brands):
+        raise LegacyJavisRuntimeError("brand phải là 'zeo', 'cfc', hoặc 'all'")
+    items: list[dict[str, Any]] = []
+    for current_brand in brands:
+        async for raw_key in redis_client.scan_iter(match=f"{current_brand}:session:messenger:*"):
+            key = raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
+            raw_session = await redis_client.get(key)
+            if not raw_session:
+                continue
+            try:
+                session = json.loads(raw_session)
+            except (TypeError, ValueError):
+                continue
+            state = session.get("conversation_state") or {}
+            takeover = state.get("takeover_state") or {}
+            if takeover.get("status") != "pending":
+                continue
+            items.append({
+                "brand": current_brand,
+                "sender_id": str(session.get("sender_id") or key.rsplit(":", 1)[-1]),
+                "last_intent": str(session.get("last_intent") or ""),
+                "last_seen_at": str(session.get("last_seen_at") or ""),
+                "reason": str(takeover.get("reason") or ""),
+                "requested_at": str(takeover.get("requested_at") or ""),
+            })
+    items.sort(key=lambda item: item.get("requested_at", ""), reverse=True)
+    return {"count": len(items), "items": items}
+
+
+async def resolve_chat_handoff(brand: str, sender_id: str, settings: dict | None = None) -> dict[str, Any]:
+    brand = str(brand or "").lower()
+    sender_id = str(sender_id or "").strip()
+    if brand not in {"zeo", "cfc"} or not sender_id:
+        raise LegacyJavisRuntimeError("brand/sender_id không hợp lệ")
+    mods = load_modules(settings)
+    redis_client = await mods.chat_pipeline.get_redis()
+    key = f"{brand}:session:messenger:{sender_id}"
+    raw_session = await redis_client.get(key)
+    if not raw_session:
+        raise LegacyJavisRuntimeError("Không tìm thấy session handoff")
+    session = json.loads(raw_session)
+    state = session.get("conversation_state") or {}
+    state["takeover_state"] = {"status": "resolved", "owner": "admin", "reason": ""}
+    session["conversation_state"] = state
+    try:
+        await redis_client.set(key, json.dumps(session, ensure_ascii=False), ex=30 * 24 * 60 * 60)
+    except TypeError:
+        await redis_client.set(key, json.dumps(session, ensure_ascii=False))
+    mods.chat_pipeline._local_session_cache[key] = session
+    return {"ok": True, "brand": brand, "sender_id": sender_id, "status": "resolved"}
+
+
 def status(settings: dict | None = None) -> dict[str, Any]:
     server_dir = legacy_server_dir(settings)
     loaded = _MODULES is not None and _MODULES.server_dir == server_dir
@@ -139,5 +196,11 @@ def status(settings: dict | None = None) -> dict[str, Any]:
         "chat_pipeline_source": chat_pipeline_source,
         "available": (server_dir / "chat_pipeline.py").exists(),
         "loaded": loaded,
-        "endpoints": ["/api/chat-pipeline", "/sync", "/search", "/api/shopee/refresh-cache"],
+        "endpoints": [
+            "/api/chat-pipeline",
+            "/api/chat-handoffs",
+            "/sync",
+            "/search",
+            "/api/shopee/refresh-cache",
+        ],
     }

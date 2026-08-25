@@ -134,6 +134,10 @@ try {
 } catch (e) {
   pipelineRes = {};
 }
+// Không gửi lại MID trùng và không chen lời khi nhân viên đang takeover.
+if (pipelineRes.duplicate === true || pipelineRes.suppress_send === true) {
+  return [];
+}
 const finalReply = pipelineRes.answer || "Dạ CFC Cò Bay đã nhận được tin nhắn của bạn. Bạn để lại nhu cầu bón phân hoặc số điện thoại, kỹ sư Cò Bay sẽ hỗ trợ tư vấn ngay cho mình nha!";
 
 return [{

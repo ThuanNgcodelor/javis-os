@@ -22,6 +22,17 @@
     "shadow_retention_seconds": 604800,
     "shadow_sample_rate": 1.0
   },
+  "conversation": {
+    "session_ttl_seconds": 2592000,
+    "history_ttl_seconds": 2592000,
+    "history_limit": 50,
+    "idempotency_ttl_seconds": 86400,
+    "sender_lock_ttl_seconds": 30,
+    "sender_lock_wait_seconds": 3.0
+  },
+  "grounding_policy": {
+    "mode": "audit"
+  },
   "rag": {
     "top_k": 5,
     "high_confidence_threshold": 0.78,

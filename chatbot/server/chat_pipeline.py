@@ -13,6 +13,7 @@ Quy trình:
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import os
@@ -24,10 +25,18 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 # pyrefly: ignore [missing-import]
-import redis.asyncio as aioredis
-# pyrefly: ignore [missing-import]
 from pydantic import BaseModel
 
+from conversation_store import (
+    BoundedTTLCache,
+    ConversationStoreConfig,
+    load_json,
+    persist_session,
+    sender_lease,
+)
+from dialogue_router import build_route_decision
+from grounding_policy import assess_grounding
+from message_idempotency import begin_message, complete_message, release_message
 from rag_search import get_redis, get_faq_by_intent, semantic_search, refresh_knowledge_cache
 from shopee_matcher import (
     load_shopee_catalog,
@@ -66,11 +75,52 @@ logger = logging.getLogger(__name__)
 
 # Lock per-sender để tuần tự hóa các tin nhắn gửi dồn dập
 _sender_locks: dict[str, asyncio.Lock] = {}
+_sender_lock_users: dict[str, int] = {}
 _global_lock = asyncio.Lock()
 
-# In-memory session & customer cache để tránh race-condition giữa các turn liên tiếp
-_local_session_cache: dict[str, dict] = {}
-_local_customer_cache: dict[str, dict] = {}
+# Cache giữ contract dict cũ nhưng có TTL/LRU để không tăng vô hạn.
+_local_session_cache: BoundedTTLCache[dict] = BoundedTTLCache(maxsize=5000, ttl_seconds=3600)
+_local_customer_cache: BoundedTTLCache[dict] = BoundedTTLCache(maxsize=5000, ttl_seconds=3600)
+
+
+def _load_conversation_runtime_config() -> tuple[ConversationStoreConfig, int]:
+    values: dict[str, Any] = {}
+    cfg_path = Path(__file__).parent / "settings.json"
+    if cfg_path.exists():
+        try:
+            raw_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            candidate = raw_cfg.get("conversation", {})
+            if isinstance(candidate, dict):
+                values = candidate
+        except Exception as exc:
+            logger.debug("Không đọc được cấu hình conversation: %s", exc)
+
+    def _int_value(name: str, default: int, minimum: int) -> int:
+        env_name = f"CHAT_{name.upper()}"
+        try:
+            return max(minimum, int(os.getenv(env_name, values.get(name, default))))
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        lock_wait = max(0.1, float(os.getenv(
+            "CHAT_SENDER_LOCK_WAIT_SECONDS",
+            values.get("sender_lock_wait_seconds", 3.0),
+        )))
+    except (TypeError, ValueError):
+        lock_wait = 3.0
+
+    config = ConversationStoreConfig(
+        session_ttl_seconds=_int_value("session_ttl_seconds", 2592000, 60),
+        history_ttl_seconds=_int_value("history_ttl_seconds", 2592000, 60),
+        history_limit=_int_value("history_limit", 50, 1),
+        sender_lock_ttl_seconds=_int_value("sender_lock_ttl_seconds", 30, 5),
+        sender_lock_wait_seconds=lock_wait,
+    )
+    return config, _int_value("idempotency_ttl_seconds", 86400, 60)
+
+
+_conversation_store_config, _idempotency_ttl_seconds = _load_conversation_runtime_config()
 
 
 def _llm_nlu_config() -> tuple[str, float, float]:
@@ -112,7 +162,25 @@ async def _get_sender_lock(lock_key: str) -> asyncio.Lock:
     async with _global_lock:
         if lock_key not in _sender_locks:
             _sender_locks[lock_key] = asyncio.Lock()
+        _sender_lock_users[lock_key] = _sender_lock_users.get(lock_key, 0) + 1
         return _sender_locks[lock_key]
+
+
+@asynccontextmanager
+async def _local_sender_lock(lock_key: str):
+    sender_lock = await _get_sender_lock(lock_key)
+    try:
+        async with sender_lock:
+            yield
+    finally:
+        async with _global_lock:
+            remaining = max(0, _sender_lock_users.get(lock_key, 1) - 1)
+            if remaining:
+                _sender_lock_users[lock_key] = remaining
+            else:
+                _sender_lock_users.pop(lock_key, None)
+            if remaining == 0 and _sender_locks.get(lock_key) is sender_lock and not sender_lock.locked():
+                _sender_locks.pop(lock_key, None)
 
 
 # Cấu hình từ viết tắt tiếng Việt
@@ -321,9 +389,11 @@ def _extract_phone_and_area(text: str, norm: str) -> Tuple[str, str]:
 
 def _default_conversation_state(brand: str) -> dict[str, Any]:
     return {
+        "schema_version": 2,
         "brand": brand.upper(),
         "conversation_topic": "",
         "current_intent": "",
+        "current_goal": "",
         "active_entities": {
             "product": "",
             "product_intent": "",
@@ -336,6 +406,13 @@ def _default_conversation_state(brand: str) -> dict[str, Any]:
         "last_products_shown": [],
         "customer_constraints": {},
         "active_flow": {"name": "", "stage": ""},
+        "pending_action": {"name": "", "status": ""},
+        "pending_question": "",
+        "pending_slots": [],
+        "pending_options": [],
+        "topic_stack": [],
+        "corrections": [],
+        "takeover_state": {"status": "none", "owner": "", "reason": ""},
         "covered_fact_ids": [],
         "recent_turns": [],
         "conversation_summary": "",
@@ -372,11 +449,35 @@ def _load_conversation_state(existing_session: dict, brand: str) -> dict[str, An
         state["customer_constraints"] = {}
     if not isinstance(state.get("active_flow"), dict):
         state["active_flow"] = {"name": "", "stage": ""}
+    if not isinstance(state.get("pending_action"), dict):
+        state["pending_action"] = {"name": "", "status": ""}
+    if not isinstance(state.get("pending_question"), str):
+        state["pending_question"] = ""
+    for key in ("pending_slots", "pending_options", "topic_stack", "corrections"):
+        if not isinstance(state.get(key), list):
+            state[key] = []
+    if not isinstance(state.get("takeover_state"), dict):
+        state["takeover_state"] = {"status": "none", "owner": "", "reason": ""}
     if not isinstance(state.get("covered_fact_ids"), list):
         state["covered_fact_ids"] = []
     if not isinstance(state.get("recent_turns"), list):
         state["recent_turns"] = []
     return state
+
+
+def _sanitized_chat_history(conversation_state: dict[str, Any], limit: int = 6) -> list[dict[str, str]]:
+    history: list[dict[str, str]] = []
+    for turn in (conversation_state.get("recent_turns") or [])[-max(1, limit):]:
+        if not isinstance(turn, dict):
+            continue
+        for role, field in (("user", "user"), ("assistant", "bot")):
+            content = str(turn.get(field) or "").strip()
+            if not content:
+                continue
+            content = re.sub(r"(?<!\d)(?:\+?84|0)(?:[\s.()-]*\d){8,10}(?!\d)", "[PHONE]", content)
+            content = re.sub(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", "[EMAIL]", content, flags=re.I)
+            history.append({"role": role, "content": content[:600]})
+    return history[-(max(1, limit) * 2):]
 
 
 def _copy_product_item(item: dict) -> dict[str, Any]:
@@ -820,6 +921,7 @@ def _build_next_conversation_state(
             "category": query_entities.get("category", ""),
             "intent": query_entities.get("product_intent", ""),
         }]
+    state["pending_options"] = [dict(item) for item in state.get("last_products_shown", [])[:8]]
 
     active_product = query_entities.get("product") or reference_resolution.get("product") or ""
     active_intent = query_entities.get("product_intent") or reference_resolution.get("product_intent") or ""
@@ -868,13 +970,56 @@ def _build_next_conversation_state(
         state["customer_constraints"]["last_area_hint"] = area_match.group(2).strip()
 
     state["brand"] = brand.upper()
+    state["schema_version"] = 2
     state["current_intent"] = intent
+    state["current_goal"] = lead_stage or state.get("current_goal", "")
     if intent in RETURN_CONTEXT_INTENTS:
         state["active_flow"] = {"name": "return_request", "stage": intent}
     else:
         # Không để ngữ cảnh đổi trả bám vô hạn rồi bắt nhầm các câu ngắn ở chủ đề mới.
         state["active_flow"] = {"name": "", "stage": ""}
     state["conversation_topic"] = active_category or state.get("conversation_topic", "")
+    if active_category:
+        topics = [topic for topic in (state.get("topic_stack") or []) if topic != active_category]
+        state["topic_stack"] = (topics + [active_category])[-5:]
+
+    normalized_user = _normalize_vn(user_message)
+    correction_match = re.search(r"\b(khong phai|nham|y minh la|y toi la)\b.{0,80}", normalized_user)
+    if correction_match:
+        corrections = state.get("corrections") or []
+        corrections.append({"text": user_message[:240], "timestamp": now_str})
+        state["corrections"] = corrections[-5:]
+
+    normalized_reply = _normalize_vn(bot_reply)
+    asks_for_link_confirmation = bool(re.search(
+        r"(muon minh gui link|gui link shopee|gui link mua|gui link san pham|gui link khong)",
+        normalized_reply,
+    ))
+    if asks_for_link_confirmation:
+        state["pending_action"] = {
+            "name": "send_product_link",
+            "status": "waiting_confirmation",
+            "product": state.get("active_entities", {}).get("product", ""),
+            "created_at": now_str,
+        }
+        state["pending_question"] = "confirm_send_product_link"
+    elif intent in {"shopee_product_link", "shopee_specific_product"}:
+        state["pending_action"] = {"name": "", "status": ""}
+        state["pending_question"] = ""
+
+    if lead_stage == "collecting_contact":
+        state["pending_slots"] = ["phone", "area"]
+    elif lead_stage == "lead_ready":
+        state["pending_slots"] = []
+    if lead_stage == "escalated":
+        takeover = state.get("takeover_state") or {}
+        if takeover.get("status") != "pending":
+            state["takeover_state"] = {
+                "status": "pending",
+                "owner": "",
+                "reason": intent,
+                "requested_at": now_str,
+            }
     state["last_source_id"] = source_id or state.get("last_source_id", "")
     state["updated_at"] = now_str
     state["conversation_summary"] = (
@@ -1284,6 +1429,10 @@ class ChatPipelineResponse(BaseModel):
     shopee_url: Optional[str] = None
     fallback_reason: Optional[str] = ""
     latency_ms: float = 0.0
+    duplicate: bool = False
+    idempotency_status: str = ""
+    message_id: str = ""
+    suppress_send: bool = False
 
 
 async def _sheet_fast_response(
@@ -1423,6 +1572,7 @@ async def _detect_and_process_multi_intent(
             brand=brand,
             retrieved_facts=combined_facts_str,
             conversation_summary=conversation_state.get("conversation_summary", ""),
+            chat_history=_sanitized_chat_history(conversation_state),
             timeout=2.5,
         )
 
@@ -1453,7 +1603,7 @@ async def _detect_and_process_multi_intent(
     return None
 
 
-async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineResponse:
+async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineResponse:
     start_time = time.perf_counter()
     brand = req.brand.lower()
     raw_text = (req.text or "").strip()
@@ -1472,9 +1622,7 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
 
     # Khóa theo sender_id để xử lý tuần tự (Tránh race condition ghi đè session)
     lock_key = f"{brand}:{sender_id}"
-    sender_lock = await _get_sender_lock(lock_key)
-
-    async with sender_lock:
+    async with _local_sender_lock(lock_key):
         norm_text = _normalize_vn(raw_text)
         phone, area = _extract_phone_and_area(raw_text, norm_text)
         has_phone = bool(phone)
@@ -1546,7 +1694,8 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
             conversation_state=conversation_state,
         )
         query_plan_dict = query_plan.to_dict()
-        pipeline_trace_extra: dict[str, Any] = {}
+        route_decision = build_route_decision(query_plan, conversation_state)
+        pipeline_trace_extra: dict[str, Any] = {"dialogue_router": route_decision.to_dict()}
 
         def _remember_response(
             answer: str,
@@ -1560,6 +1709,11 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
             trace_extra: Optional[dict[str, Any]] = None,
             products_shown: Optional[list[dict[str, Any]]] = None,
         ) -> None:
+            if not source_id and products_shown:
+                first_product = next((item for item in products_shown if isinstance(item, dict)), {})
+                product_id = first_product.get("item_id") or first_product.get("product_id") or first_product.get("id")
+                if product_id:
+                    source_id = f"{brand}:shopee_catalog:{product_id}"
             next_state = _build_next_conversation_state(
                 conversation_state,
                 brand=brand,
@@ -1587,6 +1741,11 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                 "confidence": confidence,
                 "score": score,
                 "fallback_reason": fallback_reason,
+                "grounding": assess_grounding(
+                    intent=intent,
+                    source_id=source_id,
+                    fallback_reason=fallback_reason,
+                ).to_dict(),
             }
             if pipeline_trace_extra:
                 trace.update(pipeline_trace_extra)
@@ -1594,6 +1753,7 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                 trace.update(trace_extra)
             # Cập nhật ngay RAM cache để turn kế tiếp đọc tức thì (0ms)
             _local_session_cache[session_key] = {
+                "revision": int(existing_session.get("revision") or 0),
                 "last_user_message": raw_text,
                 "last_bot_reply": _prettify_answer(answer),
                 "last_intent": intent,
@@ -1603,16 +1763,6 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                 "conversation_state": next_state,
                 "last_trace": trace,
             }
-            asyncio.create_task(_async_save_session(
-                brand=brand,
-                sender_id=sender_id,
-                user_message=raw_text,
-                bot_reply=_prettify_answer(answer),
-                intent=intent,
-                lead_stage=stage,
-                conversation_state=next_state,
-                trace=trace,
-            ))
 
         async def _sheet_response_remember(
             intent: str,
@@ -1637,6 +1787,45 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
         def _fast_response_remember(answer: str, intent: str, *, stage: str = "new", fallback_reason: str = "") -> ChatPipelineResponse:
             _remember_response(answer, intent, stage, fallback_reason=fallback_reason)
             return _fast_response(answer, intent, brand, start_time, lead_stage=stage, fallback_reason=fallback_reason)
+
+        if (conversation_state.get("takeover_state") or {}).get("status") == "pending":
+            return ChatPipelineResponse(
+                answer="",
+                intent="human_handoff_active",
+                confidence="high",
+                score=1.0,
+                brand=brand.upper(),
+                lead_stage="escalated",
+                suppress_send=True,
+                latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+            )
+
+        if route_decision.action == "clarify" and route_decision.reason == "ORDINAL_WITHOUT_OPTIONS":
+            return _fast_response_remember(
+                "Dạ mình chưa có danh sách sản phẩm nào ở lượt trước để xác định ‘cái thứ hai’. "
+                "Bạn cho mình tên hoặc nhóm sản phẩm cần hỏi giá, mình kiểm tra đúng sản phẩm cho bạn nha.",
+                "context_clarification",
+                stage="browsing_catalog",
+                fallback_reason="UNRESOLVED_REFERENCE",
+            )
+
+        if route_decision.action == "clarify" and route_decision.reason == "CORRECTION_REQUIRES_PRODUCT":
+            corrected_brand = str(query_plan.constraints.get("corrected_brand") or "ZeO")
+            display_brand = "ZeO" if corrected_brand == "zeo" else corrected_brand.upper()
+            return _fast_response_remember(
+                f"Dạ mình hiểu rồi: bạn đang hỏi {display_brand}, không phải thương hiệu vừa nêu trước đó. "
+                "Bạn đang quan tâm nước giặt, bột giặt, nước rửa chén hay nhóm sản phẩm nào của "
+                f"{display_brand} để mình tra đúng thông tin cho bạn ạ?",
+                "customer_correction_clarify",
+                stage="browsing_catalog",
+                fallback_reason="CORRECTION_REQUIRES_PRODUCT",
+            )
+
+        if brand == "cfc" and query_plan.intent == "cfc_dealer_location_request":
+            return await _sheet_response_remember(
+                "cfc_dealer_location_request",
+                stage="collecting_contact",
+            )
 
         # QueryPlan guard: câu bồn cầu/toilet/cặn vôi phải đi nhóm tẩy rửa,
         # không được rơi sang matcher vết bẩn quần áo chỉ vì có "ố vàng".
@@ -1823,7 +2012,8 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
             or re.search(r"(toi|minh|em|anh|chi)\s+(da gui|co gui|gui roi)\s+(so dien thoai|dien thoai|sdt)\b", norm_text)
             or re.search(r"(shop|ban)\s+nho\s+so\s+toi\b", norm_text)
         )
-        asks_saved_area = not is_asking_company_address and not is_asking_buy_online and bool(
+        is_asking_dealer_location = bool(re.search(r"\b(dai ly|nha phan phoi|npp|diem mua)\b", norm_text))
+        asks_saved_area = not is_asking_company_address and not is_asking_buy_online and not is_asking_dealer_location and bool(
             re.search(r"(dia chi|khu vuc|noi o|tinh thanh)\s+(cua\s+)?(toi|minh|em|anh|chi)\b", norm_text)
             or re.search(r"(ban|shop|ad|admin)\s+(con nho|nho|co luu|da luu)\s+(dia chi|khu vuc|noi o|tinh thanh|cho o)\b", norm_text)
             or re.search(r"(toi|minh|em|anh|chi)\s+(dang o dau|o tinh nao|o khu vuc nao)", norm_text)
@@ -1918,7 +2108,7 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                 r"^(ok|oke|okay|z ok|vay ok|da ok|ok nha|ok nhe|ok shop|oke shop|da|vang|u|uh|um|uk|roi|duoc|gui|gui di|gui link di|gui giup minh|cho minh xin|cho xin|co|yes|gui giup|gui nhe|xin link|gui link|co nha|co chu|gui em|gui minh|cho em xin|gui link giup|gui giup em|cho xin link di|cho minh xin link|cho em xin link|dung roi|chinh xac)\b",
                 norm_text
             ))
-            asked_to_send_link = bool(re.search(
+            asked_to_send_link = route_decision.reason == "PENDING_LINK_CONFIRMED" or bool(re.search(
                 r"(gui link|link shopee|link mua|link dat hang|muon minh gui link|gui link khong|link mua hang|link san pham|link web|link website)",
                 previous_bot_norm
             ))
@@ -2011,6 +2201,24 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
         # ─────────────────────────────────────────────────────────────
         # FAST-PATH 3: PHÁT HIỆN KHIẾU NẠI GAY GẮT / HÀNG LỖI BỂ VỠ (< 15ms)
         # ─────────────────────────────────────────────────────────────
+        if re.search(r"\b(gap|noi chuyen voi|chuyen cho|cho gap)\s+(admin|nhan vien|nguoi that|tu van vien|cskh)\b", norm_text):
+            handoff_msg = (
+                "Dạ mình đã chuyển yêu cầu sang nhân viên phụ trách. Từ lượt tiếp theo bot sẽ tạm dừng để "
+                "nhân viên tiếp nhận đúng nội dung bạn đang cần hỗ trợ ạ."
+            )
+            asyncio.create_task(notify_admin_unanswered(
+                brand=brand,
+                query=raw_text,
+                sender_id=sender_id,
+                score=1.0,
+            ))
+            return _fast_response_remember(
+                handoff_msg,
+                "human_handoff_requested",
+                stage="escalated",
+                fallback_reason="HUMAN_HANDOFF",
+            )
+
         URGENT_DAMAGE_TRIGGERS = [
             "nut nap", "be nap", "rach bao", "chay nuoc", "uot het", "chay het",
             "be vo", "hu hong", "giao sai", "giao thieu", "lam an kieu gi",
@@ -2020,12 +2228,20 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
         if any(k in norm_text for k in URGENT_DAMAGE_TRIGGERS) and not is_asking_policy:
             lead_stage = "escalated"
             brand_display = "ZeO Vietnam" if brand == "zeo" else "CFC Cò Bay"
+            policy_item = await get_faq_by_intent(brand, "return_process" if brand == "zeo" else "cfc_status_check")
             damage_msg = (
                 f"Dạ {brand_display} chân thành xin lỗi bạn về sự cố hư hỏng/sai sót đơn hàng đáng tiếc này ạ. "
-                "Bên mình cam kết hỗ trợ đổi mới 100% hoặc hoàn tiền đầy đủ cho bạn theo đúng chính sách CSKH.\n\n"
-                "Bạn vui lòng gửi giúp shop 1 tấm ảnh/video sản phẩm bị lỗi kèm Số Điện Thoại nhận hàng, quản trị viên sẽ liên hệ xử lý gửi bù hàng mới ngay cho bạn nhé ạ! 💙"
+                "CSKH cần kiểm tra đơn hàng và bằng chứng theo chính sách trước khi xác nhận phương án đổi hàng hoặc hoàn tiền.\n\n"
+                "Bạn vui lòng gửi ảnh/video sản phẩm bị lỗi kèm số điện thoại nhận hàng; quản trị viên sẽ tiếp nhận và phản hồi phương án chính xác ạ."
             )
             asyncio.create_task(notify_urgent_complaint(brand=brand, query=raw_text, phone=phone, sender_id=sender_id, fb_name=fb_name))
+            _remember_response(
+                damage_msg,
+                "urgent_damage_complaint",
+                "escalated",
+                source_id=policy_item.get("source_id", ""),
+                fallback_reason="HUMAN_HANDOFF",
+            )
             return _fast_response(damage_msg, "urgent_damage_complaint", brand, start_time, lead_stage="escalated")
 
         COMPLAINT_TRIGGERS = [
@@ -2039,7 +2255,12 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                 "Bạn để lại số điện thoại hoặc mô tả chi tiết giúp em nhé ạ!"
             )
             asyncio.create_task(notify_admin_unanswered(brand=brand, query=raw_text, sender_id=sender_id, score=0.0))
-            return _fast_response(complaint_msg, "bot_complaint_escalate", brand, start_time, lead_stage="escalated")
+            return _fast_response_remember(
+                complaint_msg,
+                "bot_complaint_escalate",
+                stage="escalated",
+                fallback_reason="HUMAN_HANDOFF",
+            )
 
         # ─────────────────────────────────────────────────────────────
         # PATH 3.4: INTENT-FIRST ROUTER CHỐNG RAG BẮT NHẦM (< 15ms)
@@ -2085,11 +2306,9 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
             return _fast_response(msg, "competitor_product_unavailable", brand, start_time, lead_stage="browsing_catalog")
 
         if _detect_cfc_cross_brand(norm_text, brand):
-            return await _sheet_fast_response(
-                brand,
-                start_time,
+            return await _sheet_response_remember(
                 "cfc_cross_brand_out_of_scope",
-                lead_stage="browsing_catalog",
+                stage="browsing_catalog",
                 unavailable_answer=(
                     "Dạ CFC Cò Bay hiện là thương hiệu phân bón nông nghiệp. "
                     "Các sản phẩm tẩy rửa gia dụng như nước giặt/nước rửa chén/lau sàn thuộc hệ ZeO/PANO/Oplus nha."
@@ -2988,6 +3207,7 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                     brand=brand,
                     retrieved_facts=raw_answer,
                     conversation_summary=conversation_state.get("conversation_summary", ""),
+                    chat_history=_sanitized_chat_history(conversation_state),
                     timeout=2.0,
                 )
                 if synthesized and len(synthesized) >= 20:
@@ -3001,6 +3221,7 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                     brand=brand,
                     retrieved_facts=raw_answer,
                     conversation_summary=conversation_state.get("conversation_summary", ""),
+                    chat_history=_sanitized_chat_history(conversation_state),
                     timeout=2.0,
                 )
                 if synthesized and len(synthesized) >= 20:
@@ -3047,6 +3268,7 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                     brand=brand,
                     retrieved_facts=raw_answer if raw_answer else "",
                     conversation_summary=conversation_state.get("conversation_summary", ""),
+                    chat_history=_sanitized_chat_history(conversation_state),
                     timeout=2.5,
                 )
                 if ai_attempt and len(ai_attempt) >= 20:
@@ -3101,17 +3323,23 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
             },
             "query_entities": query_entities,
             "query_plan": query_plan_dict,
+            "grounding": assess_grounding(
+                intent=final_intent,
+                source_id=rag_result.get("source_id", ""),
+                fallback_reason=fallback_reason,
+            ).to_dict(),
         }
-        asyncio.create_task(_async_save_session(
-            brand=brand,
-            sender_id=sender_id,
-            user_message=raw_text,
-            bot_reply=final_answer,
-            intent=final_intent,
-            lead_stage=lead_stage,
-            conversation_state=final_state,
-            trace=trace,
-        ))
+        _local_session_cache[session_key] = {
+            "revision": int(existing_session.get("revision") or 0),
+            "last_user_message": raw_text,
+            "last_bot_reply": final_answer,
+            "last_intent": final_intent,
+            "lead_stage": lead_stage,
+            "customer_phone": phone,
+            "customer_location": area,
+            "conversation_state": final_state,
+            "last_trace": trace,
+        }
 
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
         return ChatPipelineResponse(
@@ -3127,6 +3355,163 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
             fallback_reason=fallback_reason,
             latency_ms=elapsed_ms,
         )
+
+
+def _response_to_dict(response: ChatPipelineResponse) -> dict[str, Any]:
+    if hasattr(response, "model_dump"):
+        return response.model_dump()
+    return response.dict()
+
+
+async def _finalize_pipeline_response(req: ChatPipelineRequest, response: ChatPipelineResponse) -> None:
+    """Make every return branch update RAM and Redis before the API responds."""
+    brand = req.brand.lower()
+    sender_id = req.sender_id.strip()
+    raw_text = (req.text or "").strip()
+    session_key = f"{brand}:session:messenger:{sender_id}"
+    history_key = f"{brand}:history:messenger:{sender_id}"
+    redis_client = await get_redis()
+
+    snapshot = _local_session_cache.get(session_key) or {}
+    if snapshot.get("last_user_message") != raw_text:
+        if not snapshot:
+            snapshot = await load_json(redis_client, session_key)
+        previous_state = _load_conversation_state(snapshot, brand)
+        norm_text = _normalize_vn(raw_text)
+        query_entities = _extract_query_entities(norm_text, brand)
+        reference_resolution = _resolve_reference(raw_text, norm_text, previous_state)
+        next_state = _build_next_conversation_state(
+            previous_state,
+            brand=brand,
+            user_message=raw_text,
+            bot_reply=response.answer,
+            intent=response.intent,
+            lead_stage=response.lead_stage,
+            query_entities=query_entities,
+            reference_resolution=reference_resolution,
+            source_id="",
+        )
+        query_plan = build_query_plan(
+            raw_text=raw_text,
+            norm_text=norm_text,
+            brand=brand,
+            query_entities=query_entities,
+            reference_resolution=reference_resolution,
+            conversation_state=previous_state,
+        )
+        snapshot = {
+            "last_user_message": raw_text,
+            "last_bot_reply": response.answer,
+            "last_intent": response.intent,
+            "lead_stage": response.lead_stage,
+            "customer_phone": response.phone,
+            "customer_location": response.area,
+            "conversation_state": next_state,
+            "last_trace": {
+                "normalized_text": norm_text,
+                "query_plan": query_plan.to_dict(),
+                "source_id": "",
+                "confidence": response.confidence,
+                "score": response.score,
+                "fallback_reason": response.fallback_reason or "",
+                "finalized_by": "pipeline_wrapper",
+            },
+        }
+        _local_session_cache[session_key] = snapshot
+
+    now_str = datetime.now(timezone.utc).isoformat()
+    revision = int(snapshot.get("revision") or 0) + 1
+    snapshot["revision"] = revision
+    snapshot["sender_id"] = sender_id
+    snapshot["brand"] = brand.upper()
+    snapshot["last_seen_at"] = now_str
+    conversation_state = snapshot.get("conversation_state") or {}
+    if isinstance(conversation_state, dict):
+        conversation_state["state_revision"] = revision
+
+    history_record = {
+        "message_id": str(req.message_id or ""),
+        "user_message": raw_text,
+        "bot_reply": response.answer,
+        "intent": response.intent,
+        "trace": snapshot.get("last_trace") or {},
+        "timestamp": now_str,
+        "revision": revision,
+    }
+    trace = snapshot.get("last_trace") or {}
+    if isinstance(trace, dict) and "grounding" not in trace:
+        trace["grounding"] = assess_grounding(
+            intent=response.intent,
+            source_id=str(trace.get("source_id") or ""),
+            fallback_reason=str(response.fallback_reason or ""),
+        ).to_dict()
+    if not all(callable(getattr(redis_client, name, None)) for name in ("set", "rpush", "ltrim")):
+        return
+    try:
+        await persist_session(
+            redis_client,
+            session_key=session_key,
+            history_key=history_key,
+            session_data=snapshot,
+            history_record=history_record,
+            config=_conversation_store_config,
+        )
+    except Exception as exc:
+        logger.warning("Conversation persistence degraded for %s: %s", session_key, exc)
+
+
+async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineResponse:
+    """Idempotent public entrypoint around one deterministic pipeline execution."""
+    brand = req.brand.lower()
+    sender_id = req.sender_id.strip()
+    message_id = str(req.message_id or "").strip()
+    redis_client = await get_redis()
+    decision = await begin_message(redis_client, brand=brand, message_id=message_id)
+
+    if decision.status == "cached" and decision.cached_response:
+        cached = dict(decision.cached_response)
+        cached.update({"duplicate": True, "idempotency_status": "cached", "message_id": message_id})
+        return ChatPipelineResponse(**cached)
+    if decision.status == "in_flight":
+        return ChatPipelineResponse(
+            answer="",
+            intent="duplicate_in_flight",
+            confidence="high",
+            score=1.0,
+            brand=brand.upper(),
+            duplicate=True,
+            idempotency_status="in_flight",
+            message_id=message_id,
+        )
+
+    try:
+        if hasattr(redis_client, "set"):
+            async with sender_lease(
+                redis_client,
+                brand=brand,
+                sender_id=sender_id,
+                config=_conversation_store_config,
+            ):
+                response = await _process_chat_pipeline_once(req)
+                await _finalize_pipeline_response(req, response)
+        else:
+            response = await _process_chat_pipeline_once(req)
+            await _finalize_pipeline_response(req, response)
+        response.message_id = message_id
+        response.idempotency_status = "processed" if decision.status == "acquired" else decision.status
+        try:
+            await complete_message(
+                redis_client,
+                decision,
+                _response_to_dict(response),
+                response_ttl_seconds=_idempotency_ttl_seconds,
+            )
+        except Exception as exc:
+            logger.warning("Idempotency response cache degraded for %s: %s", message_id, exc)
+        return response
+    except Exception:
+        await release_message(redis_client, decision)
+        raise
 
 
 def _fast_response(answer: str, intent: str, brand: str, start_time: float, lead_stage: str = "new", fallback_reason: str = "") -> ChatPipelineResponse:

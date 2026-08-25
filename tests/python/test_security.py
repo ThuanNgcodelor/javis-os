@@ -152,6 +152,10 @@ check("rào: /reminders/cancel được miễn đăng nhập localhost",
       "/reminders/cancel" in main._AUTH_LOCAL_EXACT)
 check("rào: /reminders (tạo nhắc) vẫn còn được miễn (không mất khi thêm /reminders/cancel)",
       "/reminders" in main._AUTH_LOCAL_EXACT)
+check("rào: chat pipeline chỉ được miễn đăng nhập khi gọi từ localhost",
+      "/api/chat-pipeline" in main._AUTH_LOCAL_EXACT
+      and "/api/chat-pipeline" not in main._AUTH_PUBLIC_EXACT
+      and "/api/chat-pipeline" not in main._AUTH_PUBLIC_PREFIX)
 # Nguyên tắc rào: một path KHÔNG có mặt trong tuple thì KHÔNG được miễn - vd /loops (route ghi
 # self_improve; chính plugin javis_schedule đã lý luận "KHÔNG dùng POST /loops vì cần đăng nhập").
 check("rào: /loops KHÔNG nằm trong _AUTH_LOCAL_EXACT (path lạ không tự nhiên được miễn)",

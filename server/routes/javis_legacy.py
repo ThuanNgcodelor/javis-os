@@ -49,6 +49,20 @@ def _make_router() -> APIRouter:
         except Exception as exc:  # noqa: BLE001 - compatibility boundary
             raise _legacy_error(exc) from exc
 
+    @router.get("/api/chat-handoffs")
+    async def list_chat_handoffs_endpoint(brand: str = Query("all")):
+        try:
+            return await legacy_javis_runtime.list_chat_handoffs(brand, _legacy_settings())
+        except legacy_javis_runtime.LegacyJavisRuntimeError as exc:
+            raise _legacy_error(exc, 400) from exc
+
+    @router.post("/api/chat-handoffs/{brand}/{sender_id}/resolve")
+    async def resolve_chat_handoff_endpoint(brand: str, sender_id: str):
+        try:
+            return await legacy_javis_runtime.resolve_chat_handoff(brand, sender_id, _legacy_settings())
+        except legacy_javis_runtime.LegacyJavisRuntimeError as exc:
+            raise _legacy_error(exc, 400) from exc
+
     @router.post("/sync")
     async def sync_knowledge_endpoint(brand: str = Query("zeo", description="'zeo', 'cfc', hoặc 'all'")):
         try:

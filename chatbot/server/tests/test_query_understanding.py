@@ -87,6 +87,27 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(plan.intent, "company_contact_information")
         self.assertFalse(plan.needs_product_tool)
 
+    def test_constraints_capture_quantity_budget_channel_and_correction(self):
+        plan = self._plan(
+            "Không phải Pano, ý mình là ZeO, lấy 2 chai tầm 200k trên Shopee",
+            "khong phai pano y minh la zeo lay 2 chai tam 200k tren shopee",
+        )
+        self.assertEqual(plan.constraints["quantity"], 2)
+        self.assertEqual(plan.constraints["quantity_unit"], "chai")
+        self.assertEqual(plan.constraints["budget_vnd"], 200_000)
+        self.assertEqual(plan.constraints["channels"], ["shopee"])
+        self.assertEqual(plan.constraints["negated_brands"], ["pano"])
+        self.assertEqual(plan.constraints["corrected_brand"], "zeo")
+
+    def test_cfc_dealer_location_is_not_profile_lookup(self):
+        plan = self._plan(
+            "Ở khu vực tôi có đại lý không",
+            "o khu vuc toi co dai ly khong",
+            brand="cfc",
+        )
+        self.assertEqual(plan.intent, "cfc_dealer_location_request")
+        self.assertNotIn("location", plan.constraints)
+
 
 if __name__ == "__main__":
     unittest.main()

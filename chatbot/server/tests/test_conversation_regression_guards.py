@@ -38,6 +38,13 @@ FAQS = {
         "Dạ nhóm lau sàn hiện có Nước lau sàn ZeO và Oplus với 5 hương: "
         "Y Lan, Bạc Hà, Sả Chanh, Hoa Hạ và Baby."
     ),
+    "cfc_dealer_location_request": (
+        "Dạ bạn gửi giúp mình số điện thoại và khu vực/tỉnh thành cụ thể. "
+        "Admin sẽ chuyển nhà phân phối gần nhất liên hệ ạ."
+    ),
+    "cfc_cross_brand_out_of_scope": (
+        "Dạ CFC Cò Bay là thương hiệu phân bón; sản phẩm gia dụng thuộc hệ ZeO/PANO/Oplus."
+    ),
 }
 
 
@@ -220,6 +227,34 @@ class ConversationRegressionGuardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(trace["llm_nlu"]["mode"], "shadow")
         self.assertEqual(trace["llm_nlu"]["status"], "scheduled")
         self.assertFalse(trace["llm_nlu"]["affects_response"])
+
+    async def test_cfc_dealer_location_does_not_fall_into_profile_recall(self):
+        redis_patch, save_patch, faq_patch, nlu_patch = self._common_patches()
+        with redis_patch, save_patch, faq_patch, nlu_patch:
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="dealer-location",
+                text="Ở khu vực tôi có đại lý không",
+            ))
+
+        self.assertEqual(result.intent, "cfc_dealer_location_request")
+        self.assertEqual(result.lead_stage, "collecting_contact")
+        session = chat_pipeline._local_session_cache["cfc:session:messenger:dealer-location"]
+        self.assertEqual(set(session["conversation_state"]["pending_slots"]), {"phone", "area"})
+        self.assertEqual(session["last_trace"]["source_id"], "test:cfc_dealer_location_request")
+
+    async def test_cfc_cross_brand_fast_path_keeps_sheet_source(self):
+        redis_patch, save_patch, faq_patch, nlu_patch = self._common_patches()
+        with redis_patch, save_patch, faq_patch, nlu_patch:
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="cross-brand",
+                text="CFC có nước giặt PANO không",
+            ))
+
+        self.assertEqual(result.intent, "cfc_cross_brand_out_of_scope")
+        trace = chat_pipeline._local_session_cache["cfc:session:messenger:cross-brand"]["last_trace"]
+        self.assertEqual(trace["source_id"], "test:cfc_cross_brand_out_of_scope")
 
 
 if __name__ == "__main__":

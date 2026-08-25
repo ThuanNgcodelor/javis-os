@@ -114,6 +114,45 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
     return entities
 
 
+def _detect_constraints(text: str) -> dict[str, Any]:
+    constraints: dict[str, Any] = {}
+
+    quantity = re.search(r"\b(\d+)\s*(chai|can|tui|goi|thung|hop|bao|bo)\b", text)
+    if quantity:
+        constraints["quantity"] = int(quantity.group(1))
+        constraints["quantity_unit"] = quantity.group(2)
+
+    budget = re.search(r"\b(duoi|tren|tam|khoang|gan)\s*(\d+(?:[.,]\d+)?)\s*(k|nghin|trieu)?\b", text)
+    if budget:
+        value = float(budget.group(2).replace(",", "."))
+        unit = budget.group(3) or ""
+        if unit in {"k", "nghin"}:
+            value *= 1000
+        elif unit == "trieu":
+            value *= 1_000_000
+        constraints["budget_operator"] = budget.group(1)
+        constraints["budget_vnd"] = int(value)
+
+    location = re.search(
+        r"\b(?:o|tai|ve|den|khu vuc|tinh)\s+(can tho|da lat|lam dong|tphcm|ho chi minh|ha noi|da nang)\b",
+        text,
+    )
+    if location:
+        constraints["location"] = location.group(1)
+
+    channels = [channel for channel in ("shopee", "website", "lazada", "facebook", "zalo") if channel in text]
+    if channels:
+        constraints["channels"] = channels
+
+    negated_brand = re.search(r"\bkhong phai\s+(pano|zeo|oplus|zif|cfc|co bay)\b", text)
+    if negated_brand:
+        constraints["negated_brands"] = [negated_brand.group(1)]
+    corrected_brand = re.search(r"\b(?:y minh la|y toi la|ma la)\s+(pano|zeo|oplus|zif|cfc|co bay)\b", text)
+    if corrected_brand:
+        constraints["corrected_brand"] = corrected_brand.group(1)
+    return constraints
+
+
 def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand: str) -> tuple[str, float]:
     mentioned = set(entities.get("mentioned_brands", []))
     if brand == "zeo" and re.search(
@@ -121,6 +160,11 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         text,
     ):
         return "company_contact_information", 0.94
+    if brand == "cfc" and re.search(r"\b(dai ly|nha phan phoi|npp|diem mua)\b", text) and re.search(
+        r"\b(khu vuc|gan|o dau|tinh|thanh pho|cho toi|cho minh|co khong)\b",
+        text,
+    ):
+        return "cfc_dealer_location_request", 0.95
     if {"zeo", "pano", "oplus"}.issubset(mentioned) and re.search(r"\b(khac nhau|hay sao|la sao|cung|thuoc|hang|thuong hieu)\b", text):
         return "brand_ecosystem_overview", 0.90
     if _has_any(text, ["tra hang", "doi tra", "hoan tien", "khieu nai"]):
@@ -181,6 +225,7 @@ def build_query_plan(
     conversation_state = conversation_state or {}
     attrs = _detect_attributes(norm_text)
     entities = _detect_entities(norm_text, query_entities)
+    constraints = _detect_constraints(norm_text)
 
     references: dict[str, Any] = {
         "mentions_previous_turn": bool(
@@ -224,7 +269,7 @@ def build_query_plan(
         entities=entities,
         references=references,
         attributes=attrs,
-        constraints={},
+        constraints=constraints,
         needs_context=needs_context,
         needs_retrieval=not needs_product_tool or intent in {"unknown", "return_policy_or_claim", "agriculture_advisory_query"},
         needs_product_tool=needs_product_tool,

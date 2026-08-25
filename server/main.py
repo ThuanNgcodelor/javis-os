@@ -146,13 +146,13 @@ app.add_middleware(CORSMiddleware,
 
 # Đường dẫn KHÔNG cần đăng nhập. CHỈ các auth endpoint công khai (status/login/setup) -
 # KHÔNG để cả prefix /auth public vì /auth/disable, /auth/logout phải yêu cầu đăng nhập.
-# Bao gồm các endpoint Webhook/Chatbot API để n8n và các gateway bên ngoài gọi vào xử lý:
-_AUTH_PUBLIC_PREFIX = ("/static", "/health", "/api/chat-pipeline", "/sync", "/search", "/rewrite",
+# API chatbot được giữ ở _AUTH_LOCAL_EXACT cho n8n cùng máy, không public qua tunnel.
+_AUTH_PUBLIC_PREFIX = ("/static", "/health", "/sync", "/search", "/rewrite",
                        "/api/shopee", "/legacy-javis", "/javis-control")
 # /brand-logo: hiện trên màn đăng nhập (trước session). /tls-check: Caddy gọi (không đăng nhập được).
 _AUTH_PUBLIC_EXACT = ("/", "/favicon.ico", "/auth/status", "/auth/login", "/auth/setup",
                       "/brand-logo", "/tls-check",
-                      "/api/chat-pipeline", "/sync", "/search", "/rewrite",
+                      "/sync", "/search", "/rewrite",
                       # /hub/mcp: Claude CLI/Codex gọi bằng Bearer hub_token riêng (không có cookie).
                       # /connect/oauth/callback: browser redirect từ provider OAuth về.
                       "/hub/mcp", "/connect/oauth/callback")

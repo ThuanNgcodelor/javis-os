@@ -50,6 +50,7 @@ class ProductLinkFollowupTests(unittest.TestCase):
         self.assertEqual(remembered["rank"], 1)
         self.assertEqual(remembered["price"], "239343")
         self.assertEqual(remembered["shopee_url"], self.product["link_shopee"])
+        self.assertEqual(state["pending_options"][0]["product_id"], "43672853910")
 
     def test_product_that_reference_resolves_to_structured_product(self):
         state = self._state_with_product()

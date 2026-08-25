@@ -1,14 +1,31 @@
-# CFC AI Semantic RAG Server
+# ZeO/CFC Customer Support Runtime
 
-Service Python giúp chatbot ZeO và CFC Cò Bay hiểu ngữ nghĩa tiếng Việt thay vì chỉ đếm từ khoá.
+Runtime Python cho chatbot ZeO và CFC Cò Bay: deterministic routing, conversation state, Shopee matcher, FAQ/RAG, grounding và handoff.
 
 ## Kiến trúc
 
+```text
+Messenger → n8n → Javis :7777/api/chat-pipeline
+                    → message idempotency + sender lease
+                    → QueryPlan + ConversationState + Dialogue Router
+                    → FAQ/RAG hoặc Shopee tool
+                    → Grounding trace + Redis session/history
+                    → Messenger reply hoặc human handoff pause
 ```
-n8n Chatbot → POST /search → FastAPI → Ollama (bge-m3 embed) → Redis Vector Search → Trả kết quả
-                                      ↓
-                            POST /rewrite → Ollama (qwen2.5 rewrite) → Câu trả lời mượt mà
+
+Nhánh Web chỉ được dùng khi khách hỏi trực tiếp; chưa nằm trong recommendation/ranking chủ động.
+
+## Kiểm thử hiện hành
+
+```bash
+cd /Users/hyden/Documents/David-nguyen/javis-os
+LLM_NLU_MODE=off .venv/bin/python -m unittest discover -s chatbot/server/tests -p 'test_*.py' -v
+LLM_NLU_MODE=off .venv/bin/python chatbot/server/conversation_replay_eval.py
+npx n8nac skills validate workflows/local-n8n/zeo_chatbot.workflow.ts
+npx n8nac skills validate workflows/local-n8n/cfc_cobay_chatbot.workflow.ts
 ```
+
+Replay dùng sender/message ID riêng và tự dọn session test. NLU vẫn ở `shadow`; grounding policy ở `audit`.
 
 ## Cài đặt
 
@@ -27,7 +44,7 @@ Mở file `settings.json` và điền password Redis:
 ### Bước 2: Tạo môi trường Python
 
 ```bash
-cd ChatbotN8n/javis/server
+cd /Users/hyden/Documents/David-nguyen/javis-os
 
 # Tạo virtual environment
 python3 -m venv .venv
@@ -54,12 +71,12 @@ ollama pull bge-m3
 ### Bước 4: Chạy server
 
 ```bash
-cd ChatbotN8n/javis/server
+cd /Users/hyden/Documents/David-nguyen/javis-os
 source .venv/bin/activate
-python main.py
+./bin/start-all.sh
 ```
 
-Server chạy tại: `http://localhost:8000`
+Javis bridge chạy tại `http://127.0.0.1:7777`. `/api/chat-pipeline` chỉ miễn đăng nhập cho request localhost.
 
 ### Bước 5: Đồng bộ dữ liệu FAQ vào Vector Index
 

@@ -10,14 +10,34 @@ Phạm vi: `chatbot/server/`, bridge Javis OS, hai workflow Messenger ZeO/CFC v�
 - Chưa bật `assist`. Model chỉ được phép đề xuất intent/tool, không được tự tạo giá, link, chính sách, tồn kho, công dụng hoặc liều lượng.
 - Không có cơ chế tự học rồi tự đưa lên production. Mọi intent muốn chuyển từ `shadow` sang `assist` phải có dữ liệu đánh giá, chủ hệ thống duyệt và rollout canary riêng.
 - ZeO và CFC dùng chung hạ tầng nhưng giữ policy, dữ liệu và bộ test riêng. CFC không tự deploy từ kế hoạch này.
+- Nhánh Web tạm hoãn đào sâu. Chatbot chỉ dùng khi khách hỏi trực tiếp; chưa hợp nhất ranking Web/Shopee và chưa chủ động đề xuất Web.
 
-## Hiện trạng đã đối chiếu
+## Trạng thái triển khai local 2026-08-25
 
-1. `server/main.py` đang miễn đăng nhập cho `/api/chat-pipeline`; n8n gọi qua localhost nhưng endpoint cũng nằm trong nhóm public của Javis.
-2. Hai workflow `zeo_chatbot.workflow.ts` và `cfc_cobay_chatbot.workflow.ts` đã lấy `messaging.message.mid` và gửi `message_id`, nhưng `ChatPipelineRequest.message_id` chưa được dùng để chống xử lý lặp.
-3. `chat_pipeline.py` có lock theo sender và cache trong RAM. Những cơ chế này chỉ bảo vệ trong một process; việc lưu session Redis lại chạy nền nên chưa có tính nguyên tử giữa nhiều worker hoặc khi process dừng.
-4. `QueryPlan.constraints` luôn là `{}`. QueryPlan hiện chủ yếu phục vụ trace và một phần routing, chưa phải hợp đồng điều phối duy nhất.
-5. `conversation_state.recent_turns` đã được lưu, còn các nhánh gọi AI chưa truyền lịch sử thật một cách nhất quán.
+| Hạng mục | Trạng thái | Bằng chứng |
+|---|---|---|
+| Gold multi-turn replay | Đã triển khai | `conversation_replay_eval.py`, 11 cuộc/19 lượt live đạt 100%, source coverage 100% |
+| Idempotency Messenger | Đã triển khai local | Redis lease + response cache; smoke cùng MID trả `processed` rồi `duplicate=true/cached` |
+| Conversation store | Đã triển khai local | Lưu Redis trước khi trả API, history TTL/limit, revision, sender lease, cache TTL/LRU |
+| ConversationState v2 | Đã triển khai | pending action/question/slots/options, topic stack, corrections, takeover state |
+| QueryPlan/router | Đã triển khai bước đầu | quantity, budget, channel, location, phủ định/sửa ý; router xử lý correction, unresolved ordinal, dealer và pending link |
+| Lịch sử cho AI | Đã triển khai có giới hạn | Tối đa 6 turn, che phone/email, chỉ dùng khi đã có facts/catalog |
+| Grounding policy | Audit | Trace `grounded/safe_fallback/missing_source`; chưa bật enforce production |
+| Human handoff | Đã triển khai local | `pending`, `suppress_send`, API list/resolve; workflow local đã chặn gửi khi takeover |
+| API chatbot | Localhost-only | Bỏ `/api/chat-pipeline` khỏi public auth paths; n8n local vẫn gọi `127.0.0.1` |
+| Javis Reports governance | Chưa triển khai | Chờ đủ observation và phase API/UI có audit trước khi cho phép gắn nhãn hoặc duyệt intent |
+| NLU assist | Chưa bật | Vẫn `shadow`; cần report, nhãn người duyệt và canary riêng |
+| Web catalog nâng cao | Tạm hoãn | Theo quyết định chủ hệ thống |
+
+Kiểm thử local hiện tại: 66/66 unit chatbot, 3/3 bridge runtime, security suite đạt, hai workflow đạt `n8nac skills validate`. Chưa push/deploy hai workflow Messenger.
+
+## Hiện trạng ban đầu đã đối chiếu
+
+1. `server/main.py` từng miễn đăng nhập cho `/api/chat-pipeline`; n8n gọi qua localhost nhưng endpoint cũng nằm trong nhóm public của Javis.
+2. Hai workflow `zeo_chatbot.workflow.ts` và `cfc_cobay_chatbot.workflow.ts` đã lấy `messaging.message.mid` và gửi `message_id`, nhưng trước phase này `ChatPipelineRequest.message_id` chưa được dùng để chống xử lý lặp.
+3. `chat_pipeline.py` ban đầu chỉ có lock theo sender và cache trong RAM; việc lưu session Redis chạy nền nên chưa nhất quán giữa nhiều worker hoặc khi process dừng.
+4. `QueryPlan.constraints` ban đầu luôn là `{}` và chưa tham gia điều phối các route quan trọng.
+5. `conversation_state.recent_turns` đã được lưu, nhưng các nhánh gọi AI trước đây chưa truyền lịch sử thật một cách nhất quán.
 6. Workflow kiến thức đã ghi `zeo:web:catalog:active`; chatbot hiện chỉ tải Shopee catalog, nên nhánh Web chưa trở thành nguồn truy xuất thực tế.
 7. Javis đã có `ai_reporter.py`, `/admin/reports/*` và trang Reports. Có thể mở rộng đúng chỗ này để chủ hệ thống duyệt, không cần dựng thêm một dashboard độc lập.
 
@@ -71,6 +91,8 @@ Phạm vi: `chatbot/server/`, bridge Javis OS, hai workflow Messenger ZeO/CFC v�
 
 ## Phase 1: Bảo vệ API và chống xử lý trùng
 
+Trạng thái: đã triển khai local theo phương án localhost-only và Redis idempotency. HMAC/service credential chưa cần cho n8n cùng máy; phải bổ sung nếu sau này cho gateway ngoài máy gọi endpoint.
+
 ### Thứ tự làm
 
 1. Thêm xác thực service ở bridge Javis, chạy chế độ audit-only trong local test.
@@ -91,6 +113,8 @@ Phạm vi: `chatbot/server/`, bridge Javis OS, hai workflow Messenger ZeO/CFC v�
 Chủ hệ thống xem log canary local và duyệt thời điểm đổi credential workflow. Rollback bằng cách trả workflow về credential revision trước; không rollback bằng cách để endpoint public vô thời hạn.
 
 ## Phase 2: Javis Reports, gắn nhãn và duyệt
+
+Trạng thái: chưa triển khai API/UI governance. Chỉ bắt đầu sau khi shadow có đủ mẫu; báo cáo kinh doanh hiện tại không được dùng thay cho dữ liệu gắn nhãn và quyết định audit.
 
 ### Báo cáo cần hiển thị
 
@@ -125,6 +149,8 @@ Chủ hệ thống xem log canary local và duyệt thời điểm đổi creden
 
 ## Phase 3: Conversation store nhất quán
 
+Trạng thái: đã triển khai local. CAS hiện được bảo vệ bằng sender lease phân tán + revision; grounding enforce vẫn là gate riêng.
+
 ### Code
 
 - Tạo `conversation_store.py` làm chủ sở hữu duy nhất của load/save/finalize state.
@@ -145,6 +171,8 @@ Chạy dual-read/dual-write một thời gian. Store mới có feature flag; rol
 
 ## Phase 4: QueryPlan và Dialogue Router
 
+Trạng thái: đã chuyển các route correction, unresolved ordinal, CFC dealer và pending link. Các intent còn lại vẫn chạy legacy và tiếp tục chuyển từng họ sau replay shadow.
+
 ### Code
 
 - `query_understanding.py` chỉ trích xuất intent/entities/references/constraints, tuyệt đối không sinh fact.
@@ -161,6 +189,8 @@ Chạy dual-read/dual-write một thời gian. Store mới có feature flag; rol
 
 ## Phase 5: Web catalog và Grounding Policy
 
+Trạng thái: Grounding Policy đang audit. Phần Web catalog nâng cao tạm hoãn; không chủ động hợp nhất Web/Shopee.
+
 ### Code
 
 - `web_catalog.py` đọc snapshot Web, validate schema/version và cảnh báo stale.
@@ -176,6 +206,8 @@ Chạy dual-read/dual-write một thời gian. Store mới có feature flag; rol
 - ZeO và CFC chạy eval riêng; CFC thiếu catalog không được mượn fact ZeO.
 
 ## Phase 6: Handoff và assist canary
+
+Trạng thái: handoff local đã có state, pause và API resolve. Assist canary chưa bật và không được tự bật từ thay đổi này.
 
 ### Cách bật
 
@@ -208,9 +240,12 @@ Javis chịu trách nhiệm tập hợp bằng chứng và lưu audit. Quyết �
 
 ```bash
 cd /Users/hyden/Documents/David-nguyen/javis-os
-.venv/bin/python -m py_compile server/legacy_javis_runtime.py chatbot/server/nlu_shadow.py chatbot/server/chat_pipeline.py chatbot/server/ai_engine.py
+.venv/bin/python -m py_compile server/legacy_javis_runtime.py chatbot/server/chat_pipeline.py chatbot/server/ai_engine.py chatbot/server/query_understanding.py chatbot/server/conversation_store.py chatbot/server/message_idempotency.py chatbot/server/dialogue_router.py chatbot/server/grounding_policy.py chatbot/server/conversation_replay_eval.py
 LLM_NLU_MODE=off .venv/bin/python -m unittest discover -s chatbot/server/tests -p 'test_*.py' -v
-PYTHONPATH=tests/python .venv/bin/python -c 'import test_legacy_javis_runtime as t; t.test_legacy_javis_status_points_to_existing_runtime(); t.test_legacy_javis_modules_load()'
+PYTHONPATH=tests/python .venv/bin/python -c 'import test_legacy_javis_runtime as t; t.test_legacy_javis_status_points_to_existing_runtime(); t.test_legacy_javis_modules_load(); t.test_handoff_list_and_resolve_update_redis_and_runtime_cache()'
+.venv/bin/python chatbot/server/conversation_replay_eval.py
+npx n8nac skills validate workflows/local-n8n/zeo_chatbot.workflow.ts
+npx n8nac skills validate workflows/local-n8n/cfc_cobay_chatbot.workflow.ts
 ./bin/start-all.sh
 npx n8nac push workflows/local-n8n/zeo_chatbot.workflow.ts --verify
 ```

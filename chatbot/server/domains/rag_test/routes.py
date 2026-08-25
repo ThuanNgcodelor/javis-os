@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from typing import Optional
+import uuid
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
@@ -28,7 +29,13 @@ class ChatPipelineDebugRequest(BaseModel):
     sender_id: str = "debug_dashboard"
     text: str
     fb_name: Optional[str] = "Dashboard Debug"
+    message_id: Optional[str] = ""
     include_rag: bool = True
+
+
+def _debug_message_id(req: ChatPipelineDebugRequest) -> str:
+    explicit = str(req.message_id or "").strip()
+    return explicit or f"dashboard-debug:{uuid.uuid4().hex}"
 
 
 @router.post("/chat-pipeline")
@@ -96,7 +103,7 @@ async def test_chat_pipeline_endpoint(req: ChatPipelineDebugRequest):
         sender_id=sender_id,
         text=raw_text,
         fb_name=req.fb_name or "Dashboard Debug",
-        message_id="dashboard-debug",
+        message_id=_debug_message_id(req),
     )
     pipeline_res = await process_chat_pipeline(pipeline_req)
 
