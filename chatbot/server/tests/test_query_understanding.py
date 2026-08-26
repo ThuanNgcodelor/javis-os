@@ -108,6 +108,43 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(plan.intent, "cfc_dealer_location_request")
         self.assertNotIn("location", plan.constraints)
 
+    def test_near_dealer_is_not_misclassified_as_price(self):
+        plan = self._plan(
+            "Tôi ở gần chợ Ô Môn, muốn mua 10 bao phân NPK Oplus thì ghé đại lý nào gần nhất?",
+            "toi o gan cho o mon muon mua 10 bao phan npk oplus thi ghe dai ly nao gan nhat",
+            brand="cfc",
+        )
+        self.assertEqual(plan.intent, "cfc_dealer_location_request")
+        self.assertNotIn("price", plan.attributes)
+
+    def test_cfc_operational_intents_and_entities(self):
+        cases = [
+            (
+                "NPK 16-16-8 TE bao 50kg trong kho còn nhiều không, lấy 5 tấn có liền không?",
+                "npk 16 16 8 te bao 50kg trong kho con nhieu khong lay 5 tan co lien khong",
+                "cfc_inventory_request",
+                {"formula": "16-16-8 TE", "variant": "50kg"},
+            ),
+            (
+                "Tra cứu đơn #DH-2026-889 xe bốc chưa?",
+                "tra cuu don dh 2026 889 xe boc chua",
+                "cfc_order_status_request",
+                {"order_id": "DH-2026-889"},
+            ),
+            (
+                "Sầu riêng nuôi trái non bị rụng hạt chuỗi, bón liều sao?",
+                "sau rieng nuoi trai non bi rung hat chuoi bon lieu sao",
+                "cfc_agronomy_review_request",
+                {"crop": "sau rieng", "crop_stage": "nuoi trai non", "symptom": "rung hat chuoi"},
+            ),
+        ]
+        for raw, normalized, expected_intent, expected_entities in cases:
+            with self.subTest(raw=raw):
+                plan = self._plan(raw, normalized, brand="cfc")
+                self.assertEqual(plan.intent, expected_intent)
+                for key, value in expected_entities.items():
+                    self.assertEqual(plan.entities[key], value)
+
 
 if __name__ == "__main__":
     unittest.main()

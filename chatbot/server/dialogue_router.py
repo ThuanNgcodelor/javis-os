@@ -74,12 +74,52 @@ def build_route_decision(
             confidence=plan.intent_confidence,
         )
 
+    if plan.intent == "cfc_contact_information_request":
+        return RouteDecision(
+            action="tool",
+            tool="faq_by_intent",
+            intent="cfc_contact_information_unavailable",
+            reason="CFC_CONTACT_REQUIRES_VERIFIED_SOURCE",
+            confidence=plan.intent_confidence,
+        )
+
     if plan.intent == "cfc_dealer_location_request":
         return RouteDecision(
             action="tool",
             tool="faq_by_intent",
             intent=plan.intent,
             reason="DEALER_LOCATION_LOOKUP",
+            confidence=plan.intent_confidence,
+        )
+
+    if plan.brand == "cfc" and plan.intent in {
+        "cfc_price_unverified",
+        "cfc_agronomy_review_request",
+    }:
+        target_intent = (
+            "cfc_dosage_usage_review"
+            if plan.intent == "cfc_agronomy_review_request"
+            else plan.intent
+        )
+        return RouteDecision(
+            action="tool",
+            tool="faq_by_intent",
+            intent=target_intent,
+            reason="GROUNDED_CFC_FAQ",
+            confidence=plan.intent_confidence,
+        )
+
+    capability_intents = {
+        "cfc_inventory_request": "cfc_inventory_unavailable",
+        "cfc_order_status_request": "cfc_order_status_unavailable",
+        "cfc_loyalty_lookup_request": "cfc_loyalty_unavailable",
+        "cfc_wholesale_policy_request": "cfc_wholesale_policy_unverified",
+    }
+    if plan.brand == "cfc" and plan.intent in capability_intents:
+        return RouteDecision(
+            action="capability_boundary",
+            intent=capability_intents[plan.intent],
+            reason="OPERATIONAL_TOOL_NOT_CONNECTED",
             confidence=plan.intent_confidence,
         )
 

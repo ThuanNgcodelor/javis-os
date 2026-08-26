@@ -30,6 +30,16 @@ def _claim_type(intent: str) -> str:
         return "policy"
     if any(term in value for term in ("dosage", "safety", "certification", "technology")):
         return "technical_or_safety"
+    if any(term in value for term in ("inventory", "availability", "stock")):
+        return "inventory"
+    if any(term in value for term in ("order_status", "order_tracking")):
+        return "order_status"
+    if any(term in value for term in ("loyalty", "points")):
+        return "customer_account"
+    if "dealer_location" in value:
+        return "dealer_directory"
+    if any(term in value for term in ("wholesale", "discount")):
+        return "commercial_policy"
     return "general"
 
 

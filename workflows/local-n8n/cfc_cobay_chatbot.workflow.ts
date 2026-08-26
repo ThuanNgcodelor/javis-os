@@ -69,6 +69,9 @@ let text = '';
 let senderId = '';
 let messageId = '';
 let hasAttachment = false;
+let attachmentType = '';
+let latitude = null;
+let longitude = null;
 let isEcho = false;
 
 const messaging = data?.messaging?.[0]
@@ -81,18 +84,36 @@ if (messaging) {
   text = messaging?.message?.text || messaging?.message?.quick_reply?.payload || '';
   senderId = messaging?.sender?.id || '';
   messageId = messaging?.message?.mid || '';
-  hasAttachment = Boolean(messaging?.message?.attachments?.length);
+  const attachments = Array.isArray(messaging?.message?.attachments)
+    ? messaging.message.attachments
+    : [];
+  hasAttachment = attachments.length > 0;
+  const firstAttachment = attachments[0] || null;
+  attachmentType = firstAttachment?.type || '';
+  const locationAttachment = attachments.find((item) => item?.type === 'location') || null;
+  const coordinates = locationAttachment?.payload?.coordinates || null;
+  const candidateLatitude = Number(coordinates?.lat);
+  const candidateLongitude = Number(coordinates?.long ?? coordinates?.lng);
+  if (Number.isFinite(candidateLatitude) && Number.isFinite(candidateLongitude)) {
+    latitude = candidateLatitude;
+    longitude = candidateLongitude;
+    attachmentType = 'location';
+  }
   isEcho = Boolean(messaging?.message?.is_echo);
 }
 
 const emptyInput = !text || !text.trim();
+const hasLocation = latitude !== null && longitude !== null;
 
 return [{ json: {
   text: text.trim(),
   senderId,
   messageId,
   emptyInput,
-  inputKind: emptyInput ? (hasAttachment ? 'attachment' : 'empty') : 'text',
+  inputKind: hasLocation ? 'location' : (emptyInput ? (hasAttachment ? 'attachment' : 'empty') : 'text'),
+  attachmentType,
+  latitude,
+  longitude,
   isEcho,
 } }];
 `,
@@ -112,7 +133,7 @@ return [{ json: {
         sendBody: true,
         specifyBody: 'json',
         jsonBody:
-            '={{ { brand: "cfc", sender_id: $json.senderId, text: $json.text, fb_name: $json.fb_name || "", message_id: $json.messageId || "" } }}',
+            '={{ { brand: "cfc", sender_id: $json.senderId, text: $json.text, fb_name: $json.fb_name || "", message_id: $json.messageId || "", input_kind: $json.inputKind || "text", attachment_type: $json.attachmentType || "", latitude: $json.latitude, longitude: $json.longitude } }}',
         options: {
             timeout: 8000,
         },

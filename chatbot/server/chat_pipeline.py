@@ -201,6 +201,36 @@ AREA_KEYWORDS = [
     "an giang", "dong thap", "soc trang", "bac lieu", "ca mau", "hau giang", "vinh long", "tien giang",
 ]
 
+CFC_GOAL_BY_INTENT = {
+    "cfc_dealer_location_request": "dealer_lookup",
+    "cfc_dealer_location_received": "dealer_lookup",
+    "cfc_dealer_location_unavailable": "dealer_lookup",
+    "cfc_inventory_request": "inventory_check",
+    "cfc_inventory_unavailable": "inventory_check",
+    "cfc_order_status_request": "order_tracking",
+    "cfc_order_status_unavailable": "order_tracking",
+    "cfc_loyalty_lookup_request": "loyalty_lookup",
+    "cfc_loyalty_unavailable": "loyalty_lookup",
+    "cfc_wholesale_policy_request": "wholesale_policy",
+    "cfc_wholesale_policy_unverified": "wholesale_policy",
+    "wholesale_dealer": "wholesale_policy",
+    "cfc_price_unverified": "price_quote",
+    "cfc_dosage_usage_review": "agronomy_consultation",
+    "cfc_crop_consultation_request": "agronomy_consultation",
+    "cfc_agronomy_review_request": "agronomy_consultation",
+    "cfc_rice_fertilizer_guide": "agronomy_consultation",
+}
+
+CFC_REQUIRED_SLOTS = {
+    "dealer_lookup": ("phone", "area"),
+    "inventory_check": ("phone", "area", "product"),
+    "order_tracking": ("phone", "order_id"),
+    "loyalty_lookup": ("phone",),
+    "wholesale_policy": ("phone", "area"),
+    "price_quote": ("phone", "area", "crop", "product"),
+    "agronomy_consultation": ("phone", "area", "crop", "crop_stage"),
+}
+
 SENSITIVE_KEYWORDS = [
     "hoan tien", "doi tra", "khieu nai", "lua dao", "san pham loi", "hang gia", "tai khoan ngan hang", "chuyen khoan", "so tai khoan"
 ]
@@ -340,8 +370,80 @@ def _normalize_vn(text: str) -> str:
     return " ".join(tokens)
 
 
+def _sanitize_area_candidate(value: str) -> str:
+    candidate = re.sub(r"\s+", " ", str(value or "")).strip(" \t\r\n,.;:?!")
+    if not candidate:
+        return ""
+
+    candidate = re.split(
+        r"(?i)(?:,\s*)?\b(muốn mua|muon mua|cần mua|can mua|có đại lý|co dai ly|"
+        r"có nhà phân phối|co nha phan phoi|giao tận|giao tan|ghé đại lý|ghe dai ly|"
+        r"kiểm tra|kiem tra|cho anh|cho mình|cho minh|cho tôi|cho toi|để mua|de mua|"
+        r"thì nên|thi nen|không shop|khong shop)\b",
+        candidate,
+        maxsplit=1,
+    )[0].strip(" ,.;:?!")
+    candidate = re.sub(
+        r"(?i)^(?:tôi|minh|mình|em|anh|chị|chi|bên mình|ben minh)\s+(?:ở|o|tại|tai)\s+",
+        "",
+        candidate,
+    )
+    candidate = re.sub(r"(?i)^(?:ở|o|tại|tai|khu vực|khu vuc)\s+", "", candidate)
+    candidate = re.sub(r"(?i)^gần\s+", "", candidate)
+    candidate = re.sub(r"(?i)\s+(?:gần nhất|gan nhat|nhất|nhat|đây|day)$", "", candidate).strip(" ,.;:?!")
+
+    normalized = _normalize_vn(candidate)
+    forbidden = (
+        "muon mua", "co dai ly", "co nha phan phoi", "giao tan nha",
+        "kiem tra giup", "bao gia", "san pham nao", "khong shop",
+    )
+    if not candidate or len(normalized.split()) > 12 or any(term in normalized for term in forbidden):
+        return ""
+    return candidate
+
+
+def _extract_area_from_text(text: str, norm: str) -> str:
+    patterns = [
+        r"(?i)\b(?:khu vực|khu vuc)\s+((?:xã|xa|phường|phuong|huyện|huyen|quận|quan|"
+        r"thị xã|thi xa|thành phố|thanh pho|tỉnh|tinh)\s+[^?!.]{2,90})",
+        r"(?i)\b(?:tôi|toi|mình|minh|em|anh|chị|chi)\s+(?:ở|o|tại|tai)\s+([^?!.]{2,90})",
+        r"(?i)\b(?:ở|o|tại|tai)\s+((?:gần|gan\s+)?[^?!.]{2,90})",
+        r"(?i)\b(?:gần|gan)\s+([^?!.]{2,60}?)(?:\s+(?:nhất|nhat)\b|[,?!.]|$)",
+        r"(?i)\bbên\s+đại\s+lý\s+([^?!.]{2,60})",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            area = _sanitize_area_candidate(match.group(1))
+            if area:
+                return area
+
+    # Tin nhắn chỉ chứa một địa danh có trong danh sách chuẩn.
+    if len(norm.split()) <= 8:
+        for keyword in sorted(AREA_KEYWORDS, key=len, reverse=True):
+            if re.search(rf"\b{re.escape(keyword)}\b", norm):
+                return _sanitize_area_candidate(text)
+    return ""
+
+
+def _sanitize_stored_area(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    normalized = _normalize_vn(raw)
+    extracted = _extract_area_from_text(raw, normalized)
+    if extracted:
+        return extracted
+    if len(normalized.split()) <= 12 and not re.search(
+        r"\b(muon mua|co dai ly|giao tan|kiem tra|bao gia|san pham|khong shop)\b",
+        normalized,
+    ):
+        return _sanitize_area_candidate(raw)
+    return ""
+
+
 def _extract_phone_and_area(text: str, norm: str) -> Tuple[str, str]:
-    """Trích xuất SĐT và Khu vực địa chỉ."""
+    """Trích xuất SĐT và khu vực theo cụm ngắn, không lưu nguyên câu hỏi."""
     phone_match = PHONE_REGEX.search(text)
     phone = phone_match.group(0).strip() if phone_match else ""
     if not phone:
@@ -366,30 +468,292 @@ def _extract_phone_and_area(text: str, norm: str) -> Tuple[str, str]:
         return phone, area
 
     text_without_phone = text.replace(phone, "").strip() if phone else text
-    norm_without_phone = _normalize_vn(text_without_phone)
-    area_tokens = {"tinh", "tp", "huyen", "quan", "xa", "phuong", "thi", "mien", "tphcm"}
-    norm_tokens = set(norm.split())
-    has_named_area = any(k in norm for k in AREA_KEYWORDS if len(k) > 2)
-    has_area_token = bool(norm_tokens & area_tokens)
-    has_area_phrase = bool(re.search(r"(^|\s)(minh|em|toi|anh|chi|ben minh)\s+(o|tai)\s+[a-z0-9]", norm))
-    has_prefixed_area = bool(re.search(r"(^|\s)(o|tai|khu vuc)\s+(tinh|tp|huyen|quan|xa|phuong|thanh pho)?\s*[a-z0-9]", norm))
-    if has_named_area or has_area_token or has_area_phrase or has_prefixed_area:
-        cleaned = re.sub(
-            r"(?i)\b(sdt|ssdt|số điện thoại|so dien thoai|điện thoại|dien thoai|của tôi|cua toi|của mình|cua minh|của em|cua em|là|la|liên hệ|lien he|gọi tôi|goi toi|gọi mình|goi minh|nhé|nhe|nha)\b",
-            " ",
-            text_without_phone,
-        )
-        cleaned = re.sub(r"[\s,./:-]+", " ", cleaned).strip()
-        cleaned_norm = _normalize_vn(cleaned)
-        if cleaned and cleaned_norm not in {"", "toi", "minh", "em", "anh", "chi"}:
-            area = cleaned
+    area = _extract_area_from_text(text_without_phone, _normalize_vn(text_without_phone))
 
     return phone, area
 
 
+def _active_goal_name(state: dict[str, Any]) -> str:
+    active_goal = state.get("active_goal") or {}
+    if isinstance(active_goal, str):
+        return active_goal
+    if isinstance(active_goal, dict):
+        return str(active_goal.get("name") or "")
+    return ""
+
+
+def _extract_cfc_confirmed_slots(
+    user_message: str,
+    query_entities: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    norm = _normalize_vn(user_message)
+    phone, area = _extract_phone_and_area(user_message, norm)
+    slots: dict[str, Any] = {}
+    if phone:
+        slots["phone"] = phone
+    if area:
+        slots["area"] = area
+
+    formula_match = re.search(
+        r"\b(?:npk\s+)?(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})(?:\s+(te))?\b",
+        norm,
+    )
+    if formula_match:
+        formula = "-".join(formula_match.group(index) for index in range(1, 4))
+        if formula_match.group(4):
+            formula += " TE"
+        slots["formula"] = formula
+        slots["product"] = f"NPK {formula}"
+    elif re.search(r"\bnpk\s+chuyen lua\b", norm):
+        slots["product"] = "NPK chuyên lúa"
+    elif query_entities and query_entities.get("product"):
+        slots["product"] = str(query_entities["product"])
+
+    package_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(kg|g)\b", norm)
+    if package_match:
+        slots["package"] = f"{package_match.group(1)}{package_match.group(2)}"
+
+    quantity_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(bao|tan|thung)\b", norm)
+    if quantity_match:
+        unit = {"tan": "tấn"}.get(quantity_match.group(2), quantity_match.group(2))
+        slots["quantity"] = f"{quantity_match.group(1)} {unit}"
+
+    order_match = re.search(r"\b(?:ma\s+don\s+)?#?dh\s+(\d{4})\s+(\d+)\b", norm)
+    if order_match:
+        slots["order_id"] = f"DH-{order_match.group(1)}-{order_match.group(2)}"
+
+    crop_labels = {
+        "sau rieng": "sầu riêng",
+        "lua": "lúa",
+        "cay an trai": "cây ăn trái",
+        "rau mau": "rau màu",
+        "ca phe": "cà phê",
+        "tieu": "tiêu",
+        "buoi": "bưởi",
+        "cam": "cam",
+        "xoai": "xoài",
+        "mit": "mít",
+        "thanh long": "thanh long",
+    }
+    for term, label in crop_labels.items():
+        if re.search(rf"\b{term}\b", norm):
+            slots["crop"] = label
+            break
+
+    stage_labels = {
+        "nuoi trai non": "nuôi trái non",
+        "trai non": "trái non",
+        "xu ly ra hoa": "xử lý ra hoa",
+        "ra hoa": "ra hoa",
+        "dau trai": "đậu trái",
+        "nuoi trai": "nuôi trái",
+        "xuong giong": "xuống giống",
+        "de nhanh": "đẻ nhánh",
+        "lam dong": "làm đòng",
+    }
+    for term, label in stage_labels.items():
+        if re.search(rf"\b{term}\b", norm):
+            slots["crop_stage"] = label
+            break
+
+    symptom_labels = {
+        "rung hat chuoi": "rụng hạt chuỗi",
+        "rung trai non": "rụng trái non",
+        "vang la": "vàng lá",
+        "thoi re": "thối rễ",
+        "xoan la": "xoăn lá",
+        "cham lon": "chậm lớn",
+    }
+    for term, label in symptom_labels.items():
+        if re.search(rf"\b{term}\b", norm):
+            slots["symptom"] = label
+            break
+
+    acreage_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(hecta|ha|cong)\b", norm)
+    if acreage_match:
+        unit = "ha" if acreage_match.group(2) in {"hecta", "ha"} else "công"
+        slots["acreage"] = f"{acreage_match.group(1)} {unit}"
+
+    dealer_level = re.search(r"\bdai ly cap\s*(\d+)\b", norm)
+    if dealer_level:
+        slots["dealer_level"] = f"cấp {dealer_level.group(1)}"
+    return slots
+
+
+def _cfc_missing_slots(goal: str, confirmed_slots: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for slot in CFC_REQUIRED_SLOTS.get(goal, ()):
+        if slot == "area":
+            location = confirmed_slots.get("location") or {}
+            if confirmed_slots.get("area") or (
+                isinstance(location, dict)
+                and location.get("latitude") is not None
+                and location.get("longitude") is not None
+            ):
+                continue
+        elif slot == "product":
+            if confirmed_slots.get("product") or confirmed_slots.get("formula"):
+                continue
+        elif confirmed_slots.get(slot):
+            continue
+        missing.append(slot)
+    return missing
+
+
+def _merged_cfc_slots(
+    state: dict[str, Any],
+    user_message: str,
+    *,
+    phone: str = "",
+    area: str = "",
+    query_entities: Optional[dict[str, Any]] = None,
+    location: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    slots = dict(state.get("confirmed_slots") or {})
+    slots.update(_extract_cfc_confirmed_slots(user_message, query_entities))
+    if phone:
+        slots["phone"] = phone
+    if area:
+        slots["area"] = area
+    if location:
+        slots["location"] = location
+    return slots
+
+
+def _mask_phone(phone: str) -> str:
+    digits = re.sub(r"\D", "", str(phone or ""))
+    if len(digits) < 4:
+        return "số bạn vừa gửi"
+    return f"***{digits[-4:]}"
+
+
+def _is_phone_only_submission(text: str, phone: str) -> bool:
+    if not phone:
+        return False
+    remainder = text.replace(phone, " ")
+    normalized = _normalize_vn(remainder)
+    normalized = re.sub(
+        r"\b(so dien thoai|dien thoai|sdt|so cua toi|so cua minh|cua toi|cua minh|"
+        r"toi la|minh la|la|day|nhe|nha|a)\b",
+        " ",
+        normalized,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    if not normalized:
+        return True
+    # Cho phép khách gửi kèm đúng một cụm địa bàn, nhưng không nuốt câu hỏi nghiệp vụ.
+    _, submitted_area = _extract_phone_and_area(text, _normalize_vn(text))
+    return bool(submitted_area and _normalize_vn(submitted_area) == normalized)
+
+
+def _cfc_context_summary(goal: str, slots: dict[str, Any]) -> str:
+    field_order = {
+        "dealer_lookup": ("area",),
+        "inventory_check": ("product", "package", "quantity", "area"),
+        "order_tracking": ("order_id",),
+        "loyalty_lookup": ("phone",),
+        "wholesale_policy": ("dealer_level", "area"),
+        "price_quote": ("product", "package", "crop", "area"),
+        "agronomy_consultation": ("crop", "crop_stage", "symptom", "acreage", "area"),
+    }
+    labels = {
+        "product": "sản phẩm",
+        "package": "quy cách",
+        "quantity": "số lượng",
+        "order_id": "mã đơn",
+        "phone": "SĐT",
+        "dealer_level": "hạng đại lý",
+        "crop": "cây trồng",
+        "crop_stage": "giai đoạn",
+        "symptom": "hiện tượng",
+        "acreage": "diện tích",
+        "area": "khu vực",
+    }
+    parts: list[str] = []
+    for field in field_order.get(goal, ()):
+        value = slots.get(field)
+        if not value:
+            continue
+        rendered = _mask_phone(str(value)) if field == "phone" else str(value)
+        parts.append(f"{labels[field]} {rendered}")
+    return "; ".join(parts)
+
+
+def _cfc_missing_slots_prompt(missing_slots: list[str], *, expert: bool = False) -> str:
+    labels = {
+        "phone": "số điện thoại",
+        "area": "khu vực/tỉnh thành",
+        "product": "tên hoặc công thức sản phẩm",
+        "order_id": "mã đơn hàng",
+        "crop": "loại cây trồng",
+        "crop_stage": "giai đoạn cây hiện tại",
+    }
+    missing = [labels.get(slot, slot) for slot in missing_slots]
+    if not missing:
+        return (
+            "Mình đã có đủ dữ kiện tiếp nhận; kỹ sư nông nghiệp cần đối chiếu trước khi đưa khuyến nghị kỹ thuật ạ."
+            if expert
+            else "Mình đã có đủ thông tin tiếp nhận để admin đối chiếu yêu cầu này ạ."
+        )
+    if len(missing) == 1:
+        rendered = missing[0]
+    else:
+        rendered = ", ".join(missing[:-1]) + " và " + missing[-1]
+    owner = "kỹ sư nông nghiệp" if expert else "admin"
+    return f"Bạn gửi thêm {rendered} để {owner} kiểm tra đúng yêu cầu, mình không hỏi lại các thông tin đã có nha."
+
+
+def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any]) -> tuple[str, str]:
+    goal = CFC_GOAL_BY_INTENT.get(intent) or ""
+    context = _cfc_context_summary(goal, slots)
+    context_line = f" Mình đang giữ thông tin: {context}." if context else ""
+    missing_prompt = _cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots))
+
+    if intent == "cfc_inventory_unavailable":
+        answer = (
+            f"Dạ mình hiểu bạn cần kiểm tra tồn kho.{context_line} "
+            "Hệ thống chat Cò Bay hiện chưa kết nối tồn kho realtime nên mình chưa thể xác nhận còn hàng hoặc có hàng liền. "
+            f"{missing_prompt}"
+        )
+        return answer, "INVENTORY_TOOL_NOT_CONNECTED"
+    if intent == "cfc_order_status_unavailable":
+        answer = (
+            f"Dạ mình hiểu bạn cần kiểm tra tiến độ đơn hàng/xe bốc hàng.{context_line} "
+            "Hệ thống chat hiện chưa kết nối dữ liệu đơn hàng và vận tải nên mình chưa thể xác nhận trạng thái thực tế. "
+            f"{missing_prompt}"
+        )
+        return answer, "ORDER_TRACKING_NOT_CONNECTED"
+    if intent == "cfc_loyalty_unavailable":
+        answer = (
+            f"Dạ mình hiểu bạn cần kiểm tra tích điểm hoặc chiết khấu trên hồ sơ của mình.{context_line} "
+            "Hệ thống chat hiện chưa kết nối dữ liệu khách hàng/đại lý nên mình chưa thể xác nhận số điểm hay mức chiết khấu. "
+            f"{missing_prompt}"
+        )
+        return answer, "LOYALTY_SYSTEM_NOT_CONNECTED"
+    answer = (
+        f"Dạ mình hiểu bạn cần bảng giá sỉ và chính sách chiết khấu hiện hành.{context_line} "
+        "Hệ thống hiện tại chưa có bảng mức chiết khấu theo quý đã được phê duyệt, nên mình không tự đưa ra con số. "
+        f"{missing_prompt}"
+    )
+    return answer, "WHOLESALE_POLICY_NOT_VERIFIED"
+
+
+def _build_cfc_agronomy_intake_answer(slots: dict[str, Any]) -> str:
+    goal = "agronomy_consultation"
+    context = _cfc_context_summary(goal, slots)
+    context_line = f" Mình đang ghi nhận: {context}." if context else ""
+    missing_prompt = _cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots), expert=True)
+    return (
+        f"Dạ mình hiểu đây là yêu cầu tư vấn kỹ thuật nông nghiệp.{context_line} "
+        "Công thức NPK và liều lượng phải được đối chiếu theo cây trồng, giai đoạn, hiện trạng vườn và khu vực canh tác. "
+        "Hệ thống hiện tại chưa có phác đồ kỹ thuật đã duyệt cho đúng trường hợp này, nên mình không tự đưa công thức hoặc liều lượng để tránh sai. "
+        f"{missing_prompt}"
+    )
+
+
 def _default_conversation_state(brand: str) -> dict[str, Any]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "brand": brand.upper(),
         "conversation_topic": "",
         "current_intent": "",
@@ -405,6 +769,10 @@ def _default_conversation_state(brand: str) -> dict[str, Any]:
         },
         "last_products_shown": [],
         "customer_constraints": {},
+        "confirmed_slots": {},
+        "active_goal": {"name": "", "stage": ""},
+        "pending_request": {},
+        "last_capability_boundary": {},
         "active_flow": {"name": "", "stage": ""},
         "pending_action": {"name": "", "status": ""},
         "pending_question": "",
@@ -447,6 +815,21 @@ def _load_conversation_state(existing_session: dict, brand: str) -> dict[str, An
         state["last_products_shown"] = []
     if not isinstance(state.get("customer_constraints"), dict):
         state["customer_constraints"] = {}
+    if not isinstance(state.get("confirmed_slots"), dict):
+        state["confirmed_slots"] = {}
+    stored_area = _sanitize_stored_area(str(state["confirmed_slots"].get("area") or ""))
+    if stored_area:
+        state["confirmed_slots"]["area"] = stored_area
+    else:
+        state["confirmed_slots"].pop("area", None)
+    if isinstance(state.get("active_goal"), str):
+        state["active_goal"] = {"name": state["active_goal"], "stage": "active"}
+    elif not isinstance(state.get("active_goal"), dict):
+        state["active_goal"] = {"name": "", "stage": ""}
+    if not isinstance(state.get("pending_request"), dict):
+        state["pending_request"] = {}
+    if not isinstance(state.get("last_capability_boundary"), dict):
+        state["last_capability_boundary"] = {}
     if not isinstance(state.get("active_flow"), dict):
         state["active_flow"] = {"name": "", "stage": ""}
     if not isinstance(state.get("pending_action"), dict):
@@ -893,6 +1276,7 @@ def _build_next_conversation_state(
     reference_resolution: dict[str, Any],
     source_id: str = "",
     products_shown: Optional[list[dict[str, Any]]] = None,
+    state_patch: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     state = _load_conversation_state({"conversation_state": previous_state}, brand)
     now_str = datetime.now(timezone.utc).isoformat()
@@ -970,7 +1354,7 @@ def _build_next_conversation_state(
         state["customer_constraints"]["last_area_hint"] = area_match.group(2).strip()
 
     state["brand"] = brand.upper()
-    state["schema_version"] = 2
+    state["schema_version"] = 3
     state["current_intent"] = intent
     state["current_goal"] = lead_stage or state.get("current_goal", "")
     if intent in RETURN_CONTEXT_INTENTS:
@@ -1007,10 +1391,56 @@ def _build_next_conversation_state(
         state["pending_action"] = {"name": "", "status": ""}
         state["pending_question"] = ""
 
-    if lead_stage == "collecting_contact":
-        state["pending_slots"] = ["phone", "area"]
-    elif lead_stage == "lead_ready":
-        state["pending_slots"] = []
+    cfc_goal = ""
+    if brand.lower() == "cfc":
+        confirmed_slots = dict(state.get("confirmed_slots") or {})
+        confirmed_slots.update(_extract_cfc_confirmed_slots(user_message, query_entities))
+        patch_slots = (state_patch or {}).get("confirmed_slots") if isinstance(state_patch, dict) else {}
+        if isinstance(patch_slots, dict):
+            confirmed_slots.update({key: value for key, value in patch_slots.items() if value not in (None, "")})
+        if confirmed_slots.get("area"):
+            sanitized_area = _sanitize_stored_area(str(confirmed_slots["area"]))
+            if sanitized_area:
+                confirmed_slots["area"] = sanitized_area
+            else:
+                confirmed_slots.pop("area", None)
+        state["confirmed_slots"] = confirmed_slots
+
+        cfc_goal = CFC_GOAL_BY_INTENT.get(intent) or _active_goal_name(state)
+        if cfc_goal:
+            missing_slots = _cfc_missing_slots(cfc_goal, confirmed_slots)
+            capability_boundary = intent.endswith(("_unavailable", "_unverified"))
+            if capability_boundary:
+                goal_stage = "waiting_human_check" if not missing_slots else "collecting_slots"
+            else:
+                goal_stage = "ready_for_handoff" if not missing_slots else "collecting_slots"
+            state["active_goal"] = {
+                "name": cfc_goal,
+                "stage": goal_stage,
+                "updated_at": now_str,
+            }
+            state["current_goal"] = cfc_goal
+            state["pending_slots"] = missing_slots
+            state["pending_request"] = {
+                "goal": cfc_goal,
+                "intent": intent,
+                "status": goal_stage,
+                "missing_slots": missing_slots,
+                "updated_at": now_str,
+            }
+            if capability_boundary:
+                state["last_capability_boundary"] = {
+                    "intent": intent,
+                    "goal": cfc_goal,
+                    "reason": "operational_or_expert_data_not_connected",
+                    "timestamp": now_str,
+                }
+
+    if not cfc_goal:
+        if lead_stage == "collecting_contact":
+            state["pending_slots"] = ["phone", "area"]
+        elif lead_stage == "lead_ready":
+            state["pending_slots"] = []
     if lead_stage == "escalated":
         takeover = state.get("takeover_state") or {}
         if takeover.get("status") != "pending":
@@ -1025,7 +1455,9 @@ def _build_next_conversation_state(
     state["conversation_summary"] = (
         f"Intent gần nhất: {intent}; "
         f"sản phẩm/ngữ cảnh: {state.get('active_entities', {}).get('product') or 'chưa rõ'}; "
-        f"lead_stage: {lead_stage}."
+        f"lead_stage: {lead_stage}; "
+        f"active_goal: {_active_goal_name(state) or 'chưa có'}; "
+        f"confirmed_slots: {', '.join(sorted((state.get('confirmed_slots') or {}).keys())) or 'chưa có'}."
     )
 
     recent_turns = state.get("recent_turns") or []
@@ -1413,6 +1845,10 @@ class ChatPipelineRequest(BaseModel):
     text: str                           # Tin nhắn của khách
     fb_name: Optional[str] = ""         # Tên hiển thị Facebook
     message_id: Optional[str] = ""      # Message ID từ Facebook webhook
+    input_kind: Optional[str] = "text"  # text, location, attachment hoặc empty
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    attachment_type: Optional[str] = ""
 
 
 class ChatPipelineResponse(BaseModel):
@@ -1468,6 +1904,10 @@ async def _detect_and_process_multi_intent(
     lead_stage: str = "new",
 ) -> Optional[ChatPipelineResponse]:
     """Phát hiện và xử lý câu hỏi ghép 2 ý định (Multi-Intent Compound Query)."""
+    # CFC chạy grounded-only. Không tách câu rồi dùng LLM ghép các FAQ độc lập vì
+    # cách này từng tạo câu trả lời địa chỉ/giao hàng không liên quan đến yêu cầu chính.
+    if brand.lower() == "cfc":
+        return None
     # Các câu mô tả triệu chứng/hiệu quả thường dùng dấu phẩy để nối một ý
     # ("ăn da tay, tay bị bong tróc"; "dùng ổn, tẩy được vết máu").
     # Để matcher chuyên biệt xử lý toàn câu thay vì tách nhầm thành 2 intent.
@@ -1606,7 +2046,13 @@ async def _detect_and_process_multi_intent(
 async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineResponse:
     start_time = time.perf_counter()
     brand = req.brand.lower()
-    raw_text = (req.text or "").strip()
+    has_location = bool(
+        req.latitude is not None
+        and req.longitude is not None
+        and -90 <= req.latitude <= 90
+        and -180 <= req.longitude <= 180
+    )
+    raw_text = (req.text or "").strip() or ("Gửi vị trí hiện tại" if has_location else "")
     sender_id = req.sender_id.strip()
     fb_name = (req.fb_name or "").strip()
 
@@ -1624,8 +2070,9 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
     lock_key = f"{brand}:{sender_id}"
     async with _local_sender_lock(lock_key):
         norm_text = _normalize_vn(raw_text)
-        phone, area = _extract_phone_and_area(raw_text, norm_text)
-        has_phone = bool(phone)
+        incoming_phone, incoming_area = _extract_phone_and_area(raw_text, norm_text)
+        phone, area = incoming_phone, incoming_area
+        has_phone = bool(incoming_phone)
 
         # Đọc profile & session cũ từ Redis
         r = await get_redis()
@@ -1656,13 +2103,13 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             or existing_session.get("phone")
             or ""
         )
-        stored_area = (
+        stored_area = _sanitize_stored_area(str(
             existing_profile.get("area")
             or existing_profile.get("customer_location")
             or existing_session.get("customer_location")
             or existing_session.get("area")
             or ""
-        )
+        ))
         if not phone and stored_phone:
             phone = stored_phone
         if not area and stored_area:
@@ -1696,6 +2143,17 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         query_plan_dict = query_plan.to_dict()
         route_decision = build_route_decision(query_plan, conversation_state)
         pipeline_trace_extra: dict[str, Any] = {"dialogue_router": route_decision.to_dict()}
+        state_patch: dict[str, Any] = {"confirmed_slots": {}}
+        if phone:
+            state_patch["confirmed_slots"]["phone"] = phone
+        if area:
+            state_patch["confirmed_slots"]["area"] = area
+        if has_location:
+            state_patch["confirmed_slots"]["location"] = {
+                "latitude": req.latitude,
+                "longitude": req.longitude,
+                "source": "messenger_location",
+            }
 
         def _remember_response(
             answer: str,
@@ -1725,6 +2183,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 reference_resolution=reference_resolution,
                 source_id=source_id,
                 products_shown=products_shown,
+                state_patch=state_patch,
             )
             trace = {
                 "normalized_text": norm_text,
@@ -1788,6 +2247,57 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             _remember_response(answer, intent, stage, fallback_reason=fallback_reason)
             return _fast_response(answer, intent, brand, start_time, lead_stage=stage, fallback_reason=fallback_reason)
 
+        def _cfc_grounded_response(
+            answer: str,
+            intent: str,
+            *,
+            stage: str,
+            fallback_reason: str,
+            score: float = 1.0,
+        ) -> ChatPipelineResponse:
+            return ChatPipelineResponse(
+                answer=_prettify_answer(answer),
+                intent=intent,
+                confidence="high",
+                score=score,
+                brand=brand.upper(),
+                has_phone=has_phone,
+                phone=phone,
+                area=area,
+                lead_stage=stage,
+                fallback_reason=fallback_reason,
+                latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+            )
+
+        contact_capture_queued = False
+
+        def _queue_incoming_contact(need: str) -> None:
+            nonlocal contact_capture_queued
+            if contact_capture_queued or not incoming_phone:
+                return
+            contact_capture_queued = True
+            existing_profile.update({
+                "brand": brand.upper(),
+                "sender_id": sender_id,
+                "fb_name": fb_name or existing_profile.get("fb_name", ""),
+                "phone": incoming_phone,
+                "customer_phone": incoming_phone,
+                "area": area or existing_profile.get("area", ""),
+                "customer_location": area or existing_profile.get("customer_location", ""),
+                "lead_stage": "lead_ready",
+                "last_seen_at": datetime.now(timezone.utc).isoformat(),
+            })
+            _local_customer_cache[customer_key] = dict(existing_profile)
+            asyncio.create_task(_async_save_profile_and_notify(
+                brand=brand,
+                sender_id=sender_id,
+                profile=existing_profile,
+                phone=incoming_phone,
+                area=area,
+                fb_name=fb_name,
+                need=need,
+            ))
+
         if (conversation_state.get("takeover_state") or {}).get("status") == "pending":
             return ChatPipelineResponse(
                 answer="",
@@ -1821,11 +2331,166 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 fallback_reason="CORRECTION_REQUIRES_PRODUCT",
             )
 
-        if brand == "cfc" and query_plan.intent == "cfc_dealer_location_request":
-            return await _sheet_response_remember(
-                "cfc_dealer_location_request",
-                stage="collecting_contact",
+        if brand == "cfc":
+            location_slot = state_patch["confirmed_slots"].get("location")
+            cfc_slots = _merged_cfc_slots(
+                conversation_state,
+                raw_text,
+                phone=phone,
+                area=area,
+                query_entities=query_plan.entities,
+                location=location_slot,
             )
+
+            if route_decision.intent == "cfc_contact_information_unavailable":
+                item = await get_faq_by_intent(brand, "cfc_company_website")
+                official_channel = item.get("answer", "").strip()
+                answer = (
+                    "Dạ Knowledge CFC hiện chưa có số hotline/tổng đài đã được xác minh nên mình không tự cung cấp số. "
+                    + (
+                        f"Kênh chính thức đang có trong Knowledge: {official_channel}"
+                        if official_channel
+                        else "Admin cần bổ sung nguồn liên hệ chính thức trước khi bot có thể trả lời ạ."
+                    )
+                )
+                _remember_response(
+                    answer,
+                    route_decision.intent,
+                    "browsing_catalog",
+                    source_id=item.get("source_id", ""),
+                    fallback_reason="CFC_CONTACT_NOT_VERIFIED",
+                    trace_extra={"source_intent": "cfc_company_website"},
+                )
+                return _cfc_grounded_response(
+                    answer,
+                    route_decision.intent,
+                    stage="browsing_catalog",
+                    fallback_reason="CFC_CONTACT_NOT_VERIFIED",
+                    score=route_decision.confidence,
+                )
+
+            if has_location:
+                item = await get_faq_by_intent(brand, "cfc_dealer_location_request")
+                missing = _cfc_missing_slots("dealer_lookup", cfc_slots)
+                answer = (
+                    "Dạ Cò Bay đã nhận vị trí bạn gửi. Hệ thống chat hiện chưa kết nối bản đồ/danh sách đại lý theo tọa độ, "
+                    "nên mình chưa thể chỉ đích danh điểm bán gần nhất. "
+                    f"{_cfc_missing_slots_prompt(missing)}"
+                )
+                _queue_incoming_contact("Tìm đại lý theo vị trí Messenger")
+                _remember_response(
+                    answer,
+                    "cfc_dealer_location_received",
+                    "collecting_contact",
+                    source_id=item.get("source_id", ""),
+                    fallback_reason="DEALER_GEO_TOOL_NOT_CONNECTED",
+                    trace_extra={"source_intent": "cfc_dealer_location_request", "input_kind": "location"},
+                )
+                return ChatPipelineResponse(
+                    answer=_prettify_answer(answer),
+                    intent="cfc_dealer_location_received",
+                    confidence="high",
+                    score=1.0,
+                    brand=brand.upper(),
+                    has_phone=has_phone,
+                    phone=phone,
+                    area=area,
+                    lead_stage="collecting_contact",
+                    fallback_reason="DEALER_GEO_TOOL_NOT_CONNECTED",
+                    latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                )
+
+            if route_decision.action == "capability_boundary":
+                answer, boundary_reason = _build_cfc_capability_boundary(route_decision.intent, cfc_slots)
+                capability_goal = CFC_GOAL_BY_INTENT.get(route_decision.intent) or route_decision.intent
+                _queue_incoming_contact(f"Yêu cầu CFC: {capability_goal}")
+                _remember_response(
+                    answer,
+                    route_decision.intent,
+                    "collecting_contact",
+                    fallback_reason=boundary_reason,
+                    trace_extra={"capability_boundary": True},
+                )
+                return ChatPipelineResponse(
+                    answer=_prettify_answer(answer),
+                    intent=route_decision.intent,
+                    confidence="high",
+                    score=route_decision.confidence,
+                    brand=brand.upper(),
+                    has_phone=has_phone,
+                    phone=phone,
+                    area=area,
+                    lead_stage="collecting_contact",
+                    fallback_reason=boundary_reason,
+                    latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                )
+
+            if route_decision.tool == "faq_by_intent" and route_decision.intent == "cfc_dealer_location_request":
+                item = await get_faq_by_intent(brand, route_decision.intent)
+                context = _cfc_context_summary("dealer_lookup", cfc_slots)
+                context_line = f" Mình đang giữ thông tin: {context}." if context else ""
+                answer = (
+                    f"Dạ mình hiểu bạn cần tìm điểm bán/đại lý gần nhất.{context_line} "
+                    "Hệ thống hiện tại chưa có danh sách đại lý theo từng địa bàn để mình tự nêu tên hoặc địa chỉ. "
+                    f"{_cfc_missing_slots_prompt(_cfc_missing_slots('dealer_lookup', cfc_slots))}"
+                )
+                _queue_incoming_contact("Tìm đại lý CFC theo khu vực")
+                _remember_response(
+                    answer,
+                    route_decision.intent,
+                    "collecting_contact",
+                    source_id=item.get("source_id", ""),
+                    fallback_reason="DEALER_DIRECTORY_NOT_CONNECTED",
+                )
+                return _cfc_grounded_response(
+                    answer,
+                    route_decision.intent,
+                    stage="collecting_contact",
+                    fallback_reason="DEALER_DIRECTORY_NOT_CONNECTED",
+                )
+
+            if route_decision.tool == "faq_by_intent" and route_decision.intent == "cfc_dosage_usage_review":
+                item = await get_faq_by_intent(brand, route_decision.intent)
+                answer = _build_cfc_agronomy_intake_answer(cfc_slots)
+                _queue_incoming_contact("Tư vấn kỹ thuật nông nghiệp CFC")
+                _remember_response(
+                    answer,
+                    route_decision.intent,
+                    "collecting_contact",
+                    source_id=item.get("source_id", ""),
+                    fallback_reason="AGRONOMY_REQUIRES_EXPERT_REVIEW",
+                    trace_extra={"source_intent": route_decision.intent, "expert_intake": True},
+                )
+                return _cfc_grounded_response(
+                    answer,
+                    route_decision.intent,
+                    stage="collecting_contact",
+                    fallback_reason="AGRONOMY_REQUIRES_EXPERT_REVIEW",
+                )
+
+            if route_decision.tool == "faq_by_intent" and route_decision.intent == "cfc_price_unverified":
+                item = await get_faq_by_intent(brand, route_decision.intent)
+                context = _cfc_context_summary("price_quote", cfc_slots)
+                context_line = f" Mình đang giữ thông tin: {context}." if context else ""
+                answer = (
+                    f"Dạ bảng giá phân bón Cò Bay phụ thuộc dòng sản phẩm, quy cách và khu vực phân phối.{context_line} "
+                    "Hệ thống hiện tại không có giá bán đã xác minh cho trường hợp này nên mình không tự báo số tiền. "
+                    f"{_cfc_missing_slots_prompt(_cfc_missing_slots('price_quote', cfc_slots))}"
+                )
+                _queue_incoming_contact("Yêu cầu báo giá phân bón CFC")
+                _remember_response(
+                    answer,
+                    route_decision.intent,
+                    "collecting_contact",
+                    source_id=item.get("source_id", ""),
+                    fallback_reason="PRICE_NOT_VERIFIED",
+                )
+                return _cfc_grounded_response(
+                    answer,
+                    route_decision.intent,
+                    stage="collecting_contact",
+                    fallback_reason="PRICE_NOT_VERIFIED",
+                )
 
         # QueryPlan guard: câu bồn cầu/toilet/cặn vôi phải đi nhóm tẩy rửa,
         # không được rơi sang matcher vết bẩn quần áo chỉ vì có "ố vàng".
@@ -1948,7 +2613,84 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         # ─────────────────────────────────────────────────────────────
         # FAST-PATH 1: KHÁCH ĐỂ LẠI SỐ ĐIỆN THOẠI & ĐỊA CHỈ (< 20ms)
         # ─────────────────────────────────────────────────────────────
-        if has_phone:
+        cfc_phone_only = bool(
+            brand == "cfc"
+            and has_phone
+            and _is_phone_only_submission(raw_text, incoming_phone)
+        )
+        active_cfc_goal = _active_goal_name(conversation_state) if brand == "cfc" else ""
+        if cfc_phone_only and active_cfc_goal:
+            resume_intents = {
+                "inventory_check": "cfc_inventory_unavailable",
+                "order_tracking": "cfc_order_status_unavailable",
+                "loyalty_lookup": "cfc_loyalty_unavailable",
+                "wholesale_policy": "cfc_wholesale_policy_unverified",
+                "dealer_lookup": "cfc_dealer_location_request",
+                "price_quote": "cfc_price_unverified",
+                "agronomy_consultation": "cfc_dosage_usage_review",
+            }
+            resumed_intent = resume_intents.get(active_cfc_goal, "contact_phone_provided")
+            source_id = ""
+            if resumed_intent in {
+                "cfc_inventory_unavailable",
+                "cfc_order_status_unavailable",
+                "cfc_loyalty_unavailable",
+                "cfc_wholesale_policy_unverified",
+            }:
+                final_reply, fallback_reason = _build_cfc_capability_boundary(resumed_intent, cfc_slots)
+            elif resumed_intent == "cfc_dosage_usage_review":
+                item = await get_faq_by_intent(brand, resumed_intent)
+                source_id = item.get("source_id", "")
+                final_reply = _build_cfc_agronomy_intake_answer(cfc_slots)
+                fallback_reason = "AGRONOMY_REQUIRES_EXPERT_REVIEW"
+            elif resumed_intent == "cfc_dealer_location_request":
+                item = await get_faq_by_intent(brand, resumed_intent)
+                source_id = item.get("source_id", "")
+                context = _cfc_context_summary("dealer_lookup", cfc_slots)
+                final_reply = (
+                    f"Dạ mình tiếp tục yêu cầu tìm đại lý của bạn. Mình đang giữ thông tin: {context}. "
+                    "Hệ thống hiện tại chưa có danh sách đại lý theo địa bàn để nêu điểm bán cụ thể. "
+                    f"{_cfc_missing_slots_prompt(_cfc_missing_slots('dealer_lookup', cfc_slots))}"
+                )
+                fallback_reason = "DEALER_DIRECTORY_NOT_CONNECTED"
+            else:
+                item = await get_faq_by_intent(brand, resumed_intent)
+                source_id = item.get("source_id", "")
+                context = _cfc_context_summary("price_quote", cfc_slots)
+                final_reply = (
+                    f"Dạ mình tiếp tục yêu cầu báo giá của bạn. Mình đang giữ thông tin: {context}. "
+                    "Hệ thống hiện tại chưa có giá bán đã xác minh nên mình không tự báo số tiền. "
+                    f"{_cfc_missing_slots_prompt(_cfc_missing_slots('price_quote', cfc_slots))}"
+                )
+                fallback_reason = "PRICE_NOT_VERIFIED"
+
+            _queue_incoming_contact(f"Tiếp tục yêu cầu CFC: {active_cfc_goal}")
+            _remember_response(
+                final_reply,
+                resumed_intent,
+                "collecting_contact",
+                source_id=source_id,
+                fallback_reason=fallback_reason,
+                trace_extra={"resumed_active_goal": active_cfc_goal},
+            )
+            return ChatPipelineResponse(
+                answer=_prettify_answer(final_reply),
+                intent=resumed_intent,
+                confidence="high",
+                score=1.0,
+                brand=brand.upper(),
+                has_phone=True,
+                phone=phone,
+                area=area,
+                lead_stage="collecting_contact",
+                fallback_reason=fallback_reason,
+                latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+            )
+
+        if brand == "cfc" and has_phone:
+            _queue_incoming_contact("Khách CFC gửi SĐT kèm yêu cầu")
+
+        if has_phone and (brand != "cfc" or cfc_phone_only):
             lead_stage = "lead_ready"
             if brand == "zeo":
                 final_reply = (
@@ -1958,9 +2700,9 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 )
             else:
                 final_reply = (
-                    f"Dạ Cò Bay đã nhận được số điện thoại {phone}"
+                    f"Dạ Cò Bay đã nhận được số điện thoại {_mask_phone(phone)}"
                     f"{f' tại khu vực {area}' if area else ''} của bạn. "
-                    "Kỹ sư nông nghiệp Cò Bay sẽ liên hệ tư vấn quy trình bón phân và giao hàng tận nơi cho mình sớm nhất nhé ạ!"
+                    "Mình chưa thấy yêu cầu nghiệp vụ cụ thể ở tin nhắn này; bạn cho biết cần báo giá, tư vấn kỹ thuật, tìm đại lý hay kiểm tra đơn hàng để admin xử lý đúng việc ạ."
                 )
 
             existing_profile.update({
@@ -1976,15 +2718,8 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 "last_seen_at": datetime.now(timezone.utc).isoformat(),
             })
 
-            asyncio.create_task(_async_save_profile_and_notify(
-                brand=brand,
-                sender_id=sender_id,
-                profile=existing_profile,
-                phone=phone,
-                area=area,
-                fb_name=fb_name,
-                need="Khách để lại SĐT trên Messenger",
-            ))
+            _local_customer_cache[customer_key] = dict(existing_profile)
+            _queue_incoming_contact("Khách để lại SĐT trên Messenger")
 
             return ChatPipelineResponse(
                 answer=_prettify_answer(final_reply),
@@ -2374,6 +3109,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             llm_nlu_mode in {"assist", "shadow"}
             and not is_return_or_claim
             and _should_try_llm_nlu(norm_text, brand)
+            and (brand != "cfc" or llm_nlu_mode == "shadow")
         )
         nlu_conversation_summary = (
             f"previous_intent={previous_intent}; "
@@ -3198,10 +3934,11 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         final_answer = ""
         fallback_reason = ""
 
-        if best_score >= 0.65 and is_guardrail_passed:
+        cfc_source_present = bool(rag_result.get("source_id"))
+        if best_score >= 0.65 and is_guardrail_passed and (brand != "cfc" or cfc_source_present):
             confidence = "high"
             final_answer = raw_answer
-            if rag_result.get("answer_mode") == "rewrite":
+            if brand != "cfc" and rag_result.get("answer_mode") == "rewrite":
                 synthesized = await synthesize_cskh_answer(
                     user_query=raw_text,
                     brand=brand,
@@ -3212,10 +3949,10 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 )
                 if synthesized and len(synthesized) >= 20:
                     final_answer = synthesized
-        elif best_score >= 0.50 and is_guardrail_passed:
+        elif best_score >= 0.50 and is_guardrail_passed and (brand != "cfc" or cfc_source_present):
             confidence = "medium"
             final_answer = raw_answer
-            if rag_result.get("answer_mode") == "rewrite":
+            if brand != "cfc" and rag_result.get("answer_mode") == "rewrite":
                 synthesized = await synthesize_cskh_answer(
                     user_query=raw_text,
                     brand=brand,
@@ -3261,6 +3998,22 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 )
                 lead_stage = "collecting_contact"
                 fallback_reason = "MISSING_SLOT"
+            elif brand.lower() == "cfc":
+                final_answer = (
+                    "Dạ mình chưa tìm thấy câu trả lời có nguồn phù hợp trong Knowledge CFC cho yêu cầu này. "
+                    "Để tránh trả lời sai, mình không tự suy đoán. Bạn nói rõ hơn tên sản phẩm/công thức, cây trồng, "
+                    "khu vực hoặc mã đơn; nếu đây là dữ liệu tồn kho, đơn hàng, tích điểm hay chiết khấu thì admin cần kiểm tra trên hệ thống nghiệp vụ ạ."
+                )
+                confidence = "medium"
+                intent = "cfc_grounded_fallback"
+                lead_stage = "collecting_contact"
+                fallback_reason = "NO_GROUNDED_KNOWLEDGE"
+                asyncio.create_task(notify_admin_unanswered(
+                    brand=brand,
+                    query=raw_text,
+                    sender_id=sender_id,
+                    score=best_score,
+                ))
             else:
                 # Thử cho Agent CSKH suy luận dựa trên câu hỏi và facts từ hệ thống
                 ai_attempt = await reason_and_answer_cskh(
@@ -3301,6 +4054,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             query_entities=query_entities,
             reference_resolution=reference_resolution,
             source_id=rag_result.get("source_id", ""),
+            state_patch=state_patch,
         )
         trace = {
             "normalized_text": norm_text,
@@ -3367,7 +4121,13 @@ async def _finalize_pipeline_response(req: ChatPipelineRequest, response: ChatPi
     """Make every return branch update RAM and Redis before the API responds."""
     brand = req.brand.lower()
     sender_id = req.sender_id.strip()
-    raw_text = (req.text or "").strip()
+    has_location = bool(
+        req.latitude is not None
+        and req.longitude is not None
+        and -90 <= req.latitude <= 90
+        and -180 <= req.longitude <= 180
+    )
+    raw_text = (req.text or "").strip() or ("Gửi vị trí hiện tại" if has_location else "")
     session_key = f"{brand}:session:messenger:{sender_id}"
     history_key = f"{brand}:history:messenger:{sender_id}"
     redis_client = await get_redis()
@@ -3390,6 +4150,19 @@ async def _finalize_pipeline_response(req: ChatPipelineRequest, response: ChatPi
             query_entities=query_entities,
             reference_resolution=reference_resolution,
             source_id="",
+            state_patch={
+                "confirmed_slots": {
+                    **({"phone": response.phone} if response.phone else {}),
+                    **({"area": response.area} if response.area else {}),
+                    **({
+                        "location": {
+                            "latitude": req.latitude,
+                            "longitude": req.longitude,
+                            "source": "messenger_location",
+                        }
+                    } if has_location else {}),
+                }
+            },
         )
         query_plan = build_query_plan(
             raw_text=raw_text,

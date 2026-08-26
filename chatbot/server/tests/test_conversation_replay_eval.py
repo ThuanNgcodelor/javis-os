@@ -14,7 +14,7 @@ from conversation_replay_eval import DEFAULT_CASES, load_cases, score_turn  # no
 class ConversationReplayEvalTests(unittest.TestCase):
     def test_gold_file_loads_multi_turn_cases(self):
         cases = load_cases(DEFAULT_CASES)
-        self.assertGreaterEqual(len(cases), 11)
+        self.assertGreaterEqual(len(cases), 16)
         self.assertTrue(any(len(case["turns"]) > 1 for case in cases))
 
     def test_invalid_case_is_rejected(self):
@@ -41,6 +41,31 @@ class ConversationReplayEvalTests(unittest.TestCase):
         self.assertIn("source_id_missing", failures)
         self.assertTrue(any(item.startswith("pending_action=") for item in failures))
         self.assertTrue(any(item.startswith("corrections=") for item in failures))
+
+    def test_scorer_checks_cfc_goal_confirmed_slots_and_capability_boundary(self):
+        failures = score_turn(
+            {
+                "expected_intent": "cfc_inventory_unavailable",
+                "capability_boundary_required": True,
+                "state": {
+                    "active_goal": "inventory_check",
+                    "confirmed_slots": {"formula": "16-16-8 TE", "phone": "0979176415"},
+                    "pending_slots_exact": ["area"],
+                },
+            },
+            intent="cfc_inventory_unavailable",
+            answer="Hệ thống chưa kết nối tồn kho realtime.",
+            trace={
+                "fallback_reason": "INVENTORY_TOOL_NOT_CONNECTED",
+                "grounding": {"status": "safe_fallback"},
+            },
+            state={
+                "active_goal": {"name": "inventory_check"},
+                "confirmed_slots": {"formula": "16-16-8 TE", "phone": "0979176415"},
+                "pending_slots": ["area"],
+            },
+        )
+        self.assertEqual(failures, [])
 
 
 if __name__ == "__main__":

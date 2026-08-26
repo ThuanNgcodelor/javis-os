@@ -64,13 +64,16 @@ def _ordinal_index(text: str) -> Optional[int]:
 
 def _detect_attributes(text: str) -> list[str]:
     attrs: list[str] = []
-    if re.search(r"\b(gia|bao nhieu|bao nhieu tien|nhiu|mac nhat|dat nhat|re nhat|duoi|tren|tam|khoang|gan)\b", text):
+    if (
+        re.search(r"\b(gia|bao nhieu|bao nhieu tien|nhiu|mac nhat|dat nhat|re nhat)\b", text)
+        or re.search(r"\b(duoi|tren|tam|khoang|gan)\s*\d", text)
+    ):
         attrs.append("price")
     if re.search(r"\b(link|shopee|mua online|dat mua|gian hang)\b", text):
         attrs.append("link")
-    if re.search(r"\b(con hang|co san|ton kho|het hang|con khong|con ko)\b", text):
+    if re.search(r"\b(con hang|co san|ton kho|trong kho|het hang|con khong|con ko|con nhieu|co lien)\b", text):
         attrs.append("availability")
-    if re.search(r"\b(cach dung|huong dan|su dung|dung sao|dung nhu the nao|lieu luong)\b", text):
+    if re.search(r"\b(cach dung|huong dan|su dung|dung sao|dung nhu the nao|lieu luong|cach bon|nen bon|cong thuc nao)\b", text):
         attrs.append("usage")
     if re.search(r"\b(thom|mui|huong|luu huong)\b", text):
         attrs.append("fragrance")
@@ -111,15 +114,58 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
     if variant_match:
         entities["variant"] = variant_match.group(0)
 
+    formula_match = re.search(
+        r"\b(?:npk\s+)?(\d{1,2})\s+(\d{1,2})\s+(\d{1,2})(?:\s+(te))?\b",
+        text,
+    )
+    if formula_match:
+        entities["formula"] = "-".join(formula_match.group(index) for index in range(1, 4))
+        if formula_match.group(4):
+            entities["formula"] += " TE"
+
+    order_match = re.search(r"\b(?:ma\s+don\s+)?#?dh\s+(\d{4})\s+(\d+)\b", text)
+    if order_match:
+        entities["order_id"] = f"DH-{order_match.group(1)}-{order_match.group(2)}"
+
+    acreage_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(hecta|ha|cong)\b", text)
+    if acreage_match:
+        entities["acreage"] = f"{acreage_match.group(1)} {acreage_match.group(2)}"
+
+    crop_terms = [
+        "sau rieng", "lua", "cay an trai", "rau mau", "ca phe", "tieu",
+        "buoi", "cam", "xoai", "mit", "thanh long",
+    ]
+    crop = next((term for term in crop_terms if re.search(rf"\b{term}\b", text)), "")
+    if crop:
+        entities["crop"] = crop
+
+    stage_patterns = [
+        "nuoi trai non", "trai non", "ra hoa", "xu ly ra hoa", "dau trai",
+        "nuoi trai", "xuong giong", "de nhanh", "lam dong", "dot 1", "dot 2", "dot 3",
+    ]
+    crop_stage = next((term for term in stage_patterns if re.search(rf"\b{term}\b", text)), "")
+    if crop_stage:
+        entities["crop_stage"] = crop_stage
+
+    symptom_match = re.search(r"\b(rung hat chuoi|rung trai non|vang la|thoi re|xoan la|cham lon)\b", text)
+    if symptom_match:
+        entities["symptom"] = symptom_match.group(1)
+
+    dealer_level = re.search(r"\bdai ly cap\s*(\d+)\b", text)
+    if dealer_level:
+        entities["dealer_level"] = f"cap {dealer_level.group(1)}"
+
     return entities
 
 
 def _detect_constraints(text: str) -> dict[str, Any]:
     constraints: dict[str, Any] = {}
 
-    quantity = re.search(r"\b(\d+)\s*(chai|can|tui|goi|thung|hop|bao|bo)\b", text)
+    quantity = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(chai|can|tui|goi|thung|hop|bao|bo|tan)\b", text)
     if quantity:
-        constraints["quantity"] = int(quantity.group(1))
+        raw_quantity = quantity.group(1).replace(",", ".")
+        numeric_quantity = float(raw_quantity)
+        constraints["quantity"] = int(numeric_quantity) if numeric_quantity.is_integer() else numeric_quantity
         constraints["quantity_unit"] = quantity.group(2)
 
     budget = re.search(r"\b(duoi|tren|tam|khoang|gan)\s*(\d+(?:[.,]\d+)?)\s*(k|nghin|trieu)?\b", text)
@@ -160,11 +206,50 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         text,
     ):
         return "company_contact_information", 0.94
-    if brand == "cfc" and re.search(r"\b(dai ly|nha phan phoi|npp|diem mua)\b", text) and re.search(
+    if brand == "cfc" and re.search(
+        r"\b(hotline|tong dai|so dien thoai|so lien he|so cham soc|cham soc khach hang)\b",
+        text,
+    ) and not re.search(
+        r"\b(so dien thoai|sdt|dien thoai).{0,20}(cua\s+)?(toi|minh|em|anh|chi)\b",
+        text,
+    ):
+        return "cfc_contact_information_request", 0.94
+    if brand == "cfc" and (
+        re.search(r"\b(ma don|don hang|don hom qua|tien do don|tra cuu don|kiem tra don|xe da boc|boc hang)\b", text)
+        or entities.get("order_id")
+    ):
+        return "cfc_order_status_request", 0.97
+    if brand == "cfc" and re.search(
+        r"\b(tich diem|diem thuong|diem tich luy|chiet khau gi chua|hang thanh vien|tai khoan dai ly)\b",
+        text,
+    ):
+        return "cfc_loyalty_lookup_request", 0.96
+    if brand == "cfc" and re.search(
+        r"\b(bang gia si|gia si|chiet khau quy|muc chiet khau|chinh sach chiet khau|dai ly cap)\b",
+        text,
+    ):
+        return "cfc_wholesale_policy_request", 0.96
+    if brand == "cfc" and "availability" in attrs and (
+        re.search(r"\b(npk|phan|cong thuc|bao|kho|chuyen lua)\b", text)
+        or entities.get("formula")
+    ):
+        return "cfc_inventory_request", 0.97
+    if brand == "cfc" and re.search(r"\b(dai ly|nha phan phoi|npp|diem mua|cho ban)\b", text) and re.search(
         r"\b(khu vuc|gan|o dau|tinh|thanh pho|cho toi|cho minh|co khong)\b",
         text,
     ):
         return "cfc_dealer_location_request", 0.95
+    if brand == "cfc" and (
+        "usage" in attrs
+        or entities.get("symptom")
+        or (
+            entities.get("crop")
+            and re.search(r"\b(nen bon|bon cong thuc|cong thuc nao|lieu luong|giai doan|bi rung|tu van)\b", text)
+        )
+    ):
+        return "cfc_agronomy_review_request", 0.95
+    if brand == "cfc" and re.search(r"\b(gia|bao gia|xin gia|bang gia|bao nhieu tien)\b", text):
+        return "cfc_price_unverified", 0.93
     if {"zeo", "pano", "oplus"}.issubset(mentioned) and re.search(r"\b(khac nhau|hay sao|la sao|cung|thuoc|hang|thuong hieu)\b", text):
         return "brand_ecosystem_overview", 0.90
     if _has_any(text, ["tra hang", "doi tra", "hoan tien", "khieu nai"]):
@@ -242,6 +327,20 @@ def build_query_plan(
             references[key] = reference_resolution[key]
 
     intent, confidence = _detect_intent(norm_text, attrs, entities, brand.lower())
+    active_goal = conversation_state.get("active_goal") or {}
+    active_goal_name = active_goal if isinstance(active_goal, str) else str(active_goal.get("name") or "")
+    if (
+        brand.lower() == "cfc"
+        and active_goal_name == "agronomy_consultation"
+        and intent in {"unknown", "agriculture_advisory_query", "product_information_query"}
+        and (
+            entities.get("crop")
+            or entities.get("crop_stage")
+            or entities.get("acreage")
+            or re.search(r"\b(dien tich|khu vuc|giai doan|trieu chung|hien tuong)\b", norm_text)
+        )
+    ):
+        intent, confidence = "cfc_agronomy_review_request", 0.94
     needs_context = bool(references.get("mentions_previous_turn") and not references.get("resolved"))
     needs_product_tool = bool(
         brand.lower() == "zeo"

@@ -60,6 +60,31 @@ class DialogueRouterTests(unittest.TestCase):
         self.assertEqual(decision.action, "clarify")
         self.assertEqual(decision.reason, "CORRECTION_REQUIRES_PRODUCT")
 
+    def test_cfc_operational_requests_route_to_capability_boundaries(self):
+        cases = [
+            (
+                "NPK 16-16-8 trong kho còn hàng không",
+                "npk 16 16 8 trong kho con hang khong",
+                "cfc_inventory_unavailable",
+            ),
+            (
+                "Tra cứu đơn DH-2026-889",
+                "tra cuu don dh 2026 889",
+                "cfc_order_status_unavailable",
+            ),
+            (
+                "Số tôi có tích điểm chưa",
+                "so toi co tich diem chua",
+                "cfc_loyalty_unavailable",
+            ),
+        ]
+        for raw, normalized, expected_intent in cases:
+            with self.subTest(raw=raw):
+                plan = self._plan(raw, normalized, brand="cfc")
+                decision = build_route_decision(plan, {})
+                self.assertEqual(decision.action, "capability_boundary")
+                self.assertEqual(decision.intent, expected_intent)
+
 
 if __name__ == "__main__":
     unittest.main()
