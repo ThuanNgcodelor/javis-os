@@ -124,34 +124,16 @@ cd /Users/hyden/Documents/David-nguyen/javis-os
 bash bin/stop-all.sh
 ```
 
-### Chạy Suite Kiểm Thử Tự Động 14 Test Cases:
+### Chạy Suite Kiểm Thử Tự Động 14 Test Cases (CFC & ZeO):
 ```bash
 cd /Users/hyden/Documents/David-nguyen/javis-os
-.venv/bin/python3 -c "
-import requests
-
-test_suite = [
-    ('TC-01', 'Chào em, mình muốn tìm hiểu giá phân NPK 20-20-15 để chuẩn bị bón cho vụ tới.', ['20-20-15', 'nuôi', 'bảng giá']),
-    ('TC-02', 'Anh Ba bên đại lý Vĩnh Thạnh đây, kiểm tra giúp anh tiến độ đơn hàng hôm qua đặt.', ['Vĩnh Thạnh', 'tiến độ đơn hàng', 'Kho Vận']),
-    ('TC-03', 'Số điện thoại của mình là 0918345678, kiểm tra xem mình có tích điểm hay chiết khấu gì chưa?', ['***5678', 'AMIS CRM']),
-    ('TC-04', 'Tôi ở gần chợ Ô Môn, muốn mua 10 bao phân NPK thì ghé đại lý nào gần nhất?', ['Địa chỉ', 'SĐT', 'Chỉ đường']),
-    ('TC-05', 'Gửi cho mình chỗ bán gần vị trí này nhất', ['CFC', 'Địa chỉ', 'Chỉ đường']),
-    ('TC-06', 'Khu vực xã Định Môn, Thới Lai có đại lý nào giao tận nhà không shop?', ['Địa chỉ', 'SĐT', 'Chỉ đường']),
-    ('TC-07', 'Sản phẩm NPK 16-16-8 TE bao 50kg trong kho còn nhiều không em? Lấy 5 tấn có liền không?', ['16-16-8 TE', '5 tấn', 'nhà máy']),
-    ('TC-08', 'Bên mình còn hàng công thức NPK chuyên lúa đợt 2 không?', ['chuyên lúa', 'Đợt 2']),
-    ('TC-09', 'Cho anh tra cứu đơn hàng số #DH-2026-889 xe đã bốc hàng xong chưa?', ['DH-2026-889', 'Kho Vận']),
-    ('TC-10', 'Cho anh xin bảng giá sỉ và mức chiết khấu quý này cho đại lý cấp 1 với.', ['chiết khấu', 'bảo mật']),
-    ('TC-11', 'Đại lý Minh Phát ở Cờ Đỏ còn nợ tiền đợt trước nhiều không em?', ['bảo mật', 'nội bộ']),
-    ('TC-12', 'Sầu riêng giai đoạn nuôi trái non bị rụng hạt chuỗi thì nên bón công thức NPK nào và liều lượng sao?', ['sầu riêng', 'Canxi', 'Bo']),
-    ('TC-13', 'Tôi muốn đặt 30 tấn phân bón cho hợp tác xã, cần gặp giám đốc kinh doanh thương lượng hợp đồng gấp.', ['Hợp tác xã', '30 tấn', 'Hotline', '0292']),
-    ('TC-14', 'Phân bón mua về bị vón cục quá nhiều, tôi muốn khiếu nại đổi trả ngay!', ['vón cục', 'Mã Lô', 'Lot No', '24 giờ']),
-]
-
-for tc, q, kw in test_suite:
-    r = requests.post('http://127.0.0.1:7777/api/chat-pipeline', json={'brand': 'cfc', 'sender_id': f'test_{tc}', 'text': q, 'latitude': 10.035, 'longitude': 105.78})
-    ans = r.json().get('answer', '')
-    ok = all(k.lower() in ans.lower() for k in kw)
-    print(f'[{tc}] {\"✅ 10/10\" if ok else \"⚠️ FAILED\"} - {q[:45]}...')
-"
+.venv/bin/python3 bin/test-all-cases.py
 ```
-*(Kết quả: **14/14 ✅ 10/10 - PASSED**)*
+*(Kết quả mong đợi: **14/14 CFC & 3/3 ZeO ✅ 10/10 - PASSED**)*
+
+### Chạy Chế Độ Chat Trực Tiếp (CLI Interactive Chat):
+```bash
+cd /Users/hyden/Documents/David-nguyen/javis-os
+.venv/bin/python3 bin/test-all-cases.py -i
+```
+*(Gõ câu hỏi bất kỳ để test trực tiếp trên terminal, gõ `switch` để đổi giữa `cfc` và `zeo`, gõ `exit` để thoát).*

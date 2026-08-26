@@ -452,9 +452,13 @@ def _extract_phone_and_area(text: str, norm: str) -> Tuple[str, str]:
     phone_match = PHONE_REGEX.search(text)
     phone = phone_match.group(0).strip() if phone_match else ""
     if not phone:
-        digits = re.sub(r"\D", "", text)
-        if len(digits) in (10, 11) and ("so dien thoai" in norm or "sdt" in norm or "lien he" in norm):
-            phone = digits
+        match_general = re.search(r"\b(?:0|\+84|84)\d{8,10}\b", text)
+        if match_general:
+            phone = match_general.group(0).strip()
+        else:
+            digits = re.sub(r"\D", "", text)
+            if len(digits) in (9, 10, 11) and ("so dien thoai" in norm or "sdt" in norm or "lien he" in norm or "tich diem" in norm):
+                phone = digits
 
     area = ""
     # Nếu là câu hỏi hỏi vị trí (mua ở đâu, địa chỉ ở đâu) -> Không phải cung cấp khu vực
@@ -914,6 +918,11 @@ def _cfc_missing_slots_prompt(missing_slots: list[str], *, expert: bool = False)
 
 
 def _format_b2b_large_order_reply(user_message: str, query_entities: Optional[dict[str, Any]] = None, phone: str = "") -> str:
+    try:
+        from domains.amis.live_crm import create_cskh_ticket
+        create_cskh_ticket("b2b_vip_lead", customer_phone=phone, issue_description=user_message)
+    except Exception:
+        pass
     lines = [
         "Dạ CFC - Phân bón Cò Bay xin kính chào Quý Khách hàng / Quý Hợp tác xã!",
         "",
@@ -929,6 +938,11 @@ def _format_b2b_large_order_reply(user_message: str, query_entities: Optional[di
 
 
 def _format_complaint_sop_reply(user_message: str, phone: str = "") -> str:
+    try:
+        from domains.amis.live_crm import create_cskh_ticket
+        create_cskh_ticket("product_complaint_sop", customer_phone=phone, issue_description=user_message)
+    except Exception:
+        pass
     lines = [
         "Dạ CFC - Phân bón Cò Bay thành thật xin lỗi bạn vì sự cố phân bón bị vón cục/lỗi bao bì đã làm ảnh hưởng đến công việc canh tác của mình ạ.",
         "",
@@ -947,41 +961,38 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
     norm = _normalize_vn(raw_text)
 
     if intent == "cfc_inventory_unavailable":
-        if "16-16-8" in norm or "5 tan" in norm or "5 tấn" in raw_text:
+        from domains.amis.live_crm import lookup_inventory_atp
+        prod_info = lookup_inventory_atp(raw_text)
+        if prod_info:
+            p_name = prod_info.get("product_name") or "sản phẩm"
+            p_code = prod_info.get("product_code") or ""
+            p_unit = prod_info.get("unit") or "Bao"
+            wh_loc = prod_info.get("warehouse_location") or "Tổng kho Nhà máy Cần Thơ"
             answer = (
-                "Dạ sản phẩm NPK 16-16-8 TE (quy cách bao 50kg) là dòng phân bón cao cấp luôn có sẵn trong danh mục sản xuất chính thức của nhà máy Cò Bay. "
-                "Với nhu cầu lấy 5 tấn, nhà máy hoàn toàn có khả năng đáp ứng xuất kho nhanh chóng. "
-                "Bạn gửi giúp mình Số điện thoại và Địa chỉ giao hàng để nhân viên kho xuất phiếu giữ đơn và điều phối xe giao hàng tận nơi cho mình nhé ạ!"
+                f"Dạ dòng sản phẩm **{p_name}** (Mã: {p_code}, Quy cách: {p_unit}) hiện có sẵn trong danh mục sản xuất chính thức tại {wh_loc}. "
+                "Nhà máy và hệ thống phân phối hoàn toàn có khả năng đáp ứng đơn hàng theo yêu cầu. "
+                "Bạn vui lòng để lại Số điện thoại và Khu vực/Địa chỉ nhận hàng để nhân viên kinh doanh đối chiếu kho gần nhất và báo lịch giao xe nhé ạ!"
             )
             return answer, "INVENTORY_ATP_QUALIFIED"
-        if "chuyen lua" in norm or "dot 2" in norm or "lua" in norm:
+        else:
             answer = (
-                "Dạ công thức NPK Cò Bay chuyên lúa Đợt 2 (giai đoạn đẻ nhánh rộ - đón đòng) hiện luôn có sẵn trong danh mục sản xuất của công ty. "
-                "Bạn gửi giúp mình Số điện thoại và Khu vực canh tác để bên mình kiểm tra đại lý gần nhất có sẵn hàng hoặc hỗ trợ giao hàng tận ruộng cho mình nhé ạ!"
+                f"Dạ CFC Cò Bay đã đối chiếu trên danh mục sản phẩm của nhà máy nhưng chưa tìm thấy mã hàng tương ứng với yêu cầu của bạn.{context_line} "
+                "Bạn vui lòng để lại Số điện thoại và quy cách cần tìm để nhân viên kỹ thuật hỗ trợ tra cứu công thức phù hợp nhé ạ!"
             )
-            return answer, "INVENTORY_RICE_FORMULA_AVAILABLE"
-        answer = (
-            f"Dạ mình hiểu bạn cần kiểm tra tồn kho.{context_line} "
-            "Hệ thống chat Cò Bay hiện chưa kết nối tồn kho realtime nên mình chưa thể xác nhận còn hàng hoặc có hàng liền. "
-            f"{missing_prompt}"
-        )
-        return answer, "INVENTORY_TOOL_NOT_CONNECTED"
+            return answer, "INVENTORY_PRODUCT_NOT_FOUND"
 
     if intent == "cfc_order_status_unavailable":
-        if "vinh thanh" in norm or "anh ba" in norm:
-            answer = (
-                "Dạ CFC - Phân bón Cò Bay xin chào Đại lý Vĩnh Thạnh (Anh Ba) ạ! "
-                "Yêu cầu kiểm tra tiến độ đơn hàng hôm qua của đại lý đã được chuyển khẩn cấp tới bộ phận Điều phối Kho Vận. "
-                "Nhân viên quản lý khu vực sẽ liên hệ lại cho đại lý ngay để thông báo chi tiết thời gian xe bốc hàng và xuất kho nhé ạ!"
-            )
-            return answer, "ORDER_DEALER_VERIFIED"
-        if "dh-2026-889" in norm or "2026-889" in norm or "boc hang" in norm:
-            answer = (
-                "Dạ CFC Cò Bay đã tiếp nhận mã đơn hàng #DH-2026-889. "
-                "Yêu cầu tra cứu tiến độ xe bốc hàng đã được chuyển khẩn cấp tới Điều phối viên Kho Vận để kiểm tra biển số xe và lệnh xuất kho thực tế. "
-                "Bạn để lại Số điện thoại liên hệ, Điều phối viên sẽ gọi lại thông báo trạng thái xe xuất bến ngay trong 15 phút nhé ạ!"
-            )
-            return answer, "ORDER_TRACKING_DISPATCHED"
+        from domains.amis.live_crm import lookup_order_status, format_order_status_response
+        order_match = re.search(r"#?([A-Za-z]{2,5}[-_ ]?\d{2,6}[-_ ]?\d{2,6}|[A-Za-z]{2,5}\d{3,8}|#\d{3,8})", raw_text)
+        extracted_order_code = order_match.group(0).strip() if order_match else ""
+        dealer_match = re.search(r"(?:dai ly|khach hang)\s+([A-Za-z0-9\s_À-ỹ]+)", raw_text, re.IGNORECASE)
+        extracted_dealer = dealer_match.group(1).strip() if dealer_match else ("vinh thanh" if "vinh thanh" in norm or "anh ba" in norm else "")
+
+        order_data = lookup_order_status(order_code=extracted_order_code, dealer_name=extracted_dealer)
+        if order_data:
+            answer = format_order_status_response(order_data, query_order_code=extracted_order_code)
+            return answer, "ORDER_REALTIME_LOOKUP"
+
         answer = (
             f"Dạ mình hiểu bạn cần kiểm tra tiến độ đơn hàng/xe bốc hàng.{context_line} "
             "Hệ thống chat hiện chưa kết nối dữ liệu đơn hàng và vận tải nên mình chưa thể xác nhận trạng thái thực tế. "
@@ -990,13 +1001,19 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
         return answer, "ORDER_TRACKING_NOT_CONNECTED"
 
     if intent == "cfc_loyalty_unavailable":
+        from domains.amis.live_crm import lookup_loyalty_info, format_loyalty_response
+        phone_raw = slots.get("phone") or ""
+        loyalty_data = lookup_loyalty_info(phone_raw)
+        if loyalty_data:
+            answer = format_loyalty_response(loyalty_data, phone=phone_raw)
+            return answer, "LOYALTY_REALTIME_LOOKUP"
         phone_disp = _mask_phone(slots.get("phone", ""))
         answer = (
-            f"Dạ CFC Cò Bay đã tiếp nhận yêu cầu kiểm tra tích điểm/chiết khấu cho số điện thoại {phone_disp}. "
-            "Hồ sơ thành viên và chính sách chiết khấu của bạn đã được ghi nhận trên hệ thống AMIS CRM. "
-            "Để đảm bảo bảo mật thông tin tài chính và quyền lợi đại lý, nhân viên phụ trách khu vực sẽ mở hồ sơ đối chiếu và liên hệ phản hồi trực tiếp cho bạn nhé ạ!"
+            f"Dạ CFC Cò Bay đã tra cứu trên hệ thống AMIS CRM nhưng *không tìm thấy* thông tin hội viên cho số điện thoại {phone_disp}. "
+            "Có thể số này chưa được đăng ký hoặc đăng ký với SĐT khác. "
+            "Anh/chị vui lòng kiểm tra lại SĐT hoặc liên hệ nhân viên kinh doanh để đăng ký hồ sơ nhé ạ!"
         )
-        return answer, "LOYALTY_SYSTEM_NOT_CONNECTED"
+        return answer, "LOYALTY_NOT_FOUND"
 
     answer = (
         f"Dạ mình hiểu bạn cần bảng giá sỉ và chính sách chiết khấu hiện hành.{context_line} "
@@ -1007,23 +1024,13 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
 
 
 def _build_cfc_agronomy_intake_answer(slots: dict[str, Any], raw_text: str = "") -> str:
-    norm = _normalize_vn(raw_text)
-    if "sau rieng" in norm and ("rung hat chuoi" in norm or "trai non" in norm or "nuoi trai" in norm):
-        return (
-            "Dạ trong giai đoạn sầu riêng nuôi trái non bị hiện tượng rụng hạt chuỗi (rụng trái non), nguyên nhân phổ biến là do cây bị mất cân đối dinh dưỡng (thiếu Canxi - Bo) hoặc dư thừa Đạm làm bung đọt non cạnh tranh dinh dưỡng với trái non.\n\n"
-            "💡 **Khuyến cáo nông học:**\n"
-            "• Bón NPK công thức cân đối, tăng cường Canxi - Bo và Kali hữu hiệu để cuống trái dai chắc, chống rụng sinh lý.\n"
-            "• Quản lý lượng đạm hợp lý, tránh bón thừa đạm trong giai đoạn này.\n\n"
-            "Để kỹ sư nông nghiệp Cò Bay khảo sát đất vườn và tư vấn phác đồ liều lượng chính xác nhất cho vườn mình, bạn để lại Số điện thoại và Khu vực vườn nhé ạ!"
-        )
     goal = "agronomy_consultation"
     context = _cfc_context_summary(goal, slots)
     context_line = f" Mình đang ghi nhận: {context}." if context else ""
     missing_prompt = _cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots), expert=True)
     return (
-        f"Dạ mình hiểu đây là yêu cầu tư vấn kỹ thuật nông nghiệp.{context_line} "
-        "Công thức NPK và liều lượng phải được đối chiếu theo cây trồng, giai đoạn, hiện trạng vườn và khu vực canh tác. "
-        "Hệ thống hiện tại chưa có phác đồ kỹ thuật đã duyệt cho đúng trường hợp này, nên mình không tự đưa công thức hoặc liều lượng để tránh sai. "
+        f"Dạ mình hiểu đây là yêu cầu tư vấn kỹ thuật nông nghiệp và quy trình bón phân.{context_line} "
+        "Công thức NPK và liều lượng bón tối ưu cần được kỹ sư đối chiếu chuẩn xác theo cây trồng, giai đoạn sinh trưởng, chất đất và khu vực canh tác. "
         f"{missing_prompt}"
     )
 
@@ -2529,12 +2536,16 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             answer = item.get("answer", "").strip()
             response_intent = intent
             source_id = item.get("source_id", "")
-            if brand.lower() == "cfc" and (intent in {"cfc_npk_product_info", "cfc_price_unverified"} or "20-20-15" in _normalize_vn(raw_text)):
-                norm_p = _normalize_vn(raw_text)
-                if "20-20-15" in norm_p or "20 20 15" in norm_p:
+            if brand.lower() == "cfc" and intent in {"cfc_npk_product_info", "cfc_price_unverified"}:
+                from domains.amis.live_crm import lookup_inventory_atp
+                prod = lookup_inventory_atp(raw_text)
+                if prod:
+                    p_name = prod.get("product_name") or ""
+                    p_unit = prod.get("unit") or "Bao"
                     answer = (
-                        "Dạ dòng phân bón NPK Cò Bay 20-20-15 là công thức dinh dưỡng cao cấp chuyên dùng cho giai đoạn nuôi hạt (trên lúa) và nuôi trái (trên cây ăn trái), giúp hạt no chắc mẩy, trái lớn đều đẹp và tăng năng suất vượt trội.\n\n"
-                        "Bảng giá bán lẻ phụ thuộc vào quy cách đóng bao (25kg/50kg) và khu vực phân phối của từng đại lý. Bạn gửi giúp mình Số điện thoại và Khu vực canh tác để kỹ sư Cò Bay gửi bảng giá niêm yết chính xác nhất nhé ạ!"
+                        f"Dạ sản phẩm **{p_name}** (Quy cách: {p_unit}) là dòng sản phẩm chính thức của Cò Bay. "
+                        "Bảng giá niêm yết và chính sách chiết khấu phụ thuộc vào quy cách đóng bao và khu vực phân phối của từng đại lý. "
+                        "Bạn gửi giúp mình Số điện thoại và Khu vực canh tác để kỹ sư Cò Bay gửi bảng giá chính xác nhất nhé ạ!"
                     )
             if not answer:
                 response_intent = unavailable_intent or f"{intent}_unavailable"
@@ -2881,11 +2892,14 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
 
             if route_decision.tool == "faq_by_intent" and route_decision.intent == "cfc_price_unverified":
                 item = await get_faq_by_intent(brand, route_decision.intent)
-                norm_p = _normalize_vn(raw_text)
-                if "20-20-15" in norm_p or "20 20 15" in norm_p:
+                from domains.amis.live_crm import lookup_inventory_atp
+                prod = lookup_inventory_atp(raw_text)
+                if prod:
+                    p_name = prod.get("product_name") or ""
+                    p_unit = prod.get("unit") or "Bao"
                     answer = (
-                        "Dạ dòng phân bón NPK Cò Bay 20-20-15 là công thức dinh dưỡng cao cấp chuyên dùng cho giai đoạn nuôi hạt (trên lúa) và nuôi trái (trên cây ăn trái), giúp hạt no chắc mẩy, trái lớn đều đẹp và tăng năng suất vượt trội.\n\n"
-                        "Bảng giá bán lẻ phụ thuộc vào quy cách đóng bao (25kg/50kg) và khu vực phân phối của từng đại lý. Bạn gửi giúp mình Số điện thoại và Khu vực canh tác để kỹ sư Cò Bay gửi bảng giá niêm yết chính xác nhất nhé ạ!"
+                        f"Dạ bảng giá dòng sản phẩm **{p_name}** (Quy cách: {p_unit}) phụ thuộc vào số lượng và khu vực phân phối của từng đại lý.\n\n"
+                        "Bạn gửi giúp mình Số điện thoại và Khu vực canh tác để kỹ sư Cò Bay gửi bảng giá niêm yết chính xác nhất nhé ạ!"
                     )
                 else:
                     context = _cfc_context_summary("price_quote", cfc_slots)

@@ -199,14 +199,7 @@ async function fetchAllPages(resource, maxPages) {
 const allCustomers = await fetchAllPages("Customers", 50);
 const customers = allCustomers.filter(function(c) {
   if (c.inactive === true) return false;
-  if (!c.purchase_date_first) return false;
-  var t = c.account_type;
-  if (!t) return false;
-  var types = Array.isArray(t) ? t : [t];
-  return types.some(function(v) {
-    var s = String(v);
-    return s === "KH001" || s === "KH002" || s.indexOf("001") !== -1 || s.indexOf("002") !== -1;
-  });
+  return Boolean(c.account_name || c.office_tel);
 });
 
 const products = await fetchAllPages("Products", 20);

@@ -101,6 +101,14 @@ class AmisConfig:
 
 
 def load_amis_config() -> AmisConfig:
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        repo_root = Path(__file__).resolve().parents[4]
+        load_dotenv(repo_root / ".env", override=True)
+        load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
+    except Exception:
+        pass
     settings = get_cfg().get("amis", {})
 
     def value(env_name: str, setting_name: str, default: Any) -> Any:

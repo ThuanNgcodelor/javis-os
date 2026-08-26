@@ -49,6 +49,16 @@ async def amis_status(
     return {"status": "ok", "config": load_amis_config().safe_status()}
 
 
+@router.get("/live-status")
+async def amis_live_status(
+    request: Request,
+    x_internal_token: str = Header("", alias="X-Internal-Token"),
+):
+    _require_internal(request, x_internal_token)
+    from .live_crm import check_amis_live_status
+    return check_amis_live_status()
+
+
 @router.post("/audit")
 async def amis_audit(
     request: Request,
