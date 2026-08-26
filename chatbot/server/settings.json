@@ -73,5 +73,12 @@
   },
   "shopee": {
     "sheet_url": ""
+  },
+  "amis": {
+    "pilot_approve_all": true,
+    "allow_office_phone_fallback": true,
+    "allow_billing_address_fallback": true,
+    "require_coordinates": false,
+    "min_public_locations": 1
   }
 }

@@ -179,12 +179,28 @@ def _detect_constraints(text: str) -> dict[str, Any]:
         constraints["budget_operator"] = budget.group(1)
         constraints["budget_vnd"] = int(value)
 
-    location = re.search(
-        r"\b(?:o|tai|ve|den|khu vuc|tinh)\s+(can tho|da lat|lam dong|tphcm|ho chi minh|ha noi|da nang)\b",
-        text,
-    )
-    if location:
-        constraints["location"] = location.group(1)
+    # Location slots extraction (provinces, districts, wards)
+    provinces = ["can tho", "an giang", "dong thap", "hau giang", "soc trang", "kien giang",
+                 "vinh long", "tien giang", "ben tre", "tra vinh", "ca mau", "bac lieu",
+                 "lam dong", "da lat", "tphcm", "ho chi minh", "ha noi", "da nang"]
+    for prov in provinces:
+        if re.search(rf"\b{prov}\b", text):
+            constraints["location"] = prov
+            break
+
+    # Districts in Mekong Delta
+    districts = ["o mon", "thoi lai", "co do", "vinh thanh", "phong dien",
+                 "binh thuy", "ninh kieu", "cai rang", "thot not", "cho moi",
+                 "tri ton", "thoai son", "tan hiep", "giong rieng", "chau thanh"]
+    for dist in districts:
+        if re.search(rf"\b{dist}\b", text):
+            constraints["district"] = dist
+            break
+
+    # Wards / communes
+    ward_match = re.search(r"\bxa\s+([a-z0-9\s]+?)(?:\s*,|\s+huyen|\s+quan|\s+tinh|\s+co\b|\s+gan\b|\s*$)", text)
+    if ward_match:
+        constraints["ward"] = ward_match.group(1).strip()
 
     channels = [channel for channel in ("shopee", "website", "lazada", "facebook", "zalo") if channel in text]
     if channels:
@@ -206,16 +222,23 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         text,
     ):
         return "company_contact_information", 0.94
-    if brand == "cfc" and re.search(
-        r"\b(hotline|tong dai|so dien thoai|so lien he|so cham soc|cham soc khach hang)\b",
-        text,
-    ) and not re.search(
-        r"\b(so dien thoai|sdt|dien thoai).{0,20}(cua\s+)?(toi|minh|em|anh|chi)\b",
+    if brand == "zeo" and re.search(
+        r"\b(nuoc lau san|nuoc lau bep|tay da nang|rua chen|tay bon cau|lau kinh|vien giat|nuoc giat)\b",
         text,
     ):
-        return "cfc_contact_information_request", 0.94
+        return "product_category_query", 0.95
+    if brand == "cfc" and re.search(
+        r"\b(hop tac xa|htx|30 tan|20 tan|50 tan|100 tan|don hang lon|so luong lon|giam doc kinh doanh|gdkd|thuong luong hop dong|hop dong lon|mua si so luong)\b",
+        text,
+    ):
+        return "cfc_b2b_large_order_request", 0.98
     if brand == "cfc" and (
-        re.search(r"\b(ma don|don hang|don hom qua|tien do don|tra cuu don|kiem tra don|xe da boc|boc hang)\b", text)
+        re.search(r"\b(von cuc|dong cuc|chay nuoc|rach bao|hong bao|hang loi|hang kem|kem chat luong)\b", text)
+        or (re.search(r"\b(khieu nai|doi tra ngay|doi tra gap|tra hang)\b", text) and not re.search(r"\b(chinh sach|quy dinh)\b", text))
+    ):
+        return "cfc_product_complaint_request", 0.98
+    if brand == "cfc" and (
+        re.search(r"\b(tien do don hang|kiem tra don hang|tra cuu don|xe da boc|boc hang|xuat kho|van don|giao den dau|dh[-\s]?\d+)\b", text)
         or entities.get("order_id")
     ):
         return "cfc_order_status_request", 0.97
@@ -229,14 +252,24 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         text,
     ):
         return "cfc_wholesale_policy_request", 0.96
-    if brand == "cfc" and "availability" in attrs and (
-        re.search(r"\b(npk|phan|cong thuc|bao|kho|chuyen lua)\b", text)
-        or entities.get("formula")
+    if brand == "cfc" and (
+        ("availability" in attrs and (
+            re.search(r"\b(npk|phan|cong thuc|bao|kho|chuyen lua)\b", text)
+            or entities.get("formula")
+        ))
+        or re.search(r"\b(con hang|lay \d+ tan|co lien khong|trong kho con)\b", text)
     ):
         return "cfc_inventory_request", 0.97
-    if brand == "cfc" and re.search(r"\b(dai ly|nha phan phoi|npp|diem mua|cho ban)\b", text) and re.search(
-        r"\b(khu vuc|gan|o dau|tinh|thanh pho|cho toi|cho minh|co khong)\b",
-        text,
+    if re.search(r"\b(thong tin khach hang|khach hang .* la ai|so dien thoai .* cua|con no|no tien|cong no|no bao nhieu|tien no|chua thanh toan)\b", text):
+        return "privacy_sensitive_lookup", 0.98
+    if _has_any(text, ["tra hang", "doi tra", "hoan tien", "khieu nai"]):
+        return "return_policy_or_claim", 0.95
+    if brand == "cfc" and (
+        re.search(r"\b(dai ly|nha phan phoi|npp|diem mua|diem ban|cho ban|cho mua|cua hang|mua o dau|giao tan nha|giao tan noi)\b", text)
+        or (
+            re.search(r"\b(o dau|cho nao|co khong|co ko|gan nhat)\b", text)
+            and (constraints.get("district") or constraints.get("ward") or constraints.get("location") or re.search(r"\b(o mon|thoi lai|co do|vinh thanh|dinh mon)\b", text))
+        )
     ):
         return "cfc_dealer_location_request", 0.95
     if brand == "cfc" and (
@@ -252,10 +285,6 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         return "cfc_price_unverified", 0.93
     if {"zeo", "pano", "oplus"}.issubset(mentioned) and re.search(r"\b(khac nhau|hay sao|la sao|cung|thuoc|hang|thuong hieu)\b", text):
         return "brand_ecosystem_overview", 0.90
-    if _has_any(text, ["tra hang", "doi tra", "hoan tien", "khieu nai"]):
-        return "return_policy_or_claim", 0.92
-    if re.search(r"\b(thong tin khach hang|khach hang .* la ai|so dien thoai .* cua)\b", text):
-        return "privacy_sensitive_lookup", 0.95
     if _has_any(text, ["bon cau", "toilet", "wc", "men su", "can voi"]) and _has_any(text, ["o vang", "vet o", "tay", "can voi", "sach"]):
         return "cleaning_toilet_stain", 0.93
     if "compatibility" in attrs:

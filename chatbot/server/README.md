@@ -29,6 +29,21 @@ Replay dùng sender/message ID riêng và tự dọn session test. NLU vẫn ở
 
 ## Cài đặt
 
+### Tích hợp AMIS CRM Phase 0-2
+
+AMIS được dùng ở chế độ chỉ đọc để tạo hai snapshot công khai: danh mục sản phẩm không giá và danh bạ điểm bán đã được duyệt. Secret chỉ lấy từ environment.
+
+```bash
+export AMIS_CLIENT_ID=JavisCFCChatbot
+read -s AMIS_CLIENT_SECRET
+export AMIS_CLIENT_SECRET
+
+.venv/bin/python chatbot/server/scripts/amis_crm_sync.py status
+.venv/bin/python chatbot/server/scripts/amis_crm_sync.py audit
+```
+
+Xem checklist field AMIS, gate dữ liệu và lệnh sync tại `chatbot/plan/AMIS_CRM_PHASE_0_2_RUNBOOK.md`.
+
 ### Bước 1: Cấu hình Redis password
 
 Mở file `settings.json` và điền password Redis:

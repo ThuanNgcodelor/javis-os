@@ -92,6 +92,24 @@ def build_route_decision(
             confidence=plan.intent_confidence,
         )
 
+    if plan.brand == "cfc" and plan.intent == "cfc_b2b_large_order_request":
+        return RouteDecision(
+            action="tool",
+            tool="b2b_intake",
+            intent=plan.intent,
+            reason="B2B_LARGE_ORDER_INTAKE",
+            confidence=plan.intent_confidence,
+        )
+
+    if plan.brand == "cfc" and plan.intent == "cfc_product_complaint_request":
+        return RouteDecision(
+            action="tool",
+            tool="complaint_sop",
+            intent=plan.intent,
+            reason="COMPLAINT_SOP_HANDOFF",
+            confidence=plan.intent_confidence,
+        )
+
     if plan.brand == "cfc" and plan.intent in {
         "cfc_price_unverified",
         "cfc_agronomy_review_request",

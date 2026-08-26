@@ -64,6 +64,21 @@
       "lastSyncedHash": "de4633be96d5172b6e6ed58c2e268bc2150729fb76955bfbf6665a1008180904",
       "lastSyncedAt": "2026-08-25T01:38:19.000Z",
       "filename": "zeo_shopee_sync.workflow.ts"
+    },
+    "AgQrZ3psSg9r2Ec1": {
+      "lastSyncedHash": "4cb271e98a041ce576c00e88f290fff1399c9e006d970e91b270d33a94955bd8",
+      "lastSyncedAt": "2026-08-26T08:49:33.486Z",
+      "filename": "amis_crm_full_warm.workflow.ts"
+    },
+    "QLY0cLK5tqcx3KY6": {
+      "lastSyncedHash": "d36c574b5b652d844d5314ab729f24d8aaff9481c8c549a57e8310ec59b25bb0",
+      "lastSyncedAt": "2026-08-26T13:49:59.330Z",
+      "filename": "amis_crm_full_warm.workflow.ts"
+    },
+    "zksntDfjt5rhhbOW": {
+      "lastSyncedHash": "a61afcca35864809cb2e4bc4a3a4cdcaafa2c4b9cf678be00d577ba04f661d5d",
+      "lastSyncedAt": "2026-08-26T13:50:08.694Z",
+      "filename": "amis_crm_public_sync.workflow.ts"
     }
   }
 }

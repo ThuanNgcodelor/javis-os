@@ -294,6 +294,7 @@ from chat_pipeline import ChatPipelineRequest, ChatPipelineResponse, process_cha
 
 
 @app.post("/api/chat-pipeline", response_model=ChatPipelineResponse)
+@app.post("/api/chat/pipeline", response_model=ChatPipelineResponse)
 async def chat_pipeline_endpoint(req: ChatPipelineRequest):
     """
     High-Performance Fast-Path Chatbot Pipeline cho ZeO & CFC.

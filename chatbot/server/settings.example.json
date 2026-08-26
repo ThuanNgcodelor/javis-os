@@ -73,5 +73,23 @@
   },
   "shopee": {
     "sheet_url": ""
+  },
+  "amis": {
+    "base_url": "https://crmconnect.misa.vn/api/v2",
+    "client_id": "JavisCFCChatbot",
+    "timeout_seconds": 20,
+    "page_size": 100,
+    "max_pages": 1000,
+    "max_retries": 3,
+    "public_approval_field": "chatbot_public",
+    "public_phone_field": "chatbot_public_phone",
+    "public_address_field": "chatbot_public_address",
+    "public_recency_days": 365,
+    "allowed_revenue_statuses": ["Đã ghi"],
+    "blocked_order_status_fragments": ["Hủy", "Từ chối"],
+    "allow_billing_address_fallback": false,
+    "allow_office_phone_fallback": false,
+    "min_public_products": 1,
+    "min_public_locations": 1
   }
 }

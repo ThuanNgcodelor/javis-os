@@ -121,12 +121,29 @@ def _make_router() -> APIRouter:
             rewritten = req.answer
         return {"original_answer": req.answer, "rewritten_answer": rewritten, "brand": req.brand}
 
+    @router.post("/api/chat/pipeline")
+    async def chat_pipeline_slash_endpoint(payload: dict[str, Any]):
+        try:
+            return await legacy_javis_runtime.chat_pipeline(payload, _legacy_settings())
+        except Exception as exc:  # noqa: BLE001 - compatibility boundary
+            raise _legacy_error(exc) from exc
+
     @router.post("/api/shopee/refresh-cache")
     async def refresh_shopee_cache_endpoint(brand: str = Query("all", description="'zeo', 'cfc', hoặc 'all'")):
         try:
             return await legacy_javis_runtime.refresh_shopee_cache(brand, _legacy_settings())
         except Exception as exc:  # noqa: BLE001 - compatibility boundary
             raise _legacy_error(exc) from exc
+
+    try:
+        import sys
+        server_dir = legacy_javis_runtime.legacy_server_dir(_legacy_settings())
+        if str(server_dir) not in sys.path:
+            sys.path.append(str(server_dir))
+        from domains.amis import routes as amis_routes
+        router.include_router(amis_routes.router, prefix="/admin")
+    except Exception as exc:  # noqa: BLE001
+        pass
 
     return router
 

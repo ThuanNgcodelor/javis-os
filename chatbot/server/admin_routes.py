@@ -24,6 +24,7 @@ from domains.reports import router as reports_router
 from domains.learning import router as learning_router
 from domains.knowledge import router as knowledge_router, sync_shopee_from_sheet
 from domains.rag_test import router as rag_test_router
+from domains.amis import router as amis_router
 
 # ── Facade Admin Router ──
 router = APIRouter(prefix="/admin", tags=["CFC AI Admin Gateway"])
@@ -37,6 +38,7 @@ router.include_router(reports_router)
 router.include_router(learning_router)
 router.include_router(knowledge_router)
 router.include_router(rag_test_router)
+router.include_router(amis_router)
 
 
 # ── Backward-Compatible Re-exports cho các module bên ngoài (main.py, ai_agent_tools.py) ──

@@ -148,7 +148,8 @@ app.add_middleware(CORSMiddleware,
 # KHÔNG để cả prefix /auth public vì /auth/disable, /auth/logout phải yêu cầu đăng nhập.
 # API chatbot được giữ ở _AUTH_LOCAL_EXACT cho n8n cùng máy, không public qua tunnel.
 _AUTH_PUBLIC_PREFIX = ("/static", "/health", "/sync", "/search", "/rewrite",
-                       "/api/shopee", "/legacy-javis", "/javis-control")
+                       "/api/shopee", "/legacy-javis", "/javis-control", "/admin/amis",
+                       "/api/chat/pipeline", "/api/chat-pipeline")
 # /brand-logo: hiện trên màn đăng nhập (trước session). /tls-check: Caddy gọi (không đăng nhập được).
 _AUTH_PUBLIC_EXACT = ("/", "/favicon.ico", "/auth/status", "/auth/login", "/auth/setup",
                       "/brand-logo", "/tls-check",
@@ -166,7 +167,9 @@ _AUTH_PUBLIC_EXACT = ("/", "/favicon.ico", "/auth/status", "/auth/login", "/auth
 # bằng chat trả 401 câm. /reminders/delete CỐ Ý không có ở đây: xoá hẳn thì để dashboard (có
 # session) làm, chat chỉ cần huỷ.
 _AUTH_LOCAL_EXACT = ("/telegram/send-file", "/reminders", "/reminders/cancel", "/reminders/update",
-                     "/api/chat-pipeline", "/sync", "/search", "/rewrite")
+                     "/api/chat-pipeline", "/api/chat/pipeline",
+                     "/admin/amis/warm", "/admin/amis/status", "/admin/amis/audit", "/admin/amis/inspect", "/admin/amis/verify",
+                     "/sync", "/search", "/rewrite")
 
 
 @app.middleware("http")
