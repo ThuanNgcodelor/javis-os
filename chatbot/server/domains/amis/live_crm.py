@@ -124,111 +124,63 @@ def lookup_order_status(order_code: Optional[str] = None, dealer_name: Optional[
     """Tra cứu trạng thái đơn hàng thật từ CRM dataset."""
     _ensure_crm_dataset_loaded()
 
+    def _extract_order_info(o: dict[str, Any], query_code: str) -> dict[str, Any]:
+        prods = o.get("sale_order_product_mappings") or o.get("details") or []
+        prod_names = []
+        total_qty = 0
+        for p in prods[:3]:
+            desc = p.get("description") or p.get("product_name") or "Phân bón NPK Cò Bay"
+            p_amt = p.get("amount") or p.get("usage_unit_amount") or 0
+            p_unit = p.get("unit") or p.get("usage_unit") or "Bao"
+            prod_names.append(f"{desc} ({int(p_amt) if isinstance(p_amt, (int, float)) else p_amt} {p_unit})")
+            if isinstance(p_amt, (int, float)):
+                total_qty += p_amt
+
+        p_display = "; ".join(prod_names) if prod_names else "Sản phẩm phân bón Cò Bay"
+        code = str(o.get("sale_order_no") or o.get("order_no") or o.get("id") or query_code)
+
+        return {
+            "order_code": code,
+            "dealer_name": o.get("account_name") or "Quý Khách Hàng",
+            "product_name": p_display,
+            "quantity_tons": total_qty if total_qty > 0 else (o.get("amount_summary") or None),
+            "warehouse": o.get("organization_unit_name") or "Tổng kho Nhà máy Cần Thơ (KCN Trà Nóc)",
+            "truck_plate": None,
+            "driver_name": None,
+            "status": o.get("status") or "Đã thực hiện",
+            "source": "amis_real_crm",
+            "updated_at": o.get("modified_date") or o.get("created_date") or datetime.now(timezone.utc).isoformat(),
+        }
+
     # 1. Tìm theo mã đơn hàng
     if order_code:
         clean_code = str(order_code).upper().replace("#", "").strip()
         orders_by_code = _CRM_DATASET.get("orders_by_code", {})
 
-        # Khớp chính xác mã đơn
         if clean_code in orders_by_code:
-            o = orders_by_code[clean_code]
-            details = o.get("details") or []
-            first_prod = details[0] if details else {}
-            prod_name = first_prod.get("description") or "Phân bón NPK Cò Bay"
-            qty = first_prod.get("amount") or 15
-            unit = first_prod.get("unit") or "Bao"
-            return {
-                "order_code": clean_code,
-                "dealer_name": o.get("account_name") or "Quý Khách Hàng",
-                "product_name": f"{prod_name} ({unit})",
-                "quantity_tons": int(qty) if isinstance(qty, (int, float)) else qty,
-                "loaded_tons": int(qty * 0.7) if isinstance(qty, (int, float)) else None,
-                "warehouse": first_prod.get("stock_name") or "Kho Vận Cần Thơ (KCN Trà Nóc)",
-                "truck_plate": "65C-123.45",
-                "driver_name": "Nguyễn Văn Hùng",
-                "status": o.get("status") or "Đang bốc hàng",
-                "estimated_departure": "16:30 chiều nay",
-                "source": "amis_real_crm",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
+            return _extract_order_info(orders_by_code[clean_code], clean_code)
 
-        # Tìm khớp chính xác trong danh sách đơn hàng
         for o in _CRM_DATASET.get("sale_orders", []):
-            o_code = str(o.get("order_no") or o.get("order_code") or o.get("id") or "").upper()
-            if o_code and (clean_code == o_code or (len(clean_code) >= 6 and clean_code == o_code)):
-                details = o.get("details") or []
-                first_prod = details[0] if details else {}
-                prod_name = first_prod.get("description") or "Phân bón NPK Cò Bay"
-                qty = first_prod.get("amount") or 15
-                unit = first_prod.get("unit") or "Bao"
-                return {
-                    "order_code": o_code or clean_code,
-                    "dealer_name": o.get("account_name") or "Quý Khách Hàng",
-                    "product_name": f"{prod_name} ({unit})",
-                    "quantity_tons": qty,
-                    "warehouse": first_prod.get("stock_name") or "Kho Vận Cần Thơ",
-                    "truck_plate": "65C-123.45",
-                    "driver_name": "Nguyễn Văn Hùng",
-                    "status": o.get("status") or "Đang bốc hàng",
-                    "estimated_departure": "16:30 chiều nay",
-                    "source": "amis_real_crm",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
+            o_code = str(o.get("sale_order_no") or o.get("order_no") or o.get("id") or "").upper()
+            if o_code and (clean_code == o_code or (len(clean_code) >= 4 and clean_code in o_code)):
+                return _extract_order_info(o, clean_code)
 
-        # Nếu là mã đơn mới phát sinh: Tạo bản ghi điều phối thời gian thực
-        return {
-            "order_code": order_code,
-            "dealer_name": "Đại lý Nông Nghiệp Miền Tây",
-            "product_name": "NPK 16-16-8 TE Cò Bay (Bao 50kg)",
-            "quantity_tons": 30,
-            "loaded_tons": 20,
-            "warehouse": "Cửa kho số 2 - Nhà máy Cần Thơ (Kho Vận Trà Nóc)",
-            "truck_plate": "65C-123.45",
-            "driver_name": "Nguyễn Văn Hùng",
-            "status": "Đang bốc hàng",
-            "estimated_departure": "16:30 chiều nay",
-            "source": "amis_real_crm_dispatch",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        return None
 
     # 2. Tìm theo tên đại lý xưng danh
     if dealer_name:
         d_norm = dealer_name.lower().strip()
         for cust_name, orders in _CRM_DATASET.get("orders_by_customer", {}).items():
-            if d_norm == cust_name or (len(d_norm) >= 6 and d_norm in cust_name):
+            if d_norm == cust_name or (len(d_norm) >= 4 and d_norm in cust_name):
                 if orders:
-                    latest = orders[0]
-                    code = str(latest.get("order_no") or latest.get("id") or "DH-2026-872")
-                    details = latest.get("details") or []
-                    first_prod = details[0] if details else {}
-                    prod_name = first_prod.get("description") or "NPK 20-20-15 Cò Bay"
-                    return {
-                        "order_code": code,
-                        "dealer_name": latest.get("account_name") or dealer_name,
-                        "product_name": prod_name,
-                        "quantity_tons": 15,
-                        "warehouse": "Kho Trung Chuyển Thới Lai",
-                        "truck_plate": "65C-889.92",
-                        "status": latest.get("status") or "Đã phê duyệt xuất kho",
-                        "note": "Lệnh xuất kho đã được Giám sát Bán hàng phê duyệt",
-                        "source": "amis_real_crm",
-                        "updated_at": datetime.now(timezone.utc).isoformat(),
-                    }
+                    return _extract_order_info(orders[0], "")
 
-        # Nếu đại lý chưa có đơn cũ trong CRM: trả về lệnh xuất kho khu vực
-        d_title = dealer_name if ("vinh thanh" not in d_norm and "anh ba" not in d_norm) else "Đại lý Vĩnh Thạnh (Anh Ba)"
-        return {
-            "order_code": "DH-2026-872",
-            "dealer_name": d_title,
-            "product_name": "NPK 20-20-15 Cò Bay (Bao 50kg)",
-            "quantity_tons": 15,
-            "warehouse": "Kho Trung Chuyển Thới Lai",
-            "truck_plate": "65C-889.92",
-            "status": "Đã phê duyệt lệnh xuất kho",
-            "note": "Lệnh xuất kho đã được Giám sát Bán hàng phê duyệt",
-            "source": "amis_real_crm_dispatch",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        for o in _CRM_DATASET.get("sale_orders", []):
+            acc_name = str(o.get("account_name") or "").lower()
+            if d_norm in acc_name and len(d_norm) >= 4:
+                return _extract_order_info(o, "")
+
+        return None
 
     return None
 
@@ -298,12 +250,21 @@ def lookup_inventory_atp(query: str, qty_tons: float = 5.0) -> Optional[dict[str
         return re.sub(r"\s+", " ", text.lower()).strip()
 
     q_norm = _clean_vn(q_raw)
-    formula_match = re.search(r"\b\d{1,2}[-\s]\d{1,2}[-\s]\d{1,2}\b", q_raw)
-    formula = formula_match.group(0).replace(" ", "-") if formula_match else None
+
+    # Loại trừ ngay các mặt hàng ngoài ngành không thuộc phân bón
+    if any(k in q_norm for k in ["xi mang", "sat thep", "gach da", "cat da", "ao mua", "mu bao hiem", "non bao hiem", "xe may", "xang dau"]):
+        return None
+
+    formula_match = re.search(r"\b\d{1,2}[-.\s]\d{1,2}[-.\s]\d{1,2}\b", q_raw)
+    formula = formula_match.group(0).replace(" ", "-").replace(".", "-") if formula_match else None
+    pack_match = re.search(r"\b(25kg|50kg|25\s*kg|50\s*kg|can|thung|tui)\b", q_norm)
+    pack = pack_match.group(0).replace(" ", "") if pack_match else ""
+    code_match = re.search(r"\b(01\.\d{4,5}|pb\d{4,5})\b", q_norm)
+    query_code = code_match.group(0) if code_match else ""
+
     q_words = [w for w in q_norm.split() if len(w) > 1]
 
-    best_p = None
-    best_score = 0
+    candidates = []
 
     for p in _CRM_DATASET.get("products", []):
         p_name = p.get("product_name") or ""
@@ -312,29 +273,58 @@ def lookup_inventory_atp(query: str, qty_tons: float = 5.0) -> Optional[dict[str
         p_code_norm = _clean_vn(p_code)
 
         score = 0
-        if formula and formula in p_name:
-            score += 150
-        if q_norm == p_code_norm or q_raw.upper() == p_code.upper():
-            score += 200
+        if query_code and (query_code == p_code_norm or query_code == p_code.lower()):
+            score += 300
+        if formula:
+            formula_dot = formula.replace("-", ".")
+            if formula in p_name or formula_dot in p_name or formula.replace("-", "") in p_name:
+                score += 120
+        if pack and pack in p_name_norm:
+            score += 60
+        if "te" in q_norm and "te" in p_name_norm:
+            score += 30
+        if "da dung" in q_norm and "da dung" in p_name_norm:
+            score += 40
+        if "hi end" in q_norm and "hi end" in p_name_norm:
+            score += 40
+
+        # Khớp các mã quy cách phụ (như 202015MT, TR44a, CB45, CB36, 2015TE02...)
+        for w in q_words:
+            if len(w) >= 4 and w in p_name_norm:
+                score += 50
+
         if q_norm in p_name_norm:
-            score += 100 + len(q_norm)
+            score += 80
 
         matched_words = [w for w in q_words if w in p_name_norm or w in p_code_norm]
         if matched_words:
             overlap_ratio = len(matched_words) / len(q_words)
             if overlap_ratio >= 0.5:
-                score += int(overlap_ratio * 50) + len(matched_words) * 5
+                score += int(overlap_ratio * 40) + len(matched_words) * 3
 
-        if score > best_score and score >= 40:
-            best_score = score
-            best_p = p
+        if score >= 60:
+            candidates.append((score, p))
 
-    if best_p:
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best_p = candidates[0][1]
+
+        # Thu thập các quy cách / biến thể khác cùng dòng
+        variants = []
+        seen_names = {best_p.get("product_name")}
+        for _, other_p in candidates[1:]:
+            o_name = other_p.get("product_name") or ""
+            o_code = other_p.get("product_code") or ""
+            if o_name and o_name not in seen_names and len(variants) < 4:
+                seen_names.add(o_name)
+                variants.append(f"{o_name} (Mã: {o_code})")
+
         return {
             "product_name": best_p.get("product_name"),
             "product_code": best_p.get("product_code"),
-            "unit": best_p.get("usage_unit", "Bao"),
+            "unit": best_p.get("usage_unit") or best_p.get("unit") or "Bao",
             "category": best_p.get("product_category", "Phân bón & Hóa chất"),
+            "other_variants": variants,
             "factory_capacity_daily_tons": 200,
             "warehouse_available_tons": 100,
             "can_fulfill_instantly": True,
@@ -399,41 +389,28 @@ def create_cskh_ticket(
 # 6. FORMATTER ĐÁP ỨNG REALTIME TỰ ĐỘNG THEO DỮ LIỆU THỰC
 # ==============================================================================
 def format_order_status_response(order: dict[str, Any], query_order_code: str = "") -> str:
-    """Tạo câu trả lời động dựa trên dữ liệu đơn hàng trả về từ CRM / Kho vận."""
+    """Tạo câu trả lời động dựa trên dữ liệu đơn hàng thật từ CRM."""
     order_code = order.get("order_code") or query_order_code or "đơn hàng"
     if not str(order_code).startswith("#"):
         order_code = f"#{order_code}"
 
     dealer_name = order.get("dealer_name", "")
-    greeting = f"Dạ CFC - Phân bón Cò Bay xin chào {dealer_name} ạ!\n" if dealer_name else ""
+    greeting = f"Dạ CFC - Phân bón Cò Bay xin chào **{dealer_name}** ạ!\n" if dealer_name else ""
 
     product_name = order.get("product_name", "")
-    quantity_tons = order.get("quantity_tons", "")
-    prod_line = f" ({quantity_tons} tấn {product_name})" if (quantity_tons and product_name) else (f" ({product_name})" if product_name else "")
+    prod_line = f"\n📦 **Danh mục hàng:** {product_name}" if product_name else ""
+    warehouse = order.get("warehouse", "Tổng kho Nhà máy Cần Thơ (KCN Trà Nóc)")
+    status = order.get("status") or "Đã thực hiện"
+    qty = order.get("quantity_tons")
+    qty_line = f"\n📊 **Tổng số lượng:** {int(qty) if isinstance(qty, (int, float)) else qty}" if qty else ""
 
-    warehouse = order.get("warehouse", "Kho Vận Nhà máy")
-    truck_plate = order.get("truck_plate", "")
-    driver_name = order.get("driver_name", "")
-    truck_line = f"xe tải biển số {truck_plate}" + (f" (Tài xế: {driver_name})" if driver_name else "") if truck_plate else "bộ phận Điều phối Kho Vận"
-
-    loaded_tons = order.get("loaded_tons")
-    note = order.get("note", "")
-    est_dep = order.get("estimated_departure", "")
-
-    header = f"{greeting}Về tiến độ đơn hàng **{order_code}**{prod_line}, bộ phận Điều phối Kho Vận ghi nhận đang được {truck_line} xử lý tại **{warehouse}**:"
-    lines = [header]
-
-    if loaded_tons is not None and quantity_tons:
-        lines.append(f"📦 **Tiến độ bốc hàng:** Đã bốc được **{loaded_tons}/{quantity_tons} tấn** (trạng thái: Đang bốc hàng).")
-    elif note:
-        lines.append(f"📦 **Trạng thái:** {note}.")
-
-    if est_dep:
-        lines.append(f"🚚 **Dự kiến xuất bến:** **{est_dep}** xe sẽ xuất phát giao tới điểm nhận nhé ạ!")
-    else:
-        lines.append("🚚 Xe tải đang chuẩn bị hoàn tất bốc hàng để xuất bến giao về đại lý nhé ạ!")
-
-    return "\n".join(lines)
+    return (
+        f"{greeting}Về tiến độ đơn hàng **{order_code}** trên hệ thống AMIS CRM:"
+        f"{prod_line}{qty_line}"
+        f"\n🏢 **Đơn vị xử lý:** {warehouse}"
+        f"\n🚚 **Trạng thái thực tế:** **{status}**."
+        "\nBộ phận Điều phối Kho Vận đang theo dõi tiến độ để đảm bảo giao đúng kế hoạch cho quý khách nhé ạ!"
+    )
 
 
 def format_loyalty_response(loyalty: dict[str, Any], phone: str = "") -> str:

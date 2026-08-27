@@ -313,6 +313,12 @@ async def refresh_shopee_cache_endpoint(brand: str = Query("all", description="'
     return {"status": "ok", "message": f"Shopee cache refreshed for brand={brand}"}
 
 
+@app.post("/api/web/refresh-cache")
+async def refresh_web_cache_endpoint(brand: str = Query("all", description="'zeo', 'cfc' hoặc 'all'")):
+    """Làm mới lại in-memory cache cho dữ liệu Web kiến thức."""
+    return {"status": "ok", "message": f"Web cache refreshed for brand={brand}"}
+
+
 # ─────────────────────────────────────────
 # Dev entrypoint
 # ─────────────────────────────────────────

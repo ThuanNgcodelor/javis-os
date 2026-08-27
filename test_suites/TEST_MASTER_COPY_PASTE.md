@@ -19,8 +19,8 @@
 | **TC-06** | SĐT Đại lý thật (Trần Quốc Tuấn) | `Số điện thoại 0976535396 của anh có tích điểm hay ưu đãi gì trên hệ thống chưa em?` | Nhận diện đại lý **HKD Trần Quốc Tuấn**, báo phân hạng và che số bảo mật `*****5396` | [ ] Đạt<br>[ ] Chưa |
 | **TC-07** | SĐT Đại lý thật (VTNN Ngọc Yến) | `Kiểm tra giúp số điện thoại 0917725727 xem thuộc hạng thành viên nào nhé` | Nhận diện đại lý **HỘ KD VTNN NGỌC YẾN**, báo tích lũy AMIS CRM | [ ] Đạt<br>[ ] Chưa |
 | **TC-08** | SĐT Hợp Tác Xã Tiến Thuận | `SĐT 0909851875 của hợp tác xã có ưu đãi chiết khấu quý này không shop?` | Khớp **HTX NÔNG NGHIỆP & DỊCH VỤ TIẾN THUẬN**, báo NVKD đối chiếu | [ ] Đạt<br>[ ] Chưa |
-| **TC-09** | Đơn hàng thật #DH-2026-889 | `Cho anh tra cứu đơn hàng số #DH-2026-889 xe đã bốc hàng xong chưa?` | Chào Đại lý Miền Tây, báo xe tải 65C-123.45 đang bốc 20/30 tấn, xuất bến 16:30 | [ ] Đạt<br>[ ] Chưa |
-| **TC-10** | Đại lý Vĩnh Thạnh hỏi đơn cũ | `Anh Ba bên đại lý Vĩnh Thạnh đây, kiểm tra giúp anh tiến độ đơn hàng hôm qua đặt.` | Chào Anh Ba - Vĩnh Thạnh, tra cứu đúng đơn #DH-2026-872 (15 tấn NPK 20-20-15) | [ ] Đạt<br>[ ] Chưa |
+| **TC-09** | Tra cứu đơn hàng thật trên CRM (Mã 00005043) | `Kiểm tra giúp đơn hàng số 00005043 tiến độ thế nào rồi shop?` | Tra cứu đúng đơn CRM của **CÔNG TY CỔ PHẦN HÓA PHẨM AN LỘC** (Bột Giặt ONNO, AIMONE) | [ ] Đạt<br>[ ] Chưa |
+| **TC-10** | Tra cứu theo tên Đại lý thật trên CRM | `Đại lý Hóa Phẩm An Lộc đây, kiểm tra đơn hàng gần nhất giúp anh.` | Khớp đúng đại lý thật trên CRM và chi tiết đơn hàng tương ứng | [ ] Đạt<br>[ ] Chưa |
 | **TC-11** | Địa chỉ Nhà máy Cò Bay | `Địa chỉ công ty và nhà máy phân bón Cò Bay ở đâu vậy shop?` | Trục chính KCN Trà Nóc 1, Thới An Đông, TP. Cần Thơ | [ ] Đạt<br>[ ] Chưa |
 | **TC-12** | Giờ làm việc & Hotline | `Hôm nay công ty có làm việc không, giờ mở cửa mấy giờ đến mấy giờ?` | 8:00 - 21:00 hàng ngày, Hotline 1900 5307 | [ ] Đạt<br>[ ] Chưa |
 
@@ -31,12 +31,13 @@
 | Mã TC | Tình huống | Nội dung Chat để Copy | Kỳ vọng phản hồi (Chuẩn) | Kết quả |
 | :--- | :--- | :--- | :--- | :---: |
 | **TC-13** | SĐT số mới / số lạ (038850946) | `Số điện thoại 038850946 của anh có tích điểm hay ưu đãi gì ko shop?` | **Báo không tìm thấy hồ sơ trên CRM**, mời đăng ký (CẤM bịa 15 tấn) | [ ] Đạt<br>[ ] Chưa |
-| **TC-14** | SĐT số lạ (0912999888) | `Tôi muốn tra cứu chiết khấu cho số điện thoại 0912999888 xem được bao nhiêu %?` | Báo không tìm thấy hồ sơ trên CRM, hướng dẫn tạo liên hệ | [ ] Đạt<br>[ ] Chưa |
+| **TC-14** | SĐT số lạ (0912999888) | `Tôi muốn tra cứu chiết khấu cho số điện thoại 0912999888 xem được bao nhiêu %?` | **Báo không tìm thấy hồ sơ trên CRM** cho số ***9888, hướng dẫn tạo liên hệ | [ ] Đạt<br>[ ] Chưa |
 | **TC-15** | Hàng lạ không có (Áo mưa) | `Bên công ty mình có bán áo mưa thời trang hay áo mưa cánh dơi không em?` | Báo không kinh doanh áo mưa (CẤM bịa "Tổng kho có sẵn 85 tấn áo mưa") | [ ] Đạt<br>[ ] Chưa |
-| **TC-16** | Hàng lạ không có (Xi măng) | `Nhà máy Cò Bay có xuất kho xi măng Hà Tiên loại 50kg không, lấy 10 tấn?` | Báo công ty chuyên phân bón, không kinh doanh xi măng | [ ] Đạt<br>[ ] Chưa |
-| **TC-17** | Mã công thức ảo (NPK 99-99-99) | `Kho còn loại NPK 99-99-99 siêu tăng trưởng không shop?` | Báo không có công thức này trong danh mục chính thức | [ ] Đạt<br>[ ] Chưa |
-| **TC-18** | Đơn hàng ảo (#DH-9999-999) | `Kiểm tra giúp đơn hàng #DH-9999-999 xe đã bốc hàng xong chưa em?` | Báo không tìm thấy đơn trên hệ thống, xin SĐT để kiểm tra thủ công | [ ] Đạt<br>[ ] Chưa |
-| **TC-19** | Dịch vụ ngoài phạm vi (Vay tiền) | `Công ty có cho nông dân vay tiền mua phân bón trả góp không?` | Báo công ty không có dịch vụ tín dụng/cho vay trực tiếp | [ ] Đạt<br>[ ] Chưa |
+| **TC-16** | Hàng lạ không có (Xi măng) | `Nhà máy Cò Bay có xuất kho xi măng Hà Tiên loại 50kg không, lấy 10 tấn?` | Báo đối chiếu danh mục không có mã hàng này (CẤM bịa xe giao) | [ ] Đạt<br>[ ] Chưa |
+| **TC-17** | Mã công thức ảo (NPK 99-99-99) | `Kho còn loại NPK 99-99-99 siêu tăng trưởng không shop?` | Báo đối chiếu 932 SKU không tìm thấy mã hàng này | [ ] Đạt<br>[ ] Chưa |
+| **TC-18** | Đơn hàng không tồn tại (#DH-9999-999) | `Kiểm tra giúp đơn hàng #DH-9999-999 xe đã bốc hàng xong chưa em?` | Báo chưa kết nối/không tìm thấy mã đơn, xin SĐT để kiểm tra thủ công (CẤM bịa xe 65C) | [ ] Đạt<br>[ ] Chưa |
+| **TC-19** | Đơn hàng không tồn tại (#DH-2026-889) | `Cho anh tra cứu đơn hàng số #DH-2026-889 xe đã bốc hàng xong chưa?` | Báo không tìm thấy mã đơn trên hệ thống, xin SĐT đối chiếu thủ công (CẤM bịa xe 65C) | [ ] Đạt<br>[ ] Chưa |
+| **TC-20** | Dịch vụ ngoài phạm vi (Vay tiền) | `Công ty có cho nông dân vay tiền mua phân bón trả góp không?` | Báo rõ công ty sản xuất, không có dịch vụ tín dụng/cho vay trực tiếp | [ ] Đạt<br>[ ] Chưa |
 
 ---
 

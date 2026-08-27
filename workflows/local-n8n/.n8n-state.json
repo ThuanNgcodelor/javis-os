@@ -76,8 +76,8 @@
       "filename": "amis_crm_full_warm.workflow.ts"
     },
     "zksntDfjt5rhhbOW": {
-      "lastSyncedHash": "a61afcca35864809cb2e4bc4a3a4cdcaafa2c4b9cf678be00d577ba04f661d5d",
-      "lastSyncedAt": "2026-08-26T13:50:08.694Z",
+      "lastSyncedHash": "12f1c221b27c3f2d99ad4c8ba9114379e5ac95c5b894503fdf516125e072e6c3",
+      "lastSyncedAt": "2026-08-27T01:34:57.338Z",
       "filename": "amis_crm_public_sync.workflow.ts"
     }
   }

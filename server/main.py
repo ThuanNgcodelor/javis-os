@@ -168,6 +168,7 @@ _AUTH_PUBLIC_EXACT = ("/", "/favicon.ico", "/auth/status", "/auth/login", "/auth
 # session) làm, chat chỉ cần huỷ.
 _AUTH_LOCAL_EXACT = ("/telegram/send-file", "/reminders", "/reminders/cancel", "/reminders/update",
                      "/api/chat-pipeline", "/api/chat/pipeline",
+                     "/api/shopee/refresh-cache", "/api/web/refresh-cache",
                      "/admin/amis/warm", "/admin/amis/status", "/admin/amis/audit", "/admin/amis/inspect", "/admin/amis/verify",
                      "/sync", "/search", "/rewrite")
 

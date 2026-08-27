@@ -71,7 +71,7 @@ def _detect_attributes(text: str) -> list[str]:
         attrs.append("price")
     if re.search(r"\b(link|shopee|mua online|dat mua|gian hang)\b", text):
         attrs.append("link")
-    if re.search(r"\b(con hang|co san|ton kho|trong kho|het hang|con khong|con ko|con nhieu|co lien)\b", text):
+    if re.search(r"\b(con hang|co san|ton kho|trong kho|het hang|con khong|con ko|con nhieu|co lien|kho con|con loai|con ma|co xuat kho|xuat kho khong|giao lien|giao duoc lien|giao ngay|lay lien)\b", text):
         attrs.append("availability")
     if re.search(r"\b(cach dung|huong dan|su dung|dung sao|dung nhu the nao|lieu luong|cach bon|nen bon|cong thuc nao)\b", text):
         attrs.append("usage")
@@ -238,26 +238,28 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
     ):
         return "cfc_product_complaint_request", 0.98
     if brand == "cfc" and (
-        re.search(r"\b(tien do don hang|kiem tra don hang|tra cuu don|xe da boc|boc hang|xuat kho|van don|giao den dau|dh[-\s]?\d+)\b", text)
+        re.search(r"\b(tien do don hang|kiem tra don hang|tra cuu don|xe da boc|boc hang xong|da xuat kho chua|tien do xuat kho|van don|giao den dau|dh[-\s]?\d+)\b", text)
         or entities.get("order_id")
     ):
         return "cfc_order_status_request", 0.97
+    if re.search(r"\b(vay tien|cho vay|tin dung|tra gop|vay von|cho muon tien)\b", text):
+        return "financial_service_unsupported", 0.98
     if brand == "cfc" and re.search(
-        r"\b(tich diem|diem thuong|diem tich luy|chiet khau gi chua|hang thanh vien|tai khoan dai ly)\b",
+        r"\b(bang gia si|gia si|chiet khau quy|muc chiet khau|chinh sach chiet khau|dai ly cap|chiet khau cho dai ly|chiet khau cap)\b",
+        text,
+    ):
+        return "cfc_wholesale_policy_request", 0.97
+    if brand == "cfc" and re.search(
+        r"\b(tich diem|diem thuong|diem tich luy|hang thanh vien|tai khoan dai ly|uu dai gi ko|uu dai gi khong|uu dai gi chua|uu dai gi|duoc bao nhieu %|tra cuu chiet khau)\b",
         text,
     ):
         return "cfc_loyalty_lookup_request", 0.96
-    if brand == "cfc" and re.search(
-        r"\b(bang gia si|gia si|chiet khau quy|muc chiet khau|chinh sach chiet khau|dai ly cap)\b",
-        text,
-    ):
-        return "cfc_wholesale_policy_request", 0.96
     if brand == "cfc" and (
         ("availability" in attrs and (
-            re.search(r"\b(npk|phan|cong thuc|bao|kho|chuyen lua)\b", text)
+            re.search(r"\b(npk|phan|cong thuc|bao|kho|chuyen lua|con loai|con ma|sieu tang truong)\b", text)
             or entities.get("formula")
         ))
-        or re.search(r"\b(con hang|lay \d+ tan|co lien khong|trong kho con)\b", text)
+        or re.search(r"\b(con hang|lay \d+ tan|co lien khong|trong kho con|kho con|con loai|con ma)\b", text)
     ):
         return "cfc_inventory_request", 0.97
     if re.search(r"\b(thong tin khach hang|khach hang .* la ai|so dien thoai .* cua|con no|no tien|cong no|no bao nhieu|tien no|chua thanh toan)\b", text):

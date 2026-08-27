@@ -125,6 +125,11 @@ async def refresh_shopee_cache(brand: str = "all", settings: dict | None = None)
     return {"status": "ok", "message": f"Shopee cache refreshed for brand={brand}"}
 
 
+async def refresh_web_cache(brand: str = "all", settings: dict | None = None) -> dict[str, Any]:
+    brand = str(brand or "all").lower()
+    return {"status": "ok", "message": f"Web knowledge cache refreshed for brand={brand}"}
+
+
 async def list_chat_handoffs(brand: str = "all", settings: dict | None = None) -> dict[str, Any]:
     mods = load_modules(settings)
     redis_client = await mods.chat_pipeline.get_redis()

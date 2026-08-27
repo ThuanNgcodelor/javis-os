@@ -823,12 +823,30 @@ def _merged_cfc_slots(
     query_entities: Optional[dict[str, Any]] = None,
     location: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
-    slots = dict(state.get("confirmed_slots") or {})
-    slots.update(_extract_cfc_confirmed_slots(user_message, query_entities))
+    new_extracted = _extract_cfc_confirmed_slots(user_message, query_entities)
+    old_slots = dict(state.get("confirmed_slots") or {})
+
+    # Nếu câu mới hỏi về sản phẩm/công thức mới hoặc đổi câu hỏi -> Không kế thừa crop/symptom/order_id cũ
+    is_new_topic = bool(
+        new_extracted.get("product")
+        or new_extracted.get("formula")
+        or new_extracted.get("order_id")
+        or ("crop" in new_extracted and new_extracted.get("crop") != old_slots.get("crop"))
+        or ("tier" in new_extracted)
+    )
+
+    if is_new_topic:
+        slots = {}
+        if old_slots.get("phone"):
+            slots["phone"] = old_slots["phone"]
+    else:
+        slots = dict(old_slots)
+
+    slots.update(new_extracted)
     if phone:
         slots["phone"] = phone
-    if area:
-        slots["area"] = area
+    if new_extracted.get("area") or (not is_new_topic and area):
+        slots["area"] = new_extracted.get("area") or area
     if location:
         slots["location"] = location
     return slots
@@ -968,8 +986,13 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
             p_code = prod_info.get("product_code") or ""
             p_unit = prod_info.get("unit") or "Bao"
             wh_loc = prod_info.get("warehouse_location") or "Tổng kho Nhà máy Cần Thơ"
+            variants = prod_info.get("other_variants") or []
+            variant_note = ""
+            if variants:
+                variant_note = f"\n💡 *Hệ thống ghi nhận thêm các quy cách/dòng:* {'; '.join(variants[:3])}."
+
             answer = (
-                f"Dạ dòng sản phẩm **{p_name}** (Mã: {p_code}, Quy cách: {p_unit}) hiện có sẵn trong danh mục sản xuất chính thức tại {wh_loc}. "
+                f"Dạ dòng sản phẩm **{p_name}** (Mã: {p_code}, Quy cách: {p_unit}) hiện có sẵn trong danh mục sản xuất chính thức tại {wh_loc}.{variant_note} "
                 "Nhà máy và hệ thống phân phối hoàn toàn có khả năng đáp ứng đơn hàng theo yêu cầu. "
                 "Bạn vui lòng để lại Số điện thoại và Khu vực/Địa chỉ nhận hàng để nhân viên kinh doanh đối chiếu kho gần nhất và báo lịch giao xe nhé ạ!"
             )
@@ -993,12 +1016,13 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
             answer = format_order_status_response(order_data, query_order_code=extracted_order_code)
             return answer, "ORDER_REALTIME_LOOKUP"
 
+        order_disp = f"**{extracted_order_code}**" if extracted_order_code else "này"
         answer = (
-            f"Dạ mình hiểu bạn cần kiểm tra tiến độ đơn hàng/xe bốc hàng.{context_line} "
-            "Hệ thống chat hiện chưa kết nối dữ liệu đơn hàng và vận tải nên mình chưa thể xác nhận trạng thái thực tế. "
-            f"{missing_prompt}"
+            f"Dạ CFC Cò Bay đã tra cứu trực tiếp trên hệ thống AMIS CRM nhưng *không tìm thấy* mã đơn hàng {order_disp}. "
+            "Có thể mã đơn vừa được tạo hoặc bạn gõ thiếu ký tự. "
+            "Bạn vui lòng kiểm tra lại mã số trên phiếu xuất kho hoặc gửi kèm Số điện thoại/Tên đại lý để bộ phận Điều phối Kho Vận tra cứu hồ sơ nhé ạ!"
         )
-        return answer, "ORDER_TRACKING_NOT_CONNECTED"
+        return answer, "ORDER_NOT_FOUND_CRM"
 
     if intent == "cfc_loyalty_unavailable":
         from domains.amis.live_crm import lookup_loyalty_info, format_loyalty_response
@@ -1015,6 +1039,13 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
         )
         return answer, "LOYALTY_NOT_FOUND"
 
+    if intent == "financial_service_unsupported":
+        answer = (
+            "Dạ CFC Cò Bay là đơn vị sản xuất phân bón nông nghiệp, công ty không cung cấp dịch vụ cho vay tiền, vay vốn trực tiếp hay mua hàng trả góp tài chính ạ. "
+            "Các chính sách hỗ trợ công nợ mùa vụ chỉ được áp dụng thông qua hệ thống Đại lý cấp 1 và Nhà phân phối chính thức của Cò Bay trên từng địa bàn nha bạn."
+        )
+        return answer, "FINANCIAL_SERVICE_NOT_SUPPORTED"
+
     answer = (
         f"Dạ mình hiểu bạn cần bảng giá sỉ và chính sách chiết khấu hiện hành.{context_line} "
         "Chính sách chiết khấu và ưu đãi đại lý cấp 1 được áp dụng theo từng vụ mùa và sản lượng hợp đồng. Để bảo mật chính sách thương mại nội bộ, "
@@ -1028,9 +1059,31 @@ def _build_cfc_agronomy_intake_answer(slots: dict[str, Any], raw_text: str = "")
     context = _cfc_context_summary(goal, slots)
     context_line = f" Mình đang ghi nhận: {context}." if context else ""
     missing_prompt = _cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots), expert=True)
+
+    prod_intro = ""
+    agronomy_tip = ""
+    norm = _normalize_vn(raw_text)
+
+    if raw_text:
+        from domains.amis.live_crm import lookup_inventory_atp
+        prod = lookup_inventory_atp(raw_text)
+        if prod:
+            p_name = prod.get("product_name") or ""
+            prod_intro = f"Dạ CFC Cò Bay hiện có dòng sản phẩm **{p_name}** chính hãng từ nhà máy. "
+
+    if "sau rieng" in norm and ("rung" in norm or "trai non" in norm or "hat chuoi" in norm):
+        agronomy_tip = (
+            "\n💡 *Lưu ý kỹ thuật sầu riêng rụng trái non/hạt chuỗi:* Giai đoạn này cần đặc biệt chú ý cân đối đạm - kali, "
+            "bổ sung vi lượng Canxi - Bo để dai cuống, chống rụng sinh lý và hạn chế đi đọt non cạnh tranh dinh dưỡng."
+        )
+    elif "lua" in norm and ("dot 2" in norm or "de nhanh" in norm or "don dong" in norm):
+        agronomy_tip = (
+            "\n💡 *Lưu ý kỹ thuật lúa đợt 2 (đẻ nhánh rộ / đón đòng):* Cần bón công thức NPK cân đối lân và kali giúp lúa cứng cây, "
+            "nở bụi đẫy chồi và nuôi đòng to chắc hạt."
+        )
+
     return (
-        f"Dạ mình hiểu đây là yêu cầu tư vấn kỹ thuật nông nghiệp và quy trình bón phân.{context_line} "
-        "Công thức NPK và liều lượng bón tối ưu cần được kỹ sư đối chiếu chuẩn xác theo cây trồng, giai đoạn sinh trưởng, chất đất và khu vực canh tác. "
+        f"{prod_intro}Về kỹ thuật canh tác: Công thức NPK và liều lượng bón tối ưu cần được kỹ sư đối chiếu chuẩn xác theo cây trồng, giai đoạn sinh trưởng, chất đất và khu vực.{agronomy_tip}{context_line} "
         f"{missing_prompt}"
     )
 
@@ -1677,9 +1730,27 @@ def _build_next_conversation_state(
 
     cfc_goal = ""
     if brand.lower() == "cfc":
-        confirmed_slots = dict(state.get("confirmed_slots") or {})
-        if intent not in {"privacy_sensitive_lookup", "company_overview", "unknown", "empty_input"}:
-            confirmed_slots.update(_extract_cfc_confirmed_slots(user_message, query_entities))
+        new_slots = _extract_cfc_confirmed_slots(user_message, query_entities) if intent not in {"privacy_sensitive_lookup", "company_overview", "unknown", "empty_input"} else {}
+        old_slots = dict(state.get("confirmed_slots") or {})
+
+        is_new_topic = bool(
+            new_slots.get("product")
+            or new_slots.get("formula")
+            or new_slots.get("order_id")
+            or ("crop" in new_slots and new_slots.get("crop") != old_slots.get("crop"))
+        )
+        if is_new_topic:
+            confirmed_slots = {}
+            if old_slots.get("phone"):
+                confirmed_slots["phone"] = old_slots["phone"]
+            if old_slots.get("area"):
+                confirmed_slots["area"] = old_slots["area"]
+            if old_slots.get("location"):
+                confirmed_slots["location"] = old_slots["location"]
+        else:
+            confirmed_slots = old_slots
+
+        confirmed_slots.update(new_slots)
         patch_slots = (state_patch or {}).get("confirmed_slots") if isinstance(state_patch, dict) else {}
         if isinstance(patch_slots, dict):
             confirmed_slots.update({key: value for key, value in patch_slots.items() if value not in (None, "")})
@@ -1906,15 +1977,18 @@ def _detect_address_intent(norm_text: str, brand: str) -> Optional[str]:
 
 
 def _has_company_contact_signal(norm_text: str) -> bool:
+    # Nếu câu là tra cứu chiết khấu / hội viên / tích điểm / đơn hàng / điểm bán -> KHÔNG phải hỏi hotline/website công ty
+    if any(k in norm_text for k in ["chiet khau", "tich diem", "hoi vien", "thanh vien", "don hang", "boc hang", "xuat kho", "tra cuu", "kiem tra", "check", "bao nhieu %"]):
+        return False
     return _has_any(norm_text, [
         r"^(so dien thoai|dien thoai|hotline|tong dai|lien he|sdt|sdt cong tu|sdt cong ty)$",
-        r"(so dien thoai|hotline|tong dai|so lien he|lien he).{0,30}(cong ty|cong tu|cty|shop|admin|ben minh)?",
-        r"(cong ty|cong tu|cty|shop|admin|ben minh).{0,30}(so dien thoai|hotline|tong dai|so lien he|lien he)",
+        r"\b(so dien thoai|hotline|tong dai|so lien he)\s+(cua\s+)?(cong ty|cong tu|cty|shop|admin|ben minh|cfc|co bay|zeo)\b",
+        r"\b(cong ty|cong tu|cty|shop|admin|ben minh)\s+(co\s+)?(so dien thoai|hotline|tong dai|so lien he)\b",
         r"\b(cho|xin)\s+so\s+(cham soc|ho tro)(\s+khach hang)?\b",
         r"\bso\s+(cham soc|ho tro)(\s+khach hang)?\b",
         r"\b(cho|xin)?\s*so\s+(cua\s+)?(cong ty|cty|zeo|pano|oplus|cfc|co bay|shop|ben minh)\b",
         r"\b(cham soc khach hang|bo phan ho tro).{0,25}(so nao|so may|so dien thoai|hotline|lien he)\b",
-        r"\bcall\b",
+        r"^(call|goi cho toi|goi lai)$",
     ])
 
 
@@ -2026,6 +2100,14 @@ def _detect_cfc_cross_brand(norm_text: str, brand: str) -> bool:
         return False
     return _has_any(norm_text, [
         r"(nuoc giat|bot giat|nuoc rua chen|rua chen|lau san|nuoc lau san|tay toilet|javen|xit tay|nuoc tay|pano|oplus|zeo)",
+    ])
+
+
+def _detect_zeo_cross_brand(norm_text: str, brand: str) -> bool:
+    if brand.lower() != "zeo":
+        return False
+    return _has_any(norm_text, [
+        r"\b(phan bon|phan npk|npk|phan huu co|huu co|phan dam|phan lan|phan kali|co bay|cfc co bay|bon phan|bon cay|sau rieng|cay an trai|cay lua|lua dot|nuoi trai non)\b",
     ])
 
 
@@ -2357,16 +2439,39 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
 
     # Khóa theo sender_id để xử lý tuần tự (Tránh race condition ghi đè session)
     lock_key = f"{brand}:{sender_id}"
+    customer_key = f"{brand}:customer:messenger:{sender_id}"
+    session_key = f"{brand}:session:messenger:{sender_id}"
+
     async with _local_sender_lock(lock_key):
         norm_text = _normalize_vn(raw_text)
+
+        # Lệnh reset nhanh phiên hội thoại cho tester / sếp test
+        if norm_text in {"reset", "xoa cache", "xoa session", "test moi", "bat dau lai", "lam moi"}:
+            _local_customer_cache.pop(customer_key, None)
+            _local_session_cache.pop(session_key, None)
+            r = await get_redis()
+            try:
+                await r.delete(session_key)
+                await r.delete(f"{brand}:history:messenger:{sender_id}")
+                await r.delete(customer_key)
+            except Exception:
+                pass
+            return ChatPipelineResponse(
+                answer=_prettify_answer("Dạ em đã làm mới toàn bộ ngữ cảnh phiên chat thành công! Anh/chị có thể bắt đầu gửi câu hỏi test mới ạ."),
+                intent="session_reset",
+                confidence="high",
+                score=1.0,
+                brand=brand.upper(),
+                lead_stage="new",
+                latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+            )
+
         incoming_phone, incoming_area = _extract_phone_and_area(raw_text, norm_text)
         phone, area = incoming_phone, incoming_area
         has_phone = bool(incoming_phone)
 
         # Đọc profile & session cũ từ Redis
         r = await get_redis()
-        customer_key = f"{brand}:customer:messenger:{sender_id}"
-        session_key = f"{brand}:session:messenger:{sender_id}"
 
         existing_profile = _local_customer_cache.get(customer_key) or {}
         existing_session = _local_session_cache.get(session_key) or {}
@@ -3142,7 +3247,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             elif resumed_intent == "cfc_dosage_usage_review":
                 item = await get_faq_by_intent(brand, resumed_intent)
                 source_id = item.get("source_id", "")
-                final_reply = _build_cfc_agronomy_intake_answer(cfc_slots)
+                final_reply = _build_cfc_agronomy_intake_answer(cfc_slots, raw_text)
                 fallback_reason = "AGRONOMY_REQUIRES_EXPERT_REVIEW"
             elif resumed_intent == "cfc_dealer_location_request":
                 item = await get_faq_by_intent(brand, resumed_intent)
@@ -3541,15 +3646,31 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             )
             return _fast_response(msg, "competitor_product_unavailable", brand, start_time, lead_stage="browsing_catalog")
 
+        if brand == "cfc" and any(k in norm_text for k in ["xi mang", "sat thep", "gach da", "cat da", "ao mua", "mu bao hiem", "non bao hiem", "xe may", "xang dau"]):
+            msg = (
+                "Dạ CFC - Phân bón Cò Bay là đơn vị sản xuất và phân phối phân bón nông nghiệp (NPK, Hữu cơ). "
+                "Công ty không sản xuất hay xuất kho các mặt hàng ngoài ngành như xi măng hay vật liệu xây dựng nha bạn."
+            )
+            return _fast_response(msg, "cfc_non_fertilizer_out_of_scope", brand, start_time, lead_stage="browsing_catalog")
+
         if _detect_cfc_cross_brand(norm_text, brand):
             return await _sheet_response_remember(
                 "cfc_cross_brand_out_of_scope",
                 stage="browsing_catalog",
                 unavailable_answer=(
-                    "Dạ CFC Cò Bay hiện là thương hiệu phân bón nông nghiệp. "
-                    "Các sản phẩm tẩy rửa gia dụng như nước giặt/nước rửa chén/lau sàn thuộc hệ ZeO/PANO/Oplus nha."
+                    "Dạ CFC Cò Bay hiện là thương hiệu phân bón nông nghiệp (NPK, phân Hữu cơ). "
+                    "Các sản phẩm tẩy rửa gia dụng như nước giặt, bột giặt, nước rửa chén, lau sàn thuộc hệ ZeO/PANO/Oplus, "
+                    "bạn có thể tham khảo tại website https://zeo.vn/ hoặc gian hàng Shopee Mall chính hãng nha!"
                 ),
             )
+
+        if _detect_zeo_cross_brand(norm_text, brand):
+            msg = (
+                "Dạ ZeO Vietnam là thương hiệu chuyên về hóa phẩm tiêu dùng và chất tẩy rửa gia dụng (nước giặt, bột giặt, nước rửa chén, lau sàn). "
+                "Các sản phẩm phân bón nông nghiệp (NPK, Hữu cơ) thuộc thương hiệu CFC - Phân bón Cò Bay của công ty, "
+                "bạn vui lòng tham khảo tại website https://cfccobay.com/ hoặc Fanpage 'CFC - Phân bón Cò Bay' để được kỹ sư nông nghiệp hỗ trợ chi tiết nhé ạ!"
+            )
+            return _fast_response(msg, "zeo_cross_brand_out_of_scope", brand, start_time, lead_stage="browsing_catalog")
 
         if _detect_new_product_request(norm_text):
             msg = (

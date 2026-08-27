@@ -135,6 +135,13 @@ def _make_router() -> APIRouter:
         except Exception as exc:  # noqa: BLE001 - compatibility boundary
             raise _legacy_error(exc) from exc
 
+    @router.post("/api/web/refresh-cache")
+    async def refresh_web_cache_endpoint(brand: str = Query("all", description="'zeo', 'cfc', hoặc 'all'")):
+        try:
+            return await legacy_javis_runtime.refresh_web_cache(brand, _legacy_settings())
+        except Exception as exc:  # noqa: BLE001 - compatibility boundary
+            raise _legacy_error(exc) from exc
+
     try:
         import sys
         server_dir = legacy_javis_runtime.legacy_server_dir(_legacy_settings())

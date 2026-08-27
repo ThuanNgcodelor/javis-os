@@ -84,16 +84,7 @@ export class AmisCrmPublicCatalogSyncWorkflow {
                 },
             ],
         },
-        sendHeaders: true,
-        specifyHeaders: 'keypair',
-        headerParameters: {
-            parameters: [
-                {
-                    name: 'X-Internal-Token',
-                    value: '={{ $env.AMIS_SYNC_INTERNAL_TOKEN || "" }}',
-                },
-            ],
-        },
+        sendHeaders: false,
         options: {
             timeout: 120000,
         },

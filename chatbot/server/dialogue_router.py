@@ -132,8 +132,9 @@ def build_route_decision(
         "cfc_order_status_request": "cfc_order_status_unavailable",
         "cfc_loyalty_lookup_request": "cfc_loyalty_unavailable",
         "cfc_wholesale_policy_request": "cfc_wholesale_policy_unverified",
+        "financial_service_unsupported": "financial_service_unsupported",
     }
-    if plan.brand == "cfc" and plan.intent in capability_intents:
+    if (plan.brand == "cfc" or plan.intent == "financial_service_unsupported") and plan.intent in capability_intents:
         return RouteDecision(
             action="capability_boundary",
             intent=capability_intents[plan.intent],
