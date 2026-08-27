@@ -37,7 +37,7 @@ sleep 1
 
 # ── [2/4] Tab 2: Ollama ───────────────────────────────────────────────────────
 echo "   [2/4] Mở Terminal Ollama Server (:11434)..."
-open_tab "🤖 Ollama :11434" "export OLLAMA_HOST=0.0.0.0:11434; export OLLAMA_CONTEXT_LENGTH=4096; export OLLAMA_NUM_PARALLEL=1; ollama serve"
+open_tab "🤖 Ollama :11434" "export OLLAMA_HOST=0.0.0.0:11434; export OLLAMA_CONTEXT_LENGTH=16384; export OLLAMA_NUM_PARALLEL=1; ollama serve"
 sleep 1
 
 # ── [3/4] Tab 3: n8n Gateway ──────────────────────────────────────────────────

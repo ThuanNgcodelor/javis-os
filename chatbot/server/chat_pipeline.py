@@ -68,6 +68,19 @@ from shopee_matcher import (
     match_fabric_softener_products,
 )
 from ai_engine import synthesize_cskh_answer, reason_and_answer_cskh, plan_chat_intent_with_ollama, consult_cfc_agronomy_with_ollama
+from ai_engine import plan_conversation_turn_with_ollama
+from conversation_orchestrator import (
+    build_conversation_context,
+    build_conversation_messages,
+    is_safe_assist_plan,
+    latest_tool_result,
+    load_orchestrator_config,
+    recover_contextual_followup_plan,
+    referenced_product_from_plan,
+    schedule_conversation_shadow,
+    select_tool_result_items,
+    should_run_orchestrator,
+)
 from nlu_shadow import schedule_nlu_shadow
 from query_understanding import build_query_plan
 from telegram_notifier import notify_new_lead, notify_admin_unanswered, notify_urgent_complaint
@@ -706,6 +719,28 @@ def _format_sales_locations_reply(locations: list[dict[str, Any]], area_str: str
     return "\n".join(lines)
 
 
+def _format_dealer_contact_followup(tool_result: dict[str, Any]) -> str:
+    items = [item for item in (tool_result.get("items") or []) if isinstance(item, dict)]
+    if not items:
+        return (
+            "Dạ mình chưa thấy danh sách đại lý trước đó còn hiệu lực để lấy số điện thoại. "
+            "Bạn gửi lại khu vực hoặc vị trí, mình kiểm tra lại giúp bạn nha."
+        )
+    lines = ["Dạ đây là số điện thoại của các đại lý vừa hiển thị:"]
+    has_phone = False
+    for index, item in enumerate(items, start=1):
+        name = str(item.get("display_name") or "đại lý").strip()
+        phone = str(item.get("public_phone") or "").strip()
+        if phone:
+            lines.append(f"{index}. **{name}** - 📞 SĐT: {phone}")
+            has_phone = True
+        else:
+            lines.append(f"{index}. **{name}** - hiện chưa có SĐT công khai trong dữ liệu.")
+    if not has_phone:
+        lines.append("Mình không tự điền số chưa được xác minh để tránh cung cấp sai thông tin ạ.")
+    return "\n".join(lines)
+
+
 def _extract_cfc_confirmed_slots(
     user_message: str,
     query_entities: Optional[dict[str, Any]] = None,
@@ -1189,7 +1224,7 @@ def _build_cfc_agronomy_intake_answer(*args, **kwargs) -> str:
 
 def _default_conversation_state(brand: str) -> dict[str, Any]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "brand": brand.upper(),
         "conversation_topic": "",
         "current_intent": "",
@@ -1218,6 +1253,8 @@ def _default_conversation_state(brand: str) -> dict[str, Any]:
         "corrections": [],
         "takeover_state": {"status": "none", "owner": "", "reason": ""},
         "covered_fact_ids": [],
+        "last_tool_results": [],
+        "reference_stack": [],
         "recent_turns": [],
         "conversation_summary": "",
         "last_source_id": "",
@@ -1279,6 +1316,10 @@ def _load_conversation_state(existing_session: dict, brand: str) -> dict[str, An
         state["takeover_state"] = {"status": "none", "owner": "", "reason": ""}
     if not isinstance(state.get("covered_fact_ids"), list):
         state["covered_fact_ids"] = []
+    if not isinstance(state.get("last_tool_results"), list):
+        state["last_tool_results"] = []
+    if not isinstance(state.get("reference_stack"), list):
+        state["reference_stack"] = []
     if not isinstance(state.get("recent_turns"), list):
         state["recent_turns"] = []
     return state
@@ -1891,11 +1932,31 @@ def _build_next_conversation_state(
                     "timestamp": now_str,
                 }
 
+    patch_tool_results = (state_patch or {}).get("last_tool_results") if isinstance(state_patch, dict) else None
+    if isinstance(patch_tool_results, list):
+        state["last_tool_results"] = [
+            item for item in patch_tool_results[-5:] if isinstance(item, dict)
+        ]
+
+    if reference_resolution.get("resolved"):
+        reference_stack = [
+            item for item in (state.get("reference_stack") or []) if isinstance(item, dict)
+        ]
+        reference_stack.append({
+            "type": "product",
+            "product_id": str(reference_resolution.get("product_id") or ""),
+            "product": str(reference_resolution.get("product") or "")[:160],
+            "intent": str(reference_resolution.get("product_intent") or "")[:120],
+            "timestamp": now_str,
+        })
+        state["reference_stack"] = reference_stack[-10:]
+
     if not cfc_goal:
         if lead_stage == "collecting_contact":
             state["pending_slots"] = ["phone", "area"]
         elif lead_stage == "lead_ready":
             state["pending_slots"] = []
+    state["schema_version"] = 4
     if lead_stage == "escalated":
         takeover = state.get("takeover_state") or {}
         if takeover.get("status") != "pending":
@@ -2612,6 +2673,18 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         previous_intent = existing_session.get("last_intent", "")
         conversation_state = _load_conversation_state(existing_session, brand)
         query_entities = _extract_query_entities(norm_text, brand)
+        orchestrator_cfg = load_orchestrator_config()
+        conversation_plan: Optional[dict[str, Any]] = None
+        orchestrator_started = time.perf_counter()
+        should_run_conversation_orchestrator = (
+            not _detect_third_party_customer_lookup(norm_text)
+            and should_run_orchestrator(
+                orchestrator_cfg["mode"],
+                conversation_state=conversation_state,
+                normalized_text=norm_text,
+                brand=brand,
+            )
+        )
         reference_resolution = _resolve_reference(raw_text, norm_text, conversation_state)
         if reference_resolution.get("resolved") and not query_entities.get("product"):
             query_entities = {
@@ -2634,6 +2707,84 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             conversation_state=conversation_state,
         )
         query_plan_dict = query_plan.to_dict()
+        pipeline_trace_extra: dict[str, Any] = {}
+        if should_run_conversation_orchestrator:
+            conversation_messages = build_conversation_messages(
+                conversation_state,
+                raw_text,
+                limit=orchestrator_cfg["history_limit"],
+            )
+            conversation_context = build_conversation_context(
+                conversation_state,
+                deterministic_plan=query_plan_dict,
+            )
+            if orchestrator_cfg["mode"] == "shadow":
+                pipeline_trace_extra = {
+                    "dialogue_router": {},
+                    "conversation_orchestrator": {
+                        "mode": "shadow",
+                        "status": schedule_conversation_shadow(
+                            brand=brand,
+                            sender_id=sender_id,
+                            message_id=str(req.message_id or ""),
+                            user_query=raw_text,
+                            conversation_messages=conversation_messages,
+                            conversation_context=conversation_context,
+                            deterministic_plan=query_plan_dict,
+                        ),
+                        "affects_response": False,
+                    },
+                }
+            elif orchestrator_cfg["mode"] in {"assist", "primary"}:
+                # A clear reference to a stored public result is executable without
+                # waiting for the local model. Ambiguous turns still go through Ollama.
+                conversation_plan = recover_contextual_followup_plan(
+                    conversation_state,
+                    norm_text,
+                )
+                if conversation_plan is None:
+                    conversation_plan = await plan_conversation_turn_with_ollama(
+                        user_query=raw_text,
+                        brand=brand,
+                        conversation_messages=conversation_messages,
+                        conversation_context=conversation_context,
+                        timeout=orchestrator_cfg.get("timeout_seconds", 15.0),
+                    )
+                if conversation_plan:
+                    planned_product = referenced_product_from_plan(conversation_state, conversation_plan)
+                    if planned_product and not reference_resolution.get("resolved"):
+                        reference_resolution = {
+                            "references_previous_turn": True,
+                            "resolved": True,
+                            "product": str(planned_product.get("name") or ""),
+                            "product_intent": str(planned_product.get("intent") or planned_product.get("product_intent") or ""),
+                            "category": str(planned_product.get("category") or ""),
+                            "product_id": str(planned_product.get("product_id") or planned_product.get("item_id") or planned_product.get("id") or ""),
+                            "shopee_url": str(planned_product.get("shopee_url") or planned_product.get("link_shopee") or ""),
+                            "price": planned_product.get("price"),
+                            "rank": planned_product.get("rank"),
+                            "resolved_query": f"{raw_text} ({planned_product.get('name', '')})",
+                            "reason": "ollama_conversation_reference",
+                        }
+                        query_entities = {
+                            "product": reference_resolution.get("product", ""),
+                            "product_intent": reference_resolution.get("product_intent", ""),
+                            "category": reference_resolution.get("category", ""),
+                            "matched_entities": [{
+                                "product": reference_resolution.get("product", ""),
+                                "product_intent": reference_resolution.get("product_intent", ""),
+                                "category": reference_resolution.get("category", ""),
+                            }],
+                        }
+                        query_plan = build_query_plan(
+                            raw_text=raw_text,
+                            norm_text=norm_text,
+                            brand=brand,
+                            query_entities=query_entities,
+                            reference_resolution=reference_resolution,
+                            conversation_state=conversation_state,
+                        )
+                        query_plan_dict = query_plan.to_dict()
         loc_constraints = query_plan.constraints or {}
         explicit_loc = (
             incoming_area
@@ -2648,7 +2799,21 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             area = stored_area
 
         route_decision = build_route_decision(query_plan, conversation_state)
-        pipeline_trace_extra: dict[str, Any] = {"dialogue_router": route_decision.to_dict()}
+        pipeline_trace_extra["dialogue_router"] = route_decision.to_dict()
+        if conversation_plan:
+            pipeline_trace_extra["conversation_orchestrator"] = {
+                "mode": orchestrator_cfg["mode"],
+                "intent": conversation_plan.get("intent", ""),
+                "confidence": conversation_plan.get("confidence", 0.0),
+                "is_followup": bool(conversation_plan.get("is_followup")),
+                "topic_changed": bool(conversation_plan.get("topic_changed")),
+                "reference": conversation_plan.get("reference", {}),
+                "tool": conversation_plan.get("tool", "none"),
+                "requested_fields": conversation_plan.get("requested_fields", []),
+                "reason_code": conversation_plan.get("reason_code", ""),
+                "latency_ms": round((time.perf_counter() - orchestrator_started) * 1000, 2),
+                "route_changed": False,
+            }
         state_patch: dict[str, Any] = {"confirmed_slots": {}}
         if phone:
             state_patch["confirmed_slots"]["phone"] = phone
@@ -2672,12 +2837,37 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             fallback_reason: str = "",
             trace_extra: Optional[dict[str, Any]] = None,
             products_shown: Optional[list[dict[str, Any]]] = None,
+            tool_result: Optional[dict[str, Any]] = None,
         ) -> None:
             if not source_id and products_shown:
                 first_product = next((item for item in products_shown if isinstance(item, dict)), {})
                 product_id = first_product.get("item_id") or first_product.get("product_id") or first_product.get("id")
                 if product_id:
                     source_id = f"{brand}:shopee_catalog:{product_id}"
+            next_state_patch = dict(state_patch)
+            if products_shown and not tool_result:
+                product_items = []
+                for item in products_shown[:8]:
+                    if not isinstance(item, dict):
+                        continue
+                    product_item = _copy_product_item(item)
+                    if product_item.get("name"):
+                        product_items.append(product_item)
+                if product_items:
+                    tool_result = {
+                        "result_id": f"products:{sender_id}:{int(time.time())}",
+                        "tool": "product_lookup",
+                        "source_id": source_id or f"{brand}:product_catalog",
+                        "query": {"text": raw_text[:240]},
+                        "items": product_items,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                        "expires_at": (datetime.now(timezone.utc).timestamp() + 86400),
+                    }
+            if tool_result:
+                next_state_patch["last_tool_results"] = [
+                    *(conversation_state.get("last_tool_results") or [])[-4:],
+                    tool_result,
+                ]
             next_state = _build_next_conversation_state(
                 conversation_state,
                 brand=brand,
@@ -2689,7 +2879,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 reference_resolution=reference_resolution,
                 source_id=source_id,
                 products_shown=products_shown,
-                state_patch=state_patch,
+                state_patch=next_state_patch,
             )
             trace = {
                 "normalized_text": norm_text,
@@ -2862,6 +3052,254 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 location=location_slot,
             )
 
+            if (
+                orchestrator_cfg["mode"] in {"assist", "primary"}
+                and is_safe_assist_plan(
+                    conversation_plan,
+                    min_confidence=orchestrator_cfg["min_confidence"],
+                )
+            ):
+                planned_intent = str(conversation_plan.get("intent") or "")
+                planned_tool = str(conversation_plan.get("tool") or "")
+                planned_arguments = conversation_plan.get("arguments") or {}
+                requested_fields = {
+                    str(field).strip().lower()
+                    for field in (conversation_plan.get("requested_fields") or [])
+                }
+                profile_field = str(planned_arguments.get("field") or "").strip().lower()
+                profile_operation = str(planned_arguments.get("operation") or "").strip().lower()
+                if (
+                    planned_intent == "customer_profile_update"
+                    and planned_tool == "customer_profile_update"
+                    and (profile_field == "phone" or "phone" in requested_fields)
+                    and profile_operation in {"replace", "update", "set"}
+                ):
+                    if not incoming_phone:
+                        answer = (
+                            "Dạ được ạ. Bạn gửi số điện thoại mới, mình sẽ cập nhật số liên hệ của chính bạn "
+                            "và giữ lại các thông tin khu vực đã có nhé."
+                        )
+                        _remember_response(
+                            answer,
+                            "customer_phone_change_request",
+                            "collecting_contact",
+                            fallback_reason="PHONE_CHANGE_MISSING_NEW_NUMBER",
+                        )
+                        return _fast_response(
+                            answer,
+                            "customer_phone_change_request",
+                            brand,
+                            start_time,
+                            lead_stage="collecting_contact",
+                            fallback_reason="PHONE_CHANGE_MISSING_NEW_NUMBER",
+                        )
+
+                    previous_phone = str(stored_phone or "").strip()
+                    existing_profile.update({
+                        "brand": brand.upper(),
+                        "sender_id": sender_id,
+                        "fb_name": fb_name or existing_profile.get("fb_name", ""),
+                        "phone": incoming_phone,
+                        "customer_phone": incoming_phone,
+                        "area": area or existing_profile.get("area", ""),
+                        "customer_location": area or existing_profile.get("customer_location", ""),
+                        "lead_stage": "lead_ready",
+                        "last_intent": "customer_phone_updated",
+                        "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                    })
+                    _local_customer_cache[customer_key] = dict(existing_profile)
+                    asyncio.create_task(_async_update_customer_profile(
+                        brand=brand,
+                        sender_id=sender_id,
+                        profile=existing_profile,
+                    ))
+                    state_patch["confirmed_slots"]["phone"] = incoming_phone
+                    answer = (
+                        f"Dạ được ạ, mình đã cập nhật số liên hệ mới {_mask_phone(incoming_phone)} của bạn. "
+                        f"Số cũ {(_mask_phone(previous_phone) if previous_phone else 'trước đó')} sẽ không còn được dùng làm số liên hệ chính nữa. "
+                        "Các thông tin khu vực và nội dung hỗ trợ trước đó vẫn được giữ lại nhé."
+                    )
+                    _remember_response(
+                        answer,
+                        "customer_phone_updated",
+                        "lead_ready",
+                        fallback_reason="CUSTOMER_PHONE_UPDATED",
+                    )
+                    return _fast_response(
+                        answer,
+                        "customer_phone_updated",
+                        brand,
+                        start_time,
+                        lead_stage="lead_ready",
+                        fallback_reason="CUSTOMER_PHONE_UPDATED",
+                    )
+
+                previous_dealers = latest_tool_result(
+                    conversation_state,
+                    tool="sales_location_search",
+                )
+                if planned_intent == "dealer_contact_followup" and previous_dealers:
+                    contact_items = select_tool_result_items(
+                        previous_dealers,
+                        conversation_plan,
+                        norm_text,
+                    )
+                    contact_result = dict(previous_dealers)
+                    contact_result["items"] = contact_items
+                    answer = _format_dealer_contact_followup(contact_result)
+                    _remember_response(
+                        answer,
+                        "dealer_contact_followup",
+                        "browsing_catalog",
+                        source_id=str(previous_dealers.get("source_id") or ""),
+                        fallback_reason=(
+                            "DEALER_PUBLIC_PHONE_MISSING"
+                            if not any(item.get("public_phone") for item in contact_items if isinstance(item, dict))
+                            else "DEALER_CONTACT_FOLLOWUP"
+                        ),
+                        trace_extra={
+                            "conversation_orchestrator": {
+                                **pipeline_trace_extra.get("conversation_orchestrator", {}),
+                                "route_changed": True,
+                                "tool_result_id": previous_dealers.get("result_id", ""),
+                            }
+                        },
+                    )
+                    return ChatPipelineResponse(
+                        answer=_prettify_answer(answer),
+                        intent="dealer_contact_followup",
+                        confidence="high",
+                        score=float(conversation_plan.get("confidence", 0.0)),
+                        brand=brand.upper(),
+                        has_phone=has_phone,
+                        phone=phone,
+                        area=area,
+                        lead_stage="browsing_catalog",
+                        fallback_reason="DEALER_CONTACT_FOLLOWUP",
+                        latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                    )
+
+                if (
+                    planned_intent == "dealer_followup"
+                    and previous_dealers
+                    and query_plan.intent in {"unknown", "cfc_grounded_fallback"}
+                ):
+                    selected_dealers = select_tool_result_items(
+                        previous_dealers,
+                        conversation_plan,
+                        norm_text,
+                    )
+                    if selected_dealers:
+                        answer = _format_sales_locations_reply(
+                            selected_dealers,
+                            str(cfc_slots.get("area") or "khu vực trước"),
+                        )
+                        _remember_response(
+                            answer,
+                            "dealer_followup",
+                            "browsing_catalog",
+                            source_id=str(previous_dealers.get("source_id") or ""),
+                            fallback_reason="DEALER_REFERENCE_FOLLOWUP",
+                            trace_extra={
+                                "conversation_orchestrator": {
+                                    **pipeline_trace_extra.get("conversation_orchestrator", {}),
+                                    "route_changed": True,
+                                    "tool_result_id": previous_dealers.get("result_id", ""),
+                                }
+                            },
+                        )
+                        return _cfc_grounded_response(
+                            answer,
+                            "dealer_followup",
+                            stage="browsing_catalog",
+                            fallback_reason="DEALER_REFERENCE_FOLLOWUP",
+                            score=float(conversation_plan.get("confidence", 0.0)),
+                        )
+
+                if (
+                    planned_intent == "delivery_followup"
+                    and previous_dealers
+                    and query_plan.intent in {"unknown", "cfc_grounded_fallback"}
+                ):
+                    policy_item = await get_faq_by_intent(brand, "shipping_methods")
+                    policy_answer = str(policy_item.get("answer") or "").strip()
+                    if policy_answer:
+                        answer = (
+                            "Dạ việc đại lý có giao tận nhà hay không còn tùy khu vực và chính sách của từng điểm bán. "
+                            "Thông tin giao hàng chung hiện có trong Knowledge CFC:\n\n"
+                            f"{policy_answer}\n\n"
+                            "Bạn liên hệ trực tiếp đại lý phù hợp trong danh sách để xác nhận phí và phạm vi giao hàng cụ thể nhé ạ."
+                        )
+                    else:
+                        answer = (
+                            "Dạ mình chưa có dữ liệu đã xác minh để khẳng định các đại lý vừa nêu có giao tận nhà. "
+                            "Bạn liên hệ trực tiếp đại lý phù hợp để xác nhận phạm vi giao hàng và phí giao cụ thể nhé ạ."
+                        )
+                    _remember_response(
+                        answer,
+                        "delivery_followup",
+                        "browsing_catalog",
+                        source_id=str(policy_item.get("source_id") or ""),
+                        fallback_reason="DEALER_DELIVERY_SCOPE_UNVERIFIED",
+                        trace_extra={
+                            "conversation_orchestrator": {
+                                **pipeline_trace_extra.get("conversation_orchestrator", {}),
+                                "route_changed": True,
+                                "tool_result_id": previous_dealers.get("result_id", ""),
+                            }
+                        },
+                    )
+                    return _cfc_grounded_response(
+                        answer,
+                        "delivery_followup",
+                        stage="browsing_catalog",
+                        fallback_reason="DEALER_DELIVERY_SCOPE_UNVERIFIED",
+                        score=float(conversation_plan.get("confidence", 0.0)),
+                    )
+
+                # Các câu nối tiếp mơ hồ về goal vận hành vẫn dùng capability boundary hiện tại.
+                # Không chặn các intent rõ ràng đã có deterministic handler.
+                if query_plan.intent in {"unknown", "cfc_grounded_fallback"}:
+                    resume_boundary = {
+                        "inventory_followup": "cfc_inventory_unavailable",
+                        "order_status_followup": "cfc_order_status_unavailable",
+                        "loyalty_followup": "cfc_loyalty_unavailable",
+                        "wholesale_followup": "cfc_wholesale_policy_unverified",
+                    }.get(planned_intent)
+                    if resume_boundary:
+                        final_reply, boundary_reason = _build_cfc_capability_boundary(
+                            resume_boundary,
+                            cfc_slots,
+                            raw_text,
+                            phone,
+                        )
+                        _queue_incoming_contact(f"Tiếp tục yêu cầu CFC: {planned_intent}")
+                        _remember_response(
+                            final_reply,
+                            resume_boundary,
+                            "collecting_contact",
+                            fallback_reason=boundary_reason,
+                            trace_extra={
+                                "conversation_orchestrator": {
+                                    **pipeline_trace_extra.get("conversation_orchestrator", {}),
+                                    "route_changed": True,
+                                }
+                            },
+                        )
+                        return ChatPipelineResponse(
+                            answer=_prettify_answer(final_reply),
+                            intent=resume_boundary,
+                            confidence="high",
+                            score=float(conversation_plan.get("confidence", 0.0)),
+                            brand=brand.upper(),
+                            has_phone=has_phone,
+                            phone=phone,
+                            area=area,
+                            lead_stage="collecting_contact",
+                            fallback_reason=boundary_reason,
+                            latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                        )
+
             if route_decision.intent == "cfc_contact_information_unavailable":
                 item = await get_faq_by_intent(brand, "cfc_company_website")
                 official_channel = item.get("answer", "").strip()
@@ -2904,6 +3342,25 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                         "browsing_catalog",
                         source_id="amis:public:sales-locations:active",
                         trace_extra={"dealer_count": len(matched_locations), "input_kind": "location"},
+                        tool_result={
+                            "result_id": f"dealer_locations:{sender_id}:{int(time.time())}",
+                            "tool": "sales_location_search",
+                            "source_id": "amis:public:sales-locations:active",
+                            "query": {"latitude": req.latitude, "longitude": req.longitude},
+                            "match_scope": "geo_search",
+                            "items": [
+                                {
+                                    "entity_id": str(item.get("location_id") or item.get("id") or ""),
+                                    "display_name": str(item.get("display_name") or ""),
+                                    "public_phone": str(item.get("public_phone") or ""),
+                                    "public_address": str(item.get("public_address") or ""),
+                                }
+                                for item in matched_locations[:8]
+                                if isinstance(item, dict)
+                            ],
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "expires_at": datetime.now(timezone.utc).timestamp() + 3600,
+                        },
                     )
                     return ChatPipelineResponse(
                         answer=_prettify_answer(answer),
@@ -3041,6 +3498,29 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                         "browsing_catalog",
                         source_id="amis:public:sales-locations:active",
                         trace_extra={"dealer_count": len(matched_locations), "input_kind": "text"},
+                        tool_result={
+                            "result_id": f"dealer_locations:{sender_id}:{int(time.time())}",
+                            "tool": "sales_location_search",
+                            "source_id": "amis:public:sales-locations:active",
+                            "query": {
+                                "province": loc_constraints.get("location", ""),
+                                "district": loc_constraints.get("district", ""),
+                                "ward": loc_constraints.get("ward", ""),
+                            },
+                            "match_scope": "text_search",
+                            "items": [
+                                {
+                                    "entity_id": str(item.get("location_id") or item.get("id") or ""),
+                                    "display_name": str(item.get("display_name") or ""),
+                                    "public_phone": str(item.get("public_phone") or ""),
+                                    "public_address": str(item.get("public_address") or ""),
+                                }
+                                for item in matched_locations[:8]
+                                if isinstance(item, dict)
+                            ],
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "expires_at": datetime.now(timezone.utc).timestamp() + 3600,
+                        },
                     )
                     return ChatPipelineResponse(
                         answer=_prettify_answer(answer),
@@ -5034,6 +5514,16 @@ async def _async_save_profile_and_notify(brand: str, sender_id: str, profile: di
             )
     except Exception as e:
         logger.warning("Error in _async_save_profile_and_notify: %s", e)
+
+
+async def _async_update_customer_profile(*, brand: str, sender_id: str, profile: dict[str, Any]) -> None:
+    """Persist an explicit profile edit without emitting a new-lead notification."""
+    try:
+        r = await get_redis()
+        customer_key = f"{brand}:customer:messenger:{sender_id}"
+        await r.set(customer_key, json.dumps(profile, ensure_ascii=False))
+    except Exception as exc:
+        logger.warning("Error updating customer profile for %s: %s", sender_id, exc)
 
 
 async def _async_save_session(

@@ -184,24 +184,31 @@ async def call_ollama(
     model: str = "qwen2.5:7b-instruct",
     temperature: float = 0.3,
     num_predict: int = 1024,
+    messages: Optional[List[dict[str, str]]] = None,
+    output_format: Optional[str] = None,
 ) -> Optional[str]:
     """Gọi Ollama Local (Mặc định chạy offline)."""
     cfg = _load_settings().get("ollama", {})
     base_url = cfg.get("base_url", "http://127.0.0.1:11434")
     model_name = model or cfg.get("fallback_embed_model", "qwen2.5:7b-instruct")
 
-    messages = []
+    chat_messages = list(messages or [])
     if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": prompt})
+        chat_messages.insert(0, {"role": "system", "content": system_prompt})
+    if not chat_messages:
+        chat_messages.append({"role": "user", "content": prompt})
+    elif prompt.strip():
+        chat_messages.append({"role": "user", "content": prompt})
 
     url = f"{base_url}/api/chat"
     payload = {
         "model": model_name,
         "stream": False,
         "options": {"temperature": temperature, "num_predict": max(32, min(int(num_predict), 2048))},
-        "messages": messages,
+        "messages": chat_messages,
     }
+    if output_format:
+        payload["format"] = output_format
 
     try:
         async with httpx.AsyncClient(timeout=40.0) as client:
@@ -212,6 +219,82 @@ async def call_ollama(
     except Exception as e:
         logger.warning("Lỗi khi gọi Ollama Local: %s", e)
     return None
+
+
+async def plan_conversation_turn_with_ollama(
+    *,
+    user_query: str,
+    brand: str,
+    conversation_messages: Optional[List[dict[str, str]]] = None,
+    conversation_context: Optional[dict[str, Any]] = None,
+    timeout: float = 15.0,
+) -> Optional[dict[str, Any]]:
+    """Classify a multi-turn conversation without generating customer text."""
+    from conversation_orchestrator import validate_orchestrator_plan
+
+    cfg = _load_settings()
+    nlu_cfg = cfg.get("llm_nlu", {}) if isinstance(cfg.get("llm_nlu", {}), dict) else {}
+    ollama_cfg = cfg.get("ollama", {}) if isinstance(cfg.get("ollama", {}), dict) else {}
+    model = (
+        nlu_cfg.get("model")
+        or ollama_cfg.get("chat_model")
+        or ollama_cfg.get("fallback_embed_model")
+        or "qwen2.5:7b-instruct"
+    )
+    system_prompt = """Bạn là Conversation Orchestrator cho chatbot ZeO và CFC.
+Chỉ đọc hội thoại và xuất đúng một JSON object. Không trả lời khách, không giải thích, không markdown.
+Mục tiêu là nhận diện câu hỏi hiện tại đang tiếp tục tác vụ nào, tham chiếu đến kết quả nào trước đó và cần tool nào.
+
+Intent hợp lệ:
+product_followup, product_price_followup, product_link_followup,
+product_availability_followup, dealer_followup, dealer_contact_followup,
+delivery_followup, order_status_followup, loyalty_followup, agronomy_followup,
+wholesale_followup, complaint_followup, lead_followup, topic_switch,
+customer_profile_update, clarification, unknown.
+
+Tool hợp lệ:
+none, product_lookup, sales_location_search, dealer_contact_lookup,
+delivery_policy_lookup, inventory_lookup, order_status_lookup, loyalty_lookup,
+    agronomy_intake, wholesale_intake, complaint_intake, lead_status_lookup,
+    customer_profile_update.
+
+Quy tắc bắt buộc:
+- Nếu câu hỏi hiện tại không liên quan lịch sử, is_followup=false.
+- Chỉ tham chiếu entity/result xuất hiện trong hội thoại hoặc context.
+- Không tạo số điện thoại, giá, link, tồn kho, trạng thái đơn hoặc chính sách.
+- Với customer_profile_update: chỉ dùng cho thao tác khách tự cập nhật hồ sơ của chính mình;
+  arguments phải có {"field":"phone","operation":"replace"}; giá trị số điện thoại lấy từ tin nhắn hiện tại.
+- Nếu không đủ chắc, dùng unknown hoặc clarification với confidence thấp.
+- requested_fields chỉ ghi field khách đang hỏi, ví dụ public_phone, public_address, price, stock, order_status.
+
+Schema:
+{"intent":"unknown","confidence":0.0,"is_followup":false,"topic_changed":false,
+"reference":{"type":"none","result_id":"","entity_ids":[]},
+"requested_fields":[],"tool":"none","arguments":{},"missing_slots":[],"reason_code":""}"""
+    context_json = json.dumps(conversation_context or {}, ensure_ascii=False, separators=(",", ":"))
+    prompt = (
+        f"Brand: {brand}\n"
+        f"Conversation context: {context_json}\n"
+        f"Tin nhắn hiện tại: {user_query}\n"
+        "Chỉ xuất JSON object đúng schema."
+    )
+    try:
+        raw = await asyncio.wait_for(
+            call_ollama(
+                prompt,
+                system_prompt=system_prompt,
+                model=model,
+                temperature=0.0,
+                num_predict=320,
+                messages=(conversation_messages or [])[:-1],
+                output_format="json",
+            ),
+            timeout=max(0.3, min(float(timeout), 15.0)),
+        )
+    except Exception as exc:
+        logger.debug("Conversation orchestrator timeout/error: %s", exc)
+        return None
+    return validate_orchestrator_plan(_extract_json_object(raw or ""))
 
 
 _DYNAMIC_CATALOG_CACHE: dict[str, Any] = {"text": "", "expires_at": 0.0}

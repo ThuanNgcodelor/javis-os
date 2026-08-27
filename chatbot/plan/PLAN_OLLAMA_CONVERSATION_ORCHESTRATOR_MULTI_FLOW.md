@@ -2,8 +2,18 @@
 
 **Ngày cập nhật:** 27/08/2026  
 **Phạm vi:** `chatbot/server` và các bài kiểm thử liên quan  
-**Trạng thái:** Kế hoạch triển khai; chưa sửa runtime, chưa deploy, chưa thay đổi workflow n8n  
+**Trạng thái:** Đã triển khai P1 và phần lõi P2-P4 ở local; chưa deploy, chưa thay đổi workflow n8n
 **Mục tiêu chính:** Mỗi khách Messenger có một hội thoại liên tục được Ollama đọc đúng ngữ cảnh, trong khi dữ liệu Redis/AMIS/RAG và các output một lượt đang đúng vẫn được giữ nguyên.
+
+### Trạng thái triển khai hiện tại
+
+- Đã thêm `conversation_orchestrator.py` với context compiler, redact PII, schema validation, allowlist tool, reference resolver và shadow queue bounded.
+- Đã mở rộng Ollama `/api/chat` để nhận lịch sử `messages[]`; planner chỉ trả JSON định tuyến, không viết câu trả lời khách.
+- Đã nâng `conversation_state` lên schema v4 tương thích ngược, lưu `last_tool_results` và `reference_stack`.
+- Đã lưu projection an toàn của sản phẩm và đại lý để xử lý các câu nối tiếp như “cái đó”, “số 2”, “xin SĐT”, “họ có giao tận nhà không”.
+- `CHAT_CONVERSATION_MODE` mặc định là `assist`; Ollama đọc mọi turn nhưng chỉ plan an toàn đủ confidence mới được phép can thiệp output. Timeout planner local mặc định 8 giây để phù hợp model 7B; các route deterministic vẫn là lớp thực thi/fallback; chưa đụng workflow n8n.
+- Test mới của orchestrator: 9/9 pass; regression guards: 10/10 pass. Full suite hiện còn các lỗi baseline/environment độc lập cần xử lý riêng trước gate production.
+- Đã bổ sung `customer_profile_update` cho luồng khách tự đổi SĐT: Ollama nhận diện ý định, pipeline validate số/ownership rồi cập nhật profile Redis; giữ ngữ cảnh và không tạo duplicate lead notification.
 
 ---
 
@@ -198,7 +208,7 @@ CHAT_CONVERSATION_MIN_CONFIDENCE=0.85
 | --- | --- |
 | `off` | Pipeline hiện tại hoàn toàn không đổi |
 | `shadow` | Mọi turn được Ollama phân tích nhưng không được thay route/output |
-| `assist` | Chỉ can thiệp câu follow-up/unknown có context và tool hợp lệ |
+| `assist` | Ollama đọc mọi turn; chỉ can thiệp khi plan hợp lệ, đủ confidence và tool được allowlist |
 | `primary` | Ollama planner được ưu tiên rộng; chưa bật production trong kế hoạch đầu |
 
 Rollback production chỉ cần chuyển về `off`; không cần xóa Redis hoặc rollback dữ liệu.
@@ -406,4 +416,3 @@ Dự án được xem là hoàn thành khi:
 - Ollama hoặc Redis gặp lỗi vẫn có fallback an toàn.
 - Bộ replay đa luồng và full unittest đạt toàn bộ gate.
 - Production rollout chỉ diễn ra sau khi chủ dự án duyệt shadow report và tự quyết định deployment.
-

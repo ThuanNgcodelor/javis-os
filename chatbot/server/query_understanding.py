@@ -359,7 +359,9 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         return "privacy_sensitive_lookup", 0.98
     if _has_any(text, ["tra hang", "doi tra", "hoan tien", "khieu nai"]):
         return "return_policy_or_claim", 0.95
-    constraints = None
+    # Keep the dealer branch safe for short location follow-ups such as
+    # "ở đó có không"; build_query_plan computes the same constraints later.
+    constraints = _detect_constraints(text) if brand == "cfc" else {}
     if brand == "cfc" and (
         re.search(r"\b(dai ly|nha phan phoi|npp|diem mua|diem ban|cho ban|cho mua|cua hang|mua o dau|giao tan nha|giao tan noi)\b", text)
         or (
