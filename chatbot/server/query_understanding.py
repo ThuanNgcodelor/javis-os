@@ -14,6 +14,7 @@ from typing import Any, Optional
 import json
 import os
 from pathlib import Path
+# pyrefly: ignore [missing-import]
 import redis
 import time
 
@@ -358,6 +359,7 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         return "privacy_sensitive_lookup", 0.98
     if _has_any(text, ["tra hang", "doi tra", "hoan tien", "khieu nai"]):
         return "return_policy_or_claim", 0.95
+    constraints = None
     if brand == "cfc" and (
         re.search(r"\b(dai ly|nha phan phoi|npp|diem mua|diem ban|cho ban|cho mua|cua hang|mua o dau|giao tan nha|giao tan noi)\b", text)
         or (

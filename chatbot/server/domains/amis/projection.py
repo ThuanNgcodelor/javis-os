@@ -141,6 +141,17 @@ def brand_scope(value: Any) -> str:
     return "unknown"
 
 
+def brand_scope_from_name(name: Any) -> str:
+    folded = fold_text(name)
+    if not folded:
+        return "unknown"
+    if any(k in folded for k in ["zeo", "pano", "oplus", "zif", "onno", "aimone", "bot giat", "nuoc giat", "nuoc rua chen", "nuoc lau san", "nuoc tay"]):
+        return "zeo"
+    if any(k in folded for k in ["cfc", "co bay", "npk", "phan", "ure", "kali", "lan", "dap", "hc", "huu co"]):
+        return "cfc"
+    return "unknown"
+
+
 def _is_inactive(record: dict[str, Any]) -> bool:
     return as_bool(record.get("inactive"))
 
@@ -343,7 +354,9 @@ def build_public_sales_locations(
 
     product_scope_by_alias: dict[str, str] = {}
     for product in product_records:
-        scope = brand_scope(product.get("brand"))
+        scope = brand_scope(product.get("brand") or product.get("product_category_name"))
+        if scope == "unknown":
+            scope = brand_scope_from_name(product.get("product_name"))
         if scope == "unknown":
             continue
         for alias in _record_aliases(product, ("product_code", "product_name", "id")):
@@ -359,7 +372,7 @@ def build_public_sales_locations(
 
         order_aliases = _record_aliases(
             order,
-            ("account_number", "account_id", "customer_id", "account_name"),
+            ("account_number", "account_id", "customer_id", "account_name", "account_code"),
         )
         matched_keys = {alias_to_key.get(alias) for alias in order_aliases}
         matched_keys.discard(None)
@@ -371,7 +384,9 @@ def build_public_sales_locations(
 
         scopes: set[str] = set()
         for line in _order_lines(order):
-            line_scope = brand_scope(line.get("brand"))
+            line_scope = brand_scope(line.get("brand") or line.get("product_category_name"))
+            if line_scope == "unknown":
+                line_scope = brand_scope_from_name(line.get("product_name"))
             if line_scope != "unknown":
                 scopes.add(line_scope)
                 continue
@@ -391,12 +406,21 @@ def build_public_sales_locations(
     public_items: list[dict[str, Any]] = []
 
     # Chỉ chọn các khách hàng/đại lý có đơn hàng thực sự phát sinh trong khoảng thời gian quy định (recency window)
-    if scopes_by_customer:
-        target_customers = [(k, customers_by_key[k]) for k in scopes_by_customer if k in customers_by_key]
-    elif config.pilot_approve_all:
+    if config.pilot_approve_all:
         target_customers = list(customers_by_key.items())
+    elif scopes_by_customer:
+        target_customers = [(k, customers_by_key[k]) for k in scopes_by_customer if k in customers_by_key]
     else:
         target_customers = []
+
+    import json
+    from pathlib import Path
+    marketing_allowlist = set()
+    try:
+        with open(Path(__file__).parent.parent.parent / "data" / "marketing_allowlist.json", "r", encoding="utf-8") as f:
+            marketing_allowlist = set(json.load(f))
+    except Exception:
+        pass
 
     for key, customer in target_customers:
         scopes = scopes_by_customer.get(key)
@@ -408,20 +432,25 @@ def build_public_sales_locations(
             else:
                 scopes = {"cfc"}
 
-        if not scopes:
+        customer_name = fold_text(customer.get("account_name"))
+        is_marketing_vip = customer_name in marketing_allowlist
+
+        if not scopes and not is_marketing_vip:
             continue
+        elif not scopes and is_marketing_vip:
+            scopes = {"cfc"}
 
         def skip(reason: str) -> None:
             reasons = metrics["skipped_customer_reasons"]
             reasons[reason] = reasons.get(reason, 0) + 1
 
-        if _is_inactive(customer):
+        if _is_inactive(customer) and not is_marketing_vip:
             skip("inactive")
             continue
 
         # Kiểm tra điều kiện ngưng hợp tác: Quá 200 ngày không phát sinh mua hàng
         days_without_purchase = customer.get("number_days_without_purchase")
-        if days_without_purchase is not None:
+        if days_without_purchase is not None and not is_marketing_vip:
             try:
                 if int(days_without_purchase) > config.public_recency_days:
                     skip("stale_over_recency_window_no_purchase")
@@ -431,10 +460,11 @@ def build_public_sales_locations(
 
         # Chỉ chấp nhận đại lý có doanh số bán hàng thực tế > 0 và có đơn hàng
         if as_decimal(customer.get("order_sales")) <= 0 and int(customer.get("number_orders") or 0) <= 0:
-            skip("zero_sales_or_no_orders")
-            continue
+            if not is_marketing_vip:
+                skip("zero_sales_or_no_orders")
+                continue
 
-        if not _approved(customer, config):
+        if not _approved(customer, config) and not is_marketing_vip:
             skip("not_publicly_approved")
             continue
 
@@ -452,12 +482,15 @@ def build_public_sales_locations(
             public_address = clean_text(customer.get("billing_address"))
             address_source = "billing"
         if not public_address:
-            skip("missing_public_address")
-            continue
+            if not is_marketing_vip:
+                skip("missing_public_address")
+                continue
+            else:
+                public_address = "*(Chưa cập nhật địa chỉ)*"
 
         public_phone = clean_text(customer.get(config.public_phone_field)) if config.public_phone_field else ""
         if not public_phone and config.allow_office_phone_fallback:
-            public_phone = clean_text(customer.get("office_tel"))
+            public_phone = clean_text(customer.get("office_tel")) or clean_text(customer.get("mobile")) or clean_text(customer.get("phone"))
 
         if address_source == "billing":
             province = clean_text(customer.get("billing_province"))
@@ -474,10 +507,27 @@ def build_public_sales_locations(
                 customer.get("shipping_long"), customer.get("shipping_lat")
             )
 
+        if not ward:
+            import re
+            w_match = re.search(r'(?i)(Phường|Xã|Thị trấn)\s+([^,]+)', public_address)
+            if w_match:
+                ward = w_match.group(0).strip()
+        if not district:
+            import re
+            d_match = re.search(r'(?i)(Quận|Huyện|Thành phố|Thị xã)\s+([^,]+)', public_address)
+            if d_match:
+                district = d_match.group(0).strip()
+        if not province:
+            import re
+            p_match = re.search(r'(?i)(Tỉnh|Thành phố)\s+([^,.]+)', public_address)
+            if p_match:
+                province = p_match.group(0).strip()
+
         # Skip locations without GPS when require_coordinates is enabled.
         if config.require_coordinates and (longitude is None or latitude is None):
-            skip("missing_coordinates")
-            continue
+            if not is_marketing_vip:
+                skip("missing_coordinates")
+                continue
 
         stable_source = clean_text(customer.get("account_number")) or display_name
         location_id = hashlib.sha256(stable_source.encode("utf-8")).hexdigest()[:20]

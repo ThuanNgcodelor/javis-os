@@ -142,8 +142,8 @@ def check_amis_live_status() -> dict[str, Any]:
 # ==============================================================================
 # 2. TRUY VẤN ĐƠN HÀNG REALTIME TỪ CRM THỰC TẾ
 # ==============================================================================
-def lookup_order_status(order_code: Optional[str] = None, dealer_name: Optional[str] = None) -> Optional[dict[str, Any]]:
-    """Tra cứu trạng thái đơn hàng thật từ CRM dataset."""
+def lookup_order_status(order_code: str = "", dealer_name: str = "", phone: str = "") -> Optional[dict[str, Any]]:
+    """Tra cứu trạng thái đơn hàng thật trong 6,718 đơn hàng AMIS CRM."""
     _ensure_crm_dataset_loaded()
 
     def _extract_order_info(o: dict[str, Any], query_code: str) -> dict[str, Any]:
@@ -203,6 +203,26 @@ def lookup_order_status(order_code: Optional[str] = None, dealer_name: Optional[
                 return _extract_order_info(o, "")
 
         return None
+
+    # 3. Tìm theo số điện thoại
+    if phone:
+        clean_phone = re.sub(r"[^\d+]", "", str(phone)).strip()
+        if clean_phone and len(clean_phone) >= 8:
+            customers_by_phone = _CRM_DATASET.get("customers_by_phone", {})
+            cust = customers_by_phone.get(clean_phone)
+            if not cust and clean_phone.startswith("0"):
+                cust = customers_by_phone.get(clean_phone[1:]) or customers_by_phone.get("84" + clean_phone[1:])
+            elif not cust and clean_phone.startswith("84"):
+                cust = customers_by_phone.get("0" + clean_phone[2:]) or customers_by_phone.get(clean_phone[2:])
+            
+            if cust:
+                cust_name = cust.get("account_name")
+                if cust_name:
+                    d_norm = cust_name.lower().strip()
+                    for c_name, orders in _CRM_DATASET.get("orders_by_customer", {}).items():
+                        if d_norm == c_name:
+                            if orders:
+                                return _extract_order_info(orders[0], "")
 
     return None
 

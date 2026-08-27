@@ -57,7 +57,7 @@ class AmisConfig:
     allowed_revenue_statuses: tuple[str, ...] = ("Đã ghi",)
     blocked_order_status_fragments: tuple[str, ...] = ("Hủy", "Từ chối")
     allow_billing_address_fallback: bool = False
-    allow_office_phone_fallback: bool = False
+    allow_office_phone_fallback: bool = True
     min_public_products: int = 1
     min_public_locations: int = 1
 
@@ -159,7 +159,7 @@ def load_amis_config() -> AmisConfig:
             value("AMIS_ALLOW_BILLING_ADDRESS_FALLBACK", "allow_billing_address_fallback", False)
         ),
         allow_office_phone_fallback=_as_bool(
-            value("AMIS_ALLOW_OFFICE_PHONE_FALLBACK", "allow_office_phone_fallback", False)
+            value("AMIS_ALLOW_OFFICE_PHONE_FALLBACK", "allow_office_phone_fallback", True)
         ),
         min_public_products=_as_int(
             value("AMIS_MIN_PUBLIC_PRODUCTS", "min_public_products", 1), 1, 0

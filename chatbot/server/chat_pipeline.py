@@ -623,6 +623,16 @@ async def _lookup_sales_locations_from_redis(
         full_text = f" {name} {addr} {prov} {dist} {wd} "
 
         score = 0
+        
+        prefixes = ["cong ty tnhh mtv ", "cong ty tnhh ", "cong ty cp ", "doanh nghiep tu nhan ", "ho kinh doanh ", "dai ly ", "cua hang ", "npp ", "htx ", "cong ty "]
+        core_name = name
+        for p in prefixes:
+            if core_name.startswith(p):
+                core_name = core_name[len(p):].strip()
+                break
+        if core_name and core_name in q_fold:
+            score += 100
+
         if w_fold and f" {w_fold} " in full_text:
             score += 80
         if d_fold and f" {d_fold} " in full_text:
@@ -971,7 +981,7 @@ def _format_complaint_sop_reply(user_message: str, phone: str = "") -> str:
     return "\n".join(lines)
 
 
-def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text: str = "") -> tuple[str, str]:
+def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text: str = "", phone: str = "") -> tuple[str, str]:
     goal = CFC_GOAL_BY_INTENT.get(intent) or ""
     context = _cfc_context_summary(goal, slots)
     context_line = f" Mình đang giữ thông tin: {context}." if context else ""
@@ -1026,9 +1036,9 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
                 extracted_order_code = ""
 
         dealer_match = re.search(r"(?:dai ly|khach hang)\s+([A-Za-z0-9\s_À-ỹ]+)", raw_text, re.IGNORECASE)
-        extracted_dealer = dealer_match.group(1).strip() if dealer_match else ("vinh thanh" if "vinh thanh" in norm or "anh ba" in norm else "")
+        extracted_dealer = dealer_match.group(1).strip() if dealer_match else ("vinh thanh" if "vinh thanh" in norm else "")
 
-        order_data = lookup_order_status(order_code=extracted_order_code, dealer_name=extracted_dealer)
+        order_data = lookup_order_status(order_code=extracted_order_code, dealer_name=extracted_dealer, phone=phone)
         if order_data:
             answer = format_order_status_response(order_data, query_order_code=extracted_order_code)
             return answer, "ORDER_REALTIME_LOOKUP"
@@ -2985,7 +2995,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 )
 
             if route_decision.action == "capability_boundary":
-                answer, boundary_reason = _build_cfc_capability_boundary(route_decision.intent, cfc_slots, raw_text)
+                answer, boundary_reason = _build_cfc_capability_boundary(route_decision.intent, cfc_slots, raw_text, phone=phone)
                 capability_goal = CFC_GOAL_BY_INTENT.get(route_decision.intent) or route_decision.intent
                 _queue_incoming_contact(f"Yêu cầu CFC: {capability_goal}")
                 _remember_response(
