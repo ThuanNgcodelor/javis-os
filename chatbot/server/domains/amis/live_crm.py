@@ -72,9 +72,31 @@ def _ensure_crm_dataset_loaded() -> None:
         orders_by_code: dict[str, dict[str, Any]] = {}
         orders_by_customer: dict[str, list[dict[str, Any]]] = {}
         for o in sale_orders:
-            code = str(o.get("order_no") or o.get("order_code") or o.get("code") or o.get("id") or "").upper().strip()
-            if code:
+            sono = str(o.get("sale_order_no") or "").upper().strip()
+            oid = str(o.get("id") or "").strip()
+            code = str(o.get("order_no") or o.get("order_code") or o.get("code") or sono or oid).upper().strip()
+
+            if sono:
+                orders_by_code[sono] = o
+                orders_by_code[f"DH{sono}"] = o
+                orders_by_code[f"#DH-{sono}"] = o
+                orders_by_code[f"DH-{sono}"] = o
+                orders_by_code[f"#{sono}"] = o
+                sono_stripped = sono.lstrip("0")
+                if sono_stripped:
+                    orders_by_code[sono_stripped] = o
+                    orders_by_code[f"DH{sono_stripped}"] = o
+                    orders_by_code[f"#DH-{sono_stripped}"] = o
+                    orders_by_code[f"DH-{sono_stripped}"] = o
+                    orders_by_code[f"#{sono_stripped}"] = o
+            if oid:
+                orders_by_code[oid] = o
+                orders_by_code[f"DH{oid}"] = o
+                orders_by_code[f"#DH-{oid}"] = o
+                orders_by_code[f"#{oid}"] = o
+            if code and code not in orders_by_code:
                 orders_by_code[code] = o
+
             acc_name = str(o.get("account_name") or "").lower().strip()
             if acc_name:
                 if acc_name not in orders_by_customer:
@@ -287,6 +309,14 @@ def lookup_inventory_atp(query: str, qty_tons: float = 5.0) -> Optional[dict[str
             score += 40
         if "hi end" in q_norm and "hi end" in p_name_norm:
             score += 40
+        if "lua" in q_norm:
+            if "lua" in p_name_norm:
+                score += 100
+            if any(f in p_name_norm for f in ["22.15.5", "22-15-5", "17.3.20", "17-3-20", "20.20.15", "20-20-15", "16.16.8", "16-16-8"]):
+                score += 70
+        if "sau rieng" in q_norm:
+            if any(f in p_name_norm for f in ["15.15.15", "15-15-15", "20.20.15", "20-20-15", "16.8.16", "16-8-16", "16.6.18", "16-6-18", "huu co"]):
+                score += 70
 
         # Khớp các mã quy cách phụ (như 202015MT, TR44a, CB45, CB36, 2015TE02...)
         for w in q_words:
@@ -315,10 +345,17 @@ def lookup_inventory_atp(query: str, qty_tons: float = 5.0) -> Optional[dict[str
         for _, other_p in candidates[1:]:
             o_name = other_p.get("product_name") or ""
             o_code = other_p.get("product_code") or ""
-            if o_name and o_name not in seen_names and len(variants) < 4:
-                seen_names.add(o_name)
-                variants.append(f"{o_name} (Mã: {o_code})")
+            o_name_clean = o_name.lower()
+            # Loại trừ các mặt hàng bột giặt, nước giặt, bao bì ngoài ngành khỏi gợi ý phân bón
+            if any(k in o_name_clean for k in ["bot giat", "nuoc giat", "rua chen", "lau san", "aimone", "pano", "oplus", "zeo", "ao mua"]):
+                continue
+            # Thay thế các số công thức có dấu chấm (như 16.8.16.12) thành gạch nối (16-8-16-12) để tránh Facebook tự tạo link IP
+            safe_name = re.sub(r"(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?", lambda m: "-".join(g for g in m.groups() if g), o_name)
+            if safe_name and safe_name not in seen_names and len(variants) < 3:
+                seen_names.add(safe_name)
+                variants.append(f"{safe_name} (Mã: {o_code})")
 
+        config = load_amis_config()
         return {
             "product_name": best_p.get("product_name"),
             "product_code": best_p.get("product_code"),
@@ -328,7 +365,7 @@ def lookup_inventory_atp(query: str, qty_tons: float = 5.0) -> Optional[dict[str
             "factory_capacity_daily_tons": 200,
             "warehouse_available_tons": 100,
             "can_fulfill_instantly": True,
-            "warehouse_location": "Tổng kho Nhà máy Cần Thơ (KCN Trà Nóc)",
+            "warehouse_location": config.warehouse_location,
             "source": "amis_real_products",
         }
 

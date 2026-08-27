@@ -13,6 +13,8 @@ import asyncio
 import json
 import logging
 import re
+import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Optional, List
 
@@ -209,6 +211,121 @@ async def call_ollama(
             return data.get("message", {}).get("content", "").strip()
     except Exception as e:
         logger.warning("Lỗi khi gọi Ollama Local: %s", e)
+    return None
+
+
+_DYNAMIC_CATALOG_CACHE: dict[str, Any] = {"text": "", "expires_at": 0.0}
+
+
+async def get_dynamic_cfc_catalog_context() -> str:
+    """Truy xuất danh mục phân bón trực tiếp từ Redis AMIS snapshot (amis:public:products:active)."""
+    now = time.time()
+    if _DYNAMIC_CATALOG_CACHE["text"] and now < _DYNAMIC_CATALOG_CACHE["expires_at"]:
+        return _DYNAMIC_CATALOG_CACHE["text"]
+
+    try:
+        from domains.common.db import get_redis_client
+        r = get_redis_client(decode=True)
+        raw = await r.get("amis:public:products:active")
+        if not raw:
+            return ""
+
+        items = json.loads(raw).get("items", [])
+
+        def _clean(t: str) -> str:
+            t = unicodedata.normalize("NFD", t or "")
+            t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+            return re.sub(r"\s+", " ", t.lower()).strip()
+
+        formulas = {
+            "Hữu cơ Cobanic 30% (Cải tạo đất, kích rễ)": ["cobanic 30%", "cobanic"],
+            "Phân Hữu cơ đa dụng 21% (HC21 - Dưỡng rễ mập mầm)": ["hc21", "21% bao 25kg", "21%"],
+            "NPK Cò bay 20-20-15 TE (Đâm chồi, tạo tán, phục hồi cây)": ["20.20.15", "20-20-15"],
+            "NPK Cò bay 16-16-8 TE (Phát triển cành chồi, đẻ nhánh)": ["16.16.8", "16-16-8"],
+            "NPK Cò bay 15-15-15 TE (Cân đối dinh dưỡng, dưỡng hoa)": ["15.15.15", "15-15-15"],
+            "NPK Cò bay 16-8-16-12S TE (Nuôi trái non, chống rụng, bóng vỏ)": ["16.8.16", "16-8-16"],
+            "NPK Cò bay 16-6-18 TE (Nuôi trái lớn, tăng độ ngọt, chắc hạt)": ["16.6.18", "16-6-18"],
+            "NPK Lúa Xanh 22-15-5 2MgO-5S (Chuyên lúa đẻ nhánh, đón đòng)": ["22.15.5", "lua xanh"],
+            "NPK Lúa Vàng 17-3-20 2MgO-5S (Chuyên lúa rước đòng, nuôi hạt)": ["17.3.20", "lua vang"],
+            "Trung vi lượng Canxi - Bo - Magiê (Chống rụng hoa & nứt trái)": ["canxi", "magie", "bo"]
+        }
+
+        matched_catalog = []
+        for f_desc, keywords in formulas.items():
+            best = None
+            for item in items:
+                name = item.get("product_name") or ""
+                norm = _clean(name)
+                if any(k in norm for k in keywords):
+                    if not any(w in norm for w in ["ao mua", "bot giat", "bao in", "hop qua", "combo"]):
+                        best = f"{name} (Mã: {item.get('product_code')})"
+                        break
+            if best:
+                matched_catalog.append(f"• **{f_desc}:** {best}")
+            else:
+                matched_catalog.append(f"• **{f_desc}**")
+
+        result_text = "\n".join(matched_catalog)
+        _DYNAMIC_CATALOG_CACHE["text"] = result_text
+        _DYNAMIC_CATALOG_CACHE["expires_at"] = now + 600.0
+        return result_text
+    except Exception as e:
+        logger.warning("Lỗi truy xuất danh mục động từ Redis: %s", e)
+        return ""
+
+
+async def consult_cfc_agronomy_with_ollama(
+    user_query: str,
+    slots: Optional[dict[str, Any]] = None,
+    timeout_seconds: float = 25.0,
+) -> Optional[str]:
+    """Phân tích nông học động qua Ollama LLM kết hợp dữ liệu danh mục phân bón CFC Cò Bay."""
+    slots = slots or {}
+    crop = slots.get("crop") or ""
+    area = slots.get("area") or slots.get("acreage") or ""
+    district = slots.get("district") or slots.get("ward") or ""
+
+    dynamic_catalog = await get_dynamic_cfc_catalog_context()
+
+    system_prompt = (
+        "Bạn là Chuyên gia Kỹ sư Nông nghiệp của Nhà máy Phân bón CFC - Cò Bay (Cần Thơ).\n"
+        "Nhiệm vụ: Tư vấn kỹ thuật bón phân chuyên sâu, chuẩn xác, giàu tính thực tiễn cho nông dân/nhà vườn, "
+        "dựa trên danh mục sản phẩm chính hãng của Cò Bay được cập nhật trực tiếp từ hệ thống ERP/CRM.\n\n"
+        f"Danh mục phân bón thực tế của Nhà máy Cò Bay (trích xuất thời gian thực):\n{dynamic_catalog}\n\n"
+        "Yêu cầu phản hồi:\n"
+        "- Trả lời bằng tiếng Việt 100%, phong cách kỹ sư nông học tận tâm, dễ hiểu, súc tích (120 - 180 từ).\n"
+        "- Phân tích đúng đặc tính sinh lý của loại cây trồng trong câu hỏi (cây ổi, mít, xoài, bưởi, cà phê, sầu riêng, thanh long, v.v.).\n"
+        "- Chỉ đề xuất các dòng phân bón có trong danh mục thực tế của Cò Bay ở trên cho từng giai đoạn (phát đọt/dưỡng rễ -> ra hoa/đậu trái -> nuôi trái/thu hoạch).\n"
+        "- Nếu có diện tích lớn / trang trại / hợp tác xã (từ 5 ha, 10 ha, 100 ha trở lên): Nêu rõ chính sách giá xuất xưởng, xe tải giao tận vườn và cử kỹ sư Cò Bay đến khảo sát mẫu đất trực tiếp.\n"
+        "- Kết thúc bằng lời mời gửi Số điện thoại để kỹ sư Cò Bay liên hệ hỗ trợ sát vườn."
+    )
+
+    prompt = f"Câu hỏi của nhà vườn: {user_query}\nThông tin đã ghi nhận: Cây trồng: {crop or 'chưa rõ'}, Diện tích: {area or 'chưa rõ'}, Khu vực: {district or 'chưa rõ'}."
+
+    try:
+        cfg = _load_settings().get("ollama", {})
+        base_url = cfg.get("base_url", "http://127.0.0.1:11434")
+        model_name = cfg.get("fallback_embed_model", "qwen2.5:7b-instruct")
+
+        payload = {
+            "model": model_name,
+            "keep_alive": "30m",
+            "stream": False,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            "options": {"temperature": 0.2, "num_predict": 256}
+        }
+
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            resp = await client.post(f"{base_url}/api/chat", json=payload)
+            if resp.status_code == 200:
+                content = resp.json().get("message", {}).get("content", "").strip()
+                if content:
+                    return content
+    except Exception as e:
+        logger.warning("Lỗi khi gọi Ollama tư vấn nông học: %r", e)
     return None
 
 

@@ -30,9 +30,10 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 @workflow({
     id: 'uJOo6NQO2mJZhUAr',
     name: 'CFC Co Bay Chatbot',
-    active: false,
+    active: true,
+    description: 'a',
     isArchived: false,
-    settings: { executionOrder: 'v1', binaryMode: 'separate' },
+    settings: { executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
 })
 export class CfcCoBayChatbotWorkflow {
     // =====================================================================
@@ -69,9 +70,6 @@ let text = '';
 let senderId = '';
 let messageId = '';
 let hasAttachment = false;
-let attachmentType = '';
-let latitude = null;
-let longitude = null;
 let isEcho = false;
 
 const messaging = data?.messaging?.[0]
@@ -84,36 +82,18 @@ if (messaging) {
   text = messaging?.message?.text || messaging?.message?.quick_reply?.payload || '';
   senderId = messaging?.sender?.id || '';
   messageId = messaging?.message?.mid || '';
-  const attachments = Array.isArray(messaging?.message?.attachments)
-    ? messaging.message.attachments
-    : [];
-  hasAttachment = attachments.length > 0;
-  const firstAttachment = attachments[0] || null;
-  attachmentType = firstAttachment?.type || '';
-  const locationAttachment = attachments.find((item) => item?.type === 'location') || null;
-  const coordinates = locationAttachment?.payload?.coordinates || null;
-  const candidateLatitude = Number(coordinates?.lat);
-  const candidateLongitude = Number(coordinates?.long ?? coordinates?.lng);
-  if (Number.isFinite(candidateLatitude) && Number.isFinite(candidateLongitude)) {
-    latitude = candidateLatitude;
-    longitude = candidateLongitude;
-    attachmentType = 'location';
-  }
+  hasAttachment = Boolean(messaging?.message?.attachments?.length);
   isEcho = Boolean(messaging?.message?.is_echo);
 }
 
 const emptyInput = !text || !text.trim();
-const hasLocation = latitude !== null && longitude !== null;
 
 return [{ json: {
   text: text.trim(),
   senderId,
   messageId,
   emptyInput,
-  inputKind: hasLocation ? 'location' : (emptyInput ? (hasAttachment ? 'attachment' : 'empty') : 'text'),
-  attachmentType,
-  latitude,
-  longitude,
+  inputKind: emptyInput ? (hasAttachment ? 'attachment' : 'empty') : 'text',
   isEcho,
 } }];
 `,
@@ -133,9 +113,9 @@ return [{ json: {
         sendBody: true,
         specifyBody: 'json',
         jsonBody:
-            '={{ { brand: "cfc", sender_id: $json.senderId, text: $json.text, fb_name: $json.fb_name || "", message_id: $json.messageId || "", input_kind: $json.inputKind || "text", attachment_type: $json.attachmentType || "", latitude: $json.latitude, longitude: $json.longitude } }}',
+            '={{ { brand: "cfc", sender_id: $json.senderId, text: $json.text, fb_name: $json.fb_name || "", message_id: $json.messageId || "" } }}',
         options: {
-            timeout: 8000,
+            timeout: 30000,
         },
     };
 
@@ -154,10 +134,6 @@ try {
   pipelineRes = $input.first().json || {};
 } catch (e) {
   pipelineRes = {};
-}
-// Không gửi lại MID trùng và không chen lời khi nhân viên đang takeover.
-if (pipelineRes.duplicate === true || pipelineRes.suppress_send === true) {
-  return [];
 }
 const finalReply = pipelineRes.answer || "Dạ CFC Cò Bay đã nhận được tin nhắn của bạn. Bạn để lại nhu cầu bón phân hoặc số điện thoại, kỹ sư Cò Bay sẽ hỗ trợ tư vấn ngay cho mình nha!";
 

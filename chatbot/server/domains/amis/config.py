@@ -53,7 +53,7 @@ class AmisConfig:
     public_phone_field: str = "chatbot_public_phone"
     public_address_field: str = "chatbot_public_address"
     public_account_allowlist: tuple[str, ...] = ()
-    public_recency_days: int = 365
+    public_recency_days: int = 200
     allowed_revenue_statuses: tuple[str, ...] = ("Đã ghi",)
     blocked_order_status_fragments: tuple[str, ...] = ("Hủy", "Từ chối")
     allow_billing_address_fallback: bool = False
@@ -74,6 +74,7 @@ class AmisConfig:
     redis_locations_geo_key: str = "amis:public:sales-locations:geo"
     redis_metadata_key: str = "amis:public:sync:last-success"
     internal_token: str = field(default="", repr=False)
+    warehouse_location: str = "Tổng kho Nhà máy Cần Thơ (KCN Trà Nóc)"
 
     @property
     def credentials_configured(self) -> bool:
@@ -97,8 +98,8 @@ class AmisConfig:
             "require_coordinates": self.require_coordinates,
             "geo_radius_km": self.geo_radius_km,
             "internal_token_configured": bool(self.internal_token),
+            "warehouse_location": self.warehouse_location,
         }
-
 
 def load_amis_config() -> AmisConfig:
     try:
@@ -192,4 +193,7 @@ def load_amis_config() -> AmisConfig:
             value("AMIS_REDIS_METADATA_KEY", "redis_metadata_key", AmisConfig.redis_metadata_key)
         ).strip(),
         internal_token=internal_token,
+        warehouse_location=str(
+            value("AMIS_WAREHOUSE_DEFAULT", "warehouse_location", AmisConfig.warehouse_location)
+        ).strip(),
     )

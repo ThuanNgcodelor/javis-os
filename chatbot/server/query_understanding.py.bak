@@ -11,79 +11,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 import re
 from typing import Any, Optional
-import json
-import os
-from pathlib import Path
-import redis
-import time
-
-_redis_sync_client = None
-_DYNAMIC_CROP_TERMS: list[str] = []
-_DYNAMIC_PROVINCES: list[str] = []
-_DYNAMIC_DISTRICTS: list[str] = []
-_LAST_SYNC_TIME: float = 0.0
-
-def _get_redis_sync() -> redis.Redis:
-    global _redis_sync_client
-    if _redis_sync_client is None:
-        try:
-            settings_path = Path(__file__).resolve().parent / "settings.json"
-            with open(settings_path, "r", encoding="utf-8") as f:
-                settings = json.load(f)
-            r_cfg = settings.get("redis", {})
-            _redis_sync_client = redis.Redis(
-                host=r_cfg.get("host", "127.0.0.1"),
-                port=r_cfg.get("port", 6379),
-                password=r_cfg.get("password"),
-                db=r_cfg.get("db", 0),
-                decode_responses=True
-            )
-        except Exception:
-            _redis_sync_client = redis.Redis(host="127.0.0.1", port=6379, decode_responses=True)
-    return _redis_sync_client
-
-def _sync_dynamic_lists() -> None:
-    global _DYNAMIC_CROP_TERMS, _DYNAMIC_PROVINCES, _DYNAMIC_DISTRICTS, _LAST_SYNC_TIME
-    now = time.time()
-    if now - _LAST_SYNC_TIME < 300:
-        return
-    try:
-        r = _get_redis_sync()
-        # Crop terms from Redis
-        crops_raw = r.get("cfc:knowledge:crop_terms")
-        if crops_raw:
-            try:
-                crops_list = json.loads(crops_raw)
-                if isinstance(crops_list, list):
-                    _DYNAMIC_CROP_TERMS = [str(c).strip().lower() for c in crops_list if str(c).strip()]
-            except json.JSONDecodeError:
-                _DYNAMIC_CROP_TERMS = [c.strip().lower() for c in str(crops_raw).split(",") if c.strip()]
-        
-        # Provinces/Districts from AMIS
-        amis_locations_raw = r.get("amis:public:sales-locations:active")
-        if amis_locations_raw:
-            try:
-                locations = json.loads(amis_locations_raw)
-                provinces = set()
-                districts = set()
-                if isinstance(locations, list):
-                    for loc in locations:
-                        p = str(loc.get("province", "")).strip().lower()
-                        d = str(loc.get("district", "")).strip().lower()
-                        if p:
-                            provinces.add(p)
-                        if d:
-                            districts.add(d)
-                if provinces:
-                    _DYNAMIC_PROVINCES = list(provinces)
-                if districts:
-                    _DYNAMIC_DISTRICTS = list(districts)
-            except Exception:
-                pass
-        
-        _LAST_SYNC_TIME = now
-    except Exception:
-        pass  # Fallback to hardcoded if Redis fails
 
 
 @dataclass
@@ -211,7 +138,7 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
     if acreage_match:
         entities["acreage"] = f"{acreage_match.group(1)} {acreage_match.group(2)}"
 
-    crop_terms = _DYNAMIC_CROP_TERMS if _DYNAMIC_CROP_TERMS else [
+    crop_terms = [
         "sau rieng", "lua", "cay an trai", "rau mau", "ca phe", "tieu", "cao su", "dieu",
         "oi", "cay oi", "buoi", "cam", "quyt", "xoai", "mit", "thanh long", "man", "tao",
         "chanh", "tac", "mang cau", "chom chom", "nhan", "khoai lang", "dua hau"
@@ -267,22 +194,18 @@ def _detect_constraints(text: str) -> dict[str, Any]:
         constraints["budget_vnd"] = int(value)
 
     # Location slots extraction (provinces, districts, wards)
-    provinces = _DYNAMIC_PROVINCES if _DYNAMIC_PROVINCES else [
-        "can tho", "an giang", "dong thap", "hau giang", "soc trang", "kien giang",
-        "vinh long", "tien giang", "ben tre", "tra vinh", "ca mau", "bac lieu",
-        "lam dong", "da lat", "tphcm", "ho chi minh", "ha noi", "da nang"
-    ]
+    provinces = ["can tho", "an giang", "dong thap", "hau giang", "soc trang", "kien giang",
+                 "vinh long", "tien giang", "ben tre", "tra vinh", "ca mau", "bac lieu",
+                 "lam dong", "da lat", "tphcm", "ho chi minh", "ha noi", "da nang"]
     for prov in provinces:
         if re.search(rf"\b{prov}\b", text):
             constraints["location"] = prov
             break
 
     # Districts in Mekong Delta
-    districts = _DYNAMIC_DISTRICTS if _DYNAMIC_DISTRICTS else [
-        "o mon", "thoi lai", "co do", "vinh thanh", "phong dien",
-        "binh thuy", "ninh kieu", "cai rang", "thot not", "cho moi",
-        "tri ton", "thoai son", "tan hiep", "giong rieng", "chau thanh"
-    ]
+    districts = ["o mon", "thoi lai", "co do", "vinh thanh", "phong dien",
+                 "binh thuy", "ninh kieu", "cai rang", "thot not", "cho moi",
+                 "tri ton", "thoai son", "tan hiep", "giong rieng", "chau thanh"]
     for dist in districts:
         if re.search(rf"\b{dist}\b", text):
             constraints["district"] = dist
@@ -428,7 +351,6 @@ def build_query_plan(
     conversation_state: Optional[dict[str, Any]] = None,
 ) -> QueryPlan:
     """Build a fact-free QueryPlan used for routing, tracing and tests."""
-    _sync_dynamic_lists()
     reference_resolution = reference_resolution or {}
     conversation_state = conversation_state or {}
     attrs = _detect_attributes(norm_text)

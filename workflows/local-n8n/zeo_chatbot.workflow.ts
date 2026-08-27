@@ -30,9 +30,10 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 @workflow({
     id: 'd7fctbMhVUmhrNG0',
     name: 'Zeo Chatbot',
-    active: false,
+    active: true,
+    description: 'b',
     isArchived: false,
-    settings: { executionOrder: 'v1', binaryMode: 'separate' },
+    settings: { executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
 })
 export class ZeoChatbotWorkflow {
     // =====================================================================
@@ -114,7 +115,7 @@ return [{ json: {
         jsonBody:
             '={{ { brand: "zeo", sender_id: $json.senderId, text: $json.text, fb_name: $json.fb_name || "", message_id: $json.messageId || "" } }}',
         options: {
-            timeout: 8000,
+            timeout: 30000,
         },
     };
 

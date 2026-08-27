@@ -274,15 +274,9 @@ def _order_is_qualified(
     *,
     now: datetime,
 ) -> tuple[bool, str]:
-    if not as_bool(order.get("is_invoiced")):
-        return False, "not_invoiced"
-    if as_decimal(order.get("invoiced_amount")) <= 0:
-        return False, "zero_invoiced_amount"
-
-    revenue_status = fold_text(order.get("revenue_status"))
-    allowed_statuses = {fold_text(value) for value in config.allowed_revenue_statuses}
-    if allowed_statuses and revenue_status not in allowed_statuses:
-        return False, "revenue_status"
+    order_amount = as_decimal(order.get("sale_order_amount") or order.get("invoiced_amount") or order.get("amount_summary"))
+    if not as_bool(order.get("is_invoiced")) and order_amount <= 0:
+        return False, "zero_amount_or_not_invoiced"
 
     order_status = fold_text(order.get("status"))
     if any(fold_text(value) in order_status for value in config.blocked_order_status_fragments if fold_text(value)):
@@ -290,14 +284,16 @@ def _order_is_qualified(
 
     if config.public_recency_days > 0:
         order_date = parse_datetime(
-            order.get("invoice_date")
-            or order.get("sale_order_date")
+            order.get("sale_order_date")
+            or order.get("invoice_date")
             or order.get("book_date")
+            or order.get("modified_date")
+            or order.get("created_date")
         )
         if order_date is None:
             return False, "missing_order_date"
         if order_date < now - timedelta(days=config.public_recency_days):
-            return False, "stale_order"
+            return False, "stale_order_over_recency_window"
     return True, "qualified"
 
 
@@ -394,14 +390,13 @@ def build_public_sales_locations(
     metrics["qualified_customer_count"] = len(scopes_by_customer)
     public_items: list[dict[str, Any]] = []
 
-    # In pilot mode or standard sync, iterate through all customers.
-    # If order linking found brand scopes, use them; otherwise in pilot mode
-    # fallback to CFC brand scope (or resolve from customer list_product field).
-    target_customers = (
-        customers_by_key.items()
-        if config.pilot_approve_all
-        else [(k, customers_by_key[k]) for k in scopes_by_customer if k in customers_by_key]
-    )
+    # Chỉ chọn các khách hàng/đại lý có đơn hàng thực sự phát sinh trong khoảng thời gian quy định (recency window)
+    if scopes_by_customer:
+        target_customers = [(k, customers_by_key[k]) for k in scopes_by_customer if k in customers_by_key]
+    elif config.pilot_approve_all:
+        target_customers = list(customers_by_key.items())
+    else:
+        target_customers = []
 
     for key, customer in target_customers:
         scopes = scopes_by_customer.get(key)
@@ -423,6 +418,22 @@ def build_public_sales_locations(
         if _is_inactive(customer):
             skip("inactive")
             continue
+
+        # Kiểm tra điều kiện ngưng hợp tác: Quá 200 ngày không phát sinh mua hàng
+        days_without_purchase = customer.get("number_days_without_purchase")
+        if days_without_purchase is not None:
+            try:
+                if int(days_without_purchase) > config.public_recency_days:
+                    skip("stale_over_recency_window_no_purchase")
+                    continue
+            except (TypeError, ValueError):
+                pass
+
+        # Chỉ chấp nhận đại lý có doanh số bán hàng thực tế > 0 và có đơn hàng
+        if as_decimal(customer.get("order_sales")) <= 0 and int(customer.get("number_orders") or 0) <= 0:
+            skip("zero_sales_or_no_orders")
+            continue
+
         if not _approved(customer, config):
             skip("not_publicly_approved")
             continue
