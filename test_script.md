@@ -34,7 +34,7 @@ Dưới đây là chuỗi câu hỏi được trích xuất từ `Bang_Danh_Gia_
 **Khách hàng:** Kiểm tra giúp đơn hàng #DH-9999-999 xe đã bốc hàng xong chưa em?
 *(Mục đích: Test tra cứu đơn hàng không tồn tại / sai mã)*
 
-**Khách hàng:** Cho anh tra cứu đơn hàng số #DH-2026-889 xe đã bốc hàng xong chưa?
+**Khách hàng:** Cho anh tra cứu đơn hàng số #00005042 xe đã bốc hàng xong chưa?
 *(Mục đích: Test tra cứu đơn hàng hợp lệ)*
 
 **Khách hàng:** 00005042 vậy đơn này nè
