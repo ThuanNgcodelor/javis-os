@@ -102,18 +102,18 @@ class ConversationOrchestratorUnitTests(unittest.TestCase):
         self.assertEqual(profile_plan["intent"], "customer_profile_update")
         self.assertTrue(is_safe_assist_plan(profile_plan, min_confidence=0.85))
 
-    def test_assist_reads_every_turn_without_forcing_a_route(self):
+    def test_assist_only_reads_contextual_turns(self):
         state = {"recent_turns": [{"user": "Tìm đại lý", "bot": "Đây là danh sách"}]}
-        self.assertTrue(should_run_orchestrator(
+        self.assertFalse(should_run_orchestrator(
             "assist",
             conversation_state=state,
-            normalized_text="xin so dien thoai cac cho tren",
+            normalized_text="cho toi biet CFC co NPK khong",
             brand="cfc",
         ))
         self.assertTrue(should_run_orchestrator(
             "assist",
             conversation_state=state,
-            normalized_text="cho toi biet CFC co NPK khong",
+            normalized_text="xin so dien thoai cac cho tren",
             brand="cfc",
         ))
         with patch.dict(os.environ, {"CHAT_CONVERSATION_MODE": "assist"}):

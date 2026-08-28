@@ -97,16 +97,16 @@ def load_orchestrator_config() -> dict[str, Any]:
     try:
         history_limit = int(os.getenv("CHAT_CONVERSATION_HISTORY_LIMIT", cfg.get("orchestrator_history_limit", 12)))
     except (TypeError, ValueError):
-        history_limit = 12
+        history_limit = 6
     try:
-        timeout_seconds = float(os.getenv("CHAT_CONVERSATION_TIMEOUT_SECONDS", cfg.get("orchestrator_timeout_seconds", 15.0)))
+        timeout_seconds = float(os.getenv("CHAT_CONVERSATION_TIMEOUT_SECONDS", cfg.get("orchestrator_timeout_seconds", 6.0)))
     except (TypeError, ValueError):
-        timeout_seconds = 15.0
+        timeout_seconds = 6.0
     return {
         "mode": mode,
         "min_confidence": max(0.5, min(confidence, 0.99)),
-        "history_limit": max(2, min(history_limit, 20)),
-        "timeout_seconds": max(2.5, min(timeout_seconds, 20.0)),
+        "history_limit": max(2, min(history_limit, 12)),
+        "timeout_seconds": max(2.5, min(timeout_seconds, 8.0)),
     }
 
 
@@ -166,9 +166,34 @@ def should_run_orchestrator(
         return False
     if mode in {"shadow", "primary"}:
         return True
-    # Assist reads every valid turn so Ollama can understand first-turn commands
-    # as well as follow-ups. Safe-plan validation below still protects output.
-    return True
+
+    # A first-turn, explicit request is already handled by the deterministic
+    # Redis/CRM route. Ollama is reserved for turns that need conversation context.
+    has_context = bool(
+        conversation_state.get("recent_turns")
+        or conversation_state.get("last_tool_results")
+        or conversation_state.get("last_products_shown")
+        or conversation_state.get("conversation_summary")
+        or (conversation_state.get("active_goal") or {}).get("name")
+    )
+    if re.search(
+        r"(?:\b(doi|thay|cap nhat|sua)\b.{0,24}\b(so|sdt|dien thoai)\b|"
+        r"\b(so|sdt|dien thoai)\b.{0,24}\b(doi|thay|cap nhat|sua)\b)",
+        normalized_text,
+    ):
+        return True
+    if not has_context:
+        return False
+
+    return bool(re.search(
+        r"\b(cac cho|cho do|cho tren|cho ay|cai nay|cai do|loai nay|loai do|san pham nay|"
+        r"vua roi|vua noi|o tren|the nao|thi sao|con khong|con hang|giao|ship|phi ship|"
+        r"so dien thoai|sdt|dien thoai|link|gia|bao nhieu|doi|thay|tiep|them|nua)\b",
+        normalized_text,
+    ) or len(normalized_text.split()) <= 5 and bool(re.search(
+        r"\b(con|vay|the|nay|do|tren|sao|tiep|them|nua)\b",
+        normalized_text,
+    )))
 
 
 def validate_orchestrator_plan(value: Any) -> Optional[dict[str, Any]]:

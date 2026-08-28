@@ -227,7 +227,7 @@ async def plan_conversation_turn_with_ollama(
     brand: str,
     conversation_messages: Optional[List[dict[str, str]]] = None,
     conversation_context: Optional[dict[str, Any]] = None,
-    timeout: float = 15.0,
+    timeout: float = 6.0,
 ) -> Optional[dict[str, Any]]:
     """Classify a multi-turn conversation without generating customer text."""
     from conversation_orchestrator import validate_orchestrator_plan
@@ -285,11 +285,11 @@ Schema:
                 system_prompt=system_prompt,
                 model=model,
                 temperature=0.0,
-                num_predict=320,
+                num_predict=192,
                 messages=(conversation_messages or [])[:-1],
                 output_format="json",
             ),
-            timeout=max(0.3, min(float(timeout), 15.0)),
+            timeout=max(0.3, min(float(timeout), 8.0)),
         )
     except Exception as exc:
         logger.debug("Conversation orchestrator timeout/error: %s", exc)

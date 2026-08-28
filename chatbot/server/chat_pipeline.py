@@ -2748,7 +2748,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                         brand=brand,
                         conversation_messages=conversation_messages,
                         conversation_context=conversation_context,
-                        timeout=orchestrator_cfg.get("timeout_seconds", 15.0),
+                        timeout=orchestrator_cfg.get("timeout_seconds", 6.0),
                     )
                 if conversation_plan:
                     planned_product = referenced_product_from_plan(conversation_state, conversation_plan)

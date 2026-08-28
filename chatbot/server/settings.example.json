@@ -31,8 +31,8 @@
     "sender_lock_wait_seconds": 3.0,
     "orchestrator_mode": "assist",
     "orchestrator_min_confidence": 0.85,
-    "orchestrator_history_limit": 12,
-    "orchestrator_timeout_seconds": 15.0
+    "orchestrator_history_limit": 6,
+    "orchestrator_timeout_seconds": 6.0
   },
   "grounding_policy": {
     "mode": "audit"
