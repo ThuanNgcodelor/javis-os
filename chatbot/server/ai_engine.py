@@ -40,6 +40,7 @@ async def call_gemini(
     api_key: Optional[str] = None,
     model: str = "gemini-2.0-flash",
     temperature: float = 0.3,
+    output_format: Optional[str] = None,
 ) -> Optional[str]:
     """Gọi Google Gemini API (Miễn phí 15 requests/phút)."""
     cfg = _load_settings().get("ai_providers", {}).get("gemini", {})
@@ -63,6 +64,8 @@ async def call_gemini(
             "maxOutputTokens": 2048,
         },
     }
+    if output_format == "json":
+        payload["generationConfig"]["responseMimeType"] = "application/json"
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -85,6 +88,7 @@ async def call_openrouter(
     api_key: Optional[str] = None,
     model: str = "google/gemini-2.0-flash-exp:free",
     temperature: float = 0.3,
+    output_format: Optional[str] = None,
 ) -> Optional[str]:
     """Gọi OpenRouter API (Hỗ trợ các model miễn phí)."""
     cfg = _load_settings().get("ai_providers", {}).get("openrouter", {})
@@ -111,6 +115,8 @@ async def call_openrouter(
         "messages": messages,
         "temperature": temperature,
     }
+    if output_format == "json":
+        payload["response_format"] = {"type": "json_object"}
 
     try:
         async with httpx.AsyncClient(timeout=35.0) as client:
@@ -131,6 +137,7 @@ async def call_groq(
     api_key: Optional[str] = None,
     model: str = "llama-3.3-70b-versatile",
     temperature: float = 0.3,
+    output_format: Optional[str] = None,
 ) -> Optional[str]:
     """Gọi Groq Cloud API (Miễn phí, siêu nhanh)."""
     cfg = _load_settings().get("ai_providers", {}).get("groq", {})
@@ -161,6 +168,8 @@ async def call_groq(
             "messages": messages,
             "temperature": temperature,
         }
+        if output_format == "json":
+            payload["response_format"] = {"type": "json_object"}
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
                 resp = await client.post(url, headers=headers, json=payload)
@@ -221,7 +230,7 @@ async def call_ollama(
     return None
 
 
-async def plan_conversation_turn_with_ollama(
+async def plan_conversation_turn_with_ai(
     *,
     user_query: str,
     brand: str,
@@ -280,18 +289,25 @@ Schema:
         "Chỉ xuất JSON object đúng schema."
     )
     try:
-        raw = await asyncio.wait_for(
-            call_ollama(
-                prompt,
+        cfg = _load_settings()
+        preferred_provider = cfg.get("ai_providers", {}).get("preferred_provider", "groq")
+        
+        # Thêm messages vào prompt để truyền context cho Cloud
+        if conversation_messages:
+            hist = "\\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in conversation_messages[:-1]])
+            prompt = f"Lịch sử hội thoại:\\n{hist}\\n\\n" + prompt
+
+        raw_res = await asyncio.wait_for(
+            generate_ai_text(
+                prompt=prompt,
                 system_prompt=system_prompt,
-                model=model,
+                preferred_provider=preferred_provider,
                 temperature=0.0,
-                num_predict=192,
-                messages=(conversation_messages or [])[:-1],
-                output_format="json",
+                output_format="json"
             ),
             timeout=max(0.3, min(float(timeout), 8.0)),
         )
+        raw = raw_res.get("text", "")
     except Exception as exc:
         logger.debug("Conversation orchestrator timeout/error: %s", exc)
         return None
@@ -358,7 +374,7 @@ async def get_dynamic_cfc_catalog_context() -> str:
         return ""
 
 
-async def consult_cfc_agronomy_with_ollama(
+async def consult_cfc_agronomy_with_ai(
     user_query: str,
     slots: Optional[dict[str, Any]] = None,
     timeout_seconds: float = 25.0,
@@ -387,29 +403,25 @@ async def consult_cfc_agronomy_with_ollama(
     prompt = f"Câu hỏi của nhà vườn: {user_query}\nThông tin đã ghi nhận: Cây trồng: {crop or 'chưa rõ'}, Diện tích: {area or 'chưa rõ'}, Khu vực: {district or 'chưa rõ'}."
 
     try:
-        cfg = _load_settings().get("ollama", {})
-        base_url = cfg.get("base_url", "http://127.0.0.1:11434")
-        model_name = cfg.get("fallback_embed_model", "qwen2.5:7b-instruct")
+        cfg = _load_settings()
+        preferred_provider = cfg.get("ai_providers", {}).get("preferred_provider", "groq")
 
-        payload = {
-            "model": model_name,
-            "keep_alive": "30m",
-            "stream": False,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
-            "options": {"temperature": 0.2, "num_predict": 512}
-        }
-
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(f"{base_url}/api/chat", json=payload)
-            if resp.status_code == 200:
-                content = resp.json().get("message", {}).get("content", "").strip()
-                if content:
-                    return content
+        res = await asyncio.wait_for(
+            generate_ai_text(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                preferred_provider=preferred_provider,
+                temperature=0.2
+            ),
+            timeout=timeout_seconds,
+        )
+        
+        if res and res.get("success"):
+            content = res.get("text", "").strip()
+            if content:
+                return content
     except Exception as e:
-        logger.warning("Lỗi khi gọi Ollama tư vấn nông học: %r", e)
+        logger.warning("Lỗi khi gọi AI tư vấn nông học: %r", e)
     return None
 
 
@@ -433,7 +445,7 @@ def _extract_json_object(text: str) -> Optional[dict[str, Any]]:
     return obj if isinstance(obj, dict) else None
 
 
-async def plan_chat_intent_with_ollama(
+async def plan_chat_intent_with_ai(
     user_query: str,
     brand: str,
     conversation_summary: str = "",
@@ -444,14 +456,7 @@ async def plan_chat_intent_with_ollama(
     Tool deterministic/catalog vẫn là source of truth cho giá, link và sản phẩm.
     """
     cfg = _load_settings()
-    nlu_cfg = cfg.get("llm_nlu", {}) if isinstance(cfg.get("llm_nlu", {}), dict) else {}
-    ollama_cfg = cfg.get("ollama", {}) if isinstance(cfg.get("ollama", {}), dict) else {}
-    model = (
-        nlu_cfg.get("model")
-        or ollama_cfg.get("chat_model")
-        or ollama_cfg.get("fallback_embed_model")
-        or "qwen2.5:7b-instruct"
-    )
+    preferred_provider = cfg.get("ai_providers", {}).get("preferred_provider", "groq")
 
     system_prompt = """Bạn là bộ phân loại ý định NLU cho chatbot bán hàng ZeO.
 NHIỆM VỤ: đọc tin nhắn khách và xuất đúng 1 JSON object. Không trả lời khách, không giải thích, không markdown.
@@ -485,18 +490,19 @@ Tin nhắn khách: {user_query}
 Chỉ xuất JSON object đúng schema."""
 
     try:
-        raw = await asyncio.wait_for(
-            call_ollama(
-                prompt,
+        raw_res = await asyncio.wait_for(
+            generate_ai_text(
+                prompt=prompt,
                 system_prompt=system_prompt,
-                model=model,
+                preferred_provider=preferred_provider,
                 temperature=0.0,
-                num_predict=256,
+                output_format="json"
             ),
             timeout=timeout,
         )
+        raw = raw_res.get("text", "")
     except Exception as exc:
-        logger.debug("Ollama NLU planner timeout/error: %s", exc)
+        logger.debug("AI NLU planner timeout/error: %s", exc)
         return None
 
     obj = _extract_json_object(raw or "")
@@ -546,6 +552,7 @@ async def generate_ai_text(
     system_prompt: str = "",
     preferred_provider: Optional[str] = None,
     temperature: float = 0.3,
+    output_format: Optional[str] = None,
 ) -> dict:
     """
     Sinh phản hồi AI với cơ chế Fallback thông minh:
@@ -559,13 +566,13 @@ async def generate_ai_text(
     for provider in providers_order:
         res = None
         if provider == "gemini":
-            res = await call_gemini(prompt, system_prompt, temperature=temperature)
+            res = await call_gemini(prompt, system_prompt, temperature=temperature, output_format=output_format)
         elif provider == "openrouter":
-            res = await call_openrouter(prompt, system_prompt, temperature=temperature)
+            res = await call_openrouter(prompt, system_prompt, temperature=temperature, output_format=output_format)
         elif provider == "groq":
-            res = await call_groq(prompt, system_prompt, temperature=temperature)
+            res = await call_groq(prompt, system_prompt, temperature=temperature, output_format=output_format)
         elif provider == "ollama":
-            res = await call_ollama(prompt, system_prompt, temperature=temperature)
+            res = await call_ollama(prompt, system_prompt, temperature=temperature, output_format=output_format)
 
         if res:
             return {

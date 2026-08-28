@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from ai_engine import plan_chat_intent_with_ollama
+from ai_engine import plan_chat_intent_with_ai
 from rag_search import get_redis
 
 
@@ -149,11 +149,9 @@ async def collect_nlu_shadow_observation(
     retention_seconds: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
-    prediction = await plan_chat_intent_with_ollama(
-        user_query=raw_text,
-        brand=brand,
-        conversation_summary=conversation_summary,
-        timeout=timeout,
+    prediction = await asyncio.wait_for(
+        plan_chat_intent_with_ai(raw_text, brand=brand, conversation_summary=conversation_summary, timeout=12.0),
+        timeout=15.0
     )
     latency_ms = round((time.perf_counter() - started) * 1000, 2)
 

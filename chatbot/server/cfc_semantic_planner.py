@@ -29,7 +29,7 @@ Quy tắc sinh kế hoạch:
   [{"intent": "dealer_contact_followup", "entities": {"ordinal": 2}}]
 - Ví dụ "Số điện thoại của mình 0987654321, có tích điểm gì chưa" ->
   [{"intent": "loyalty_lookup", "entities": {"phone": "0987654321"}}]
-- ĐẶC BIỆT: Nếu câu của người dùng chỉ là cung cấp số điện thoại hoặc địa chỉ (ví dụ: "0388509046 rạch giá kiên giang") để trả lời bot, bạn PHẢI phân tích dựa trên câu trước của bot. Nếu câu trước đang hỏi tồn kho, thì intent phải là "inventory". Nếu đang theo dõi đơn, intent là "order_tracking". KHÔNG được tự ý gán là "price_quote" nếu họ không nhắc đến chữ "giá".
+- ĐẶC BIỆT: Nếu câu của người dùng chỉ là cung cấp số điện thoại hoặc địa chỉ (ví dụ: "0388509046 rạch giá kiên giang") để trả lời bot, bạn PHẢI phân tích dựa trên câu trước của bot. Nếu câu trước đang hỏi tồn kho, thì intent phải là "inventory". Nếu đang theo dõi đơn, intent là "order_tracking". Nếu đang tư vấn bón phân/chữa bệnh, intent là "agronomy". KHÔNG được tự ý gán là "price_quote" hoặc "loyalty_lookup" nếu ngữ cảnh trước đó không liên quan.
 - CHỈ output JSON mảng, KHÔNG giải thích thêm.
 """
 

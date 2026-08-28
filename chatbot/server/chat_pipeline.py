@@ -67,8 +67,8 @@ from shopee_matcher import (
     is_fabric_softener_inquiry,
     match_fabric_softener_products,
 )
-from ai_engine import synthesize_cskh_answer, reason_and_answer_cskh, plan_chat_intent_with_ollama, consult_cfc_agronomy_with_ollama
-from ai_engine import plan_conversation_turn_with_ollama
+from ai_engine import synthesize_cskh_answer, reason_and_answer_cskh, plan_chat_intent_with_ai, consult_cfc_agronomy_with_ai
+from ai_engine import plan_conversation_turn_with_ai
 from conversation_orchestrator import (
     build_conversation_context,
     build_conversation_messages,
@@ -921,7 +921,7 @@ def _is_phone_only_submission(text: str, phone: str) -> bool:
     normalized = _normalize_vn(remainder)
     normalized = re.sub(
         r"\b(so dien thoai|dien thoai|sdt|so cua toi|so cua minh|cua toi|cua minh|"
-        r"toi la|minh la|la|day|nhe|nha|a)\b",
+        r"toi la|minh la|la|day|nhe|nha|a|ne|day ne|zalo)\b",
         " ",
         normalized,
     )
@@ -2812,7 +2812,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                     norm_text,
                 )
                 if conversation_plan is None:
-                    conversation_plan = await plan_conversation_turn_with_ollama(
+                    conversation_plan = await plan_conversation_turn_with_ai(
                         user_query=raw_text,
                         brand=brand,
                         conversation_messages=conversation_messages,
@@ -3682,7 +3682,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
 
             if route_decision.tool == "faq_by_intent" and route_decision.intent == "cfc_dosage_usage_review":
                 item = await get_faq_by_intent(brand, route_decision.intent)
-                ollama_answer = await consult_cfc_agronomy_with_ollama(raw_text, cfc_slots, timeout_seconds=20.0)
+                ollama_answer = await consult_cfc_agronomy_with_ai(raw_text, cfc_slots, timeout_seconds=20.0)
                 answer = ollama_answer if ollama_answer else _build_cfc_agronomy_intake_answer(raw_text, "crop_consultation", cfc_slots)
                 _queue_incoming_contact("Tư vấn kỹ thuật nông nghiệp CFC")
                 _remember_response(
@@ -3846,7 +3846,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             return _fast_response(answer, "cleaning_fragrance_safety", brand, start_time, lead_stage="browsing_catalog")
 
         if brand == "cfc" and not has_phone and query_plan.intent in {"agriculture_advisory_query", "cfc_agronomy_review_request", "cfc_crop_consultation_request", "cfc_dosage_usage_review"}:
-            ollama_answer = await consult_cfc_agronomy_with_ollama(raw_text, cfc_slots, timeout_seconds=20.0)
+            ollama_answer = await consult_cfc_agronomy_with_ai(raw_text, cfc_slots, timeout_seconds=20.0)
             answer = ollama_answer if ollama_answer else _build_cfc_agronomy_intake_answer(raw_text, "crop_consultation", cfc_slots)
             _queue_incoming_contact("Tư vấn kỹ thuật nông nghiệp & quy trình bón phân")
             _remember_response(
@@ -4451,7 +4451,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 "affects_response": False,
             }
         elif should_try_llm_nlu and llm_nlu_mode == "assist":
-            llm_nlu_plan = await plan_chat_intent_with_ollama(
+            llm_nlu_plan = await plan_chat_intent_with_ai(
                 user_query=raw_text,
                 brand=brand,
                 conversation_summary=nlu_conversation_summary,
