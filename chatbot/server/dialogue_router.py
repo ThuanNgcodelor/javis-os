@@ -29,9 +29,112 @@ def _is_affirmation(text: str) -> bool:
     ))
 
 
+def _semantic_route_decision(
+    plan: QueryPlan,
+    conversation_plan: dict[str, Any] | None,
+) -> RouteDecision | None:
+    """Translate an accepted Ollama action into a guarded deterministic route."""
+    if not isinstance(conversation_plan, dict):
+        return None
+    try:
+        confidence = float(conversation_plan.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        return None
+    if confidence < 0.85:
+        return None
+
+    next_action = str(conversation_plan.get("next_action") or "none").strip().lower()
+    tool = str(conversation_plan.get("tool") or "none").strip().lower()
+    topic_changed = bool(conversation_plan.get("topic_changed"))
+    if next_action == "none" or tool == "none":
+        return None
+
+    if (
+        plan.brand == "cfc"
+        and conversation_plan.get("intent") == "dealer_contact_followup"
+        and next_action == "dealer_contact_lookup"
+        and tool == "dealer_contact_lookup"
+    ):
+        return RouteDecision(
+            action="tool",
+            tool="dealer_contact_lookup",
+            intent="dealer_contact_followup",
+            reason="OLLAMA_SEMANTIC_DEALER_CONTACT",
+            confidence=confidence,
+        )
+
+    # A clear operational/privacy route remains the authority unless the customer
+    # explicitly changed topic. This prevents a noisy LLM plan from bypassing guards.
+    protected_intents = {
+        "privacy_sensitive_lookup",
+        "company_contact_information",
+        "cfc_b2b_large_order_request",
+        "cfc_product_complaint_request",
+        "cfc_order_status_request",
+        "cfc_loyalty_lookup_request",
+        "cfc_inventory_request",
+        "cfc_dealer_location_request",
+    }
+    if plan.intent in protected_intents and not topic_changed:
+        return None
+
+    if plan.brand == "cfc" and next_action == "purchase_intake" and tool == "purchase_intake":
+        return RouteDecision(
+            action="tool",
+            tool="purchase_intake",
+            intent="cfc_purchase_request",
+            reason="OLLAMA_SEMANTIC_PURCHASE_INTENT",
+            confidence=confidence,
+        )
+
+    if plan.brand == "cfc" and next_action == "dealer_lookup" and tool == "sales_location_search":
+        return RouteDecision(
+            action="tool",
+            tool="sales_location_search",
+            intent="cfc_dealer_location_request",
+            reason="OLLAMA_SEMANTIC_DEALER_LOOKUP",
+            confidence=confidence,
+        )
+
+    capability_routes = {
+        "inventory_lookup": ("cfc_inventory_request", "cfc_inventory_unavailable"),
+        "order_status_lookup": ("cfc_order_status_request", "cfc_order_status_unavailable"),
+        "loyalty_lookup": ("cfc_loyalty_lookup_request", "cfc_loyalty_unavailable"),
+        "wholesale_intake": ("cfc_wholesale_policy_request", "cfc_wholesale_policy_unverified"),
+    }
+    if plan.brand == "cfc" and next_action in capability_routes and tool == next_action:
+        _source_intent, boundary_intent = capability_routes[next_action]
+        return RouteDecision(
+            action="capability_boundary",
+            intent=boundary_intent,
+            reason="OLLAMA_SEMANTIC_OPERATIONAL_INTENT",
+            confidence=confidence,
+        )
+
+    if plan.brand == "cfc" and next_action == "complaint_intake" and tool == "complaint_intake":
+        return RouteDecision(
+            action="tool",
+            tool="complaint_sop",
+            intent="cfc_product_complaint_request",
+            reason="OLLAMA_SEMANTIC_COMPLAINT_INTENT",
+            confidence=confidence,
+        )
+
+    if plan.brand == "cfc" and next_action == "agronomy_intake" and tool == "agronomy_intake":
+        return RouteDecision(
+            action="tool",
+            tool="faq_by_intent",
+            intent="cfc_dosage_usage_review",
+            reason="OLLAMA_SEMANTIC_AGRONOMY_INTENT",
+            confidence=confidence,
+        )
+    return None
+
+
 def build_route_decision(
     plan: QueryPlan,
     conversation_state: dict[str, Any],
+    conversation_plan: dict[str, Any] | None = None,
 ) -> RouteDecision:
     """Choose only a route/tool. Facts remain owned by FAQ/catalog/RAG."""
     pending_action = conversation_state.get("pending_action") or {}
@@ -57,12 +160,24 @@ def build_route_decision(
             confidence=0.99,
         )
 
+    semantic_route = _semantic_route_decision(plan, conversation_plan)
+    if semantic_route:
+        return semantic_route
+
     if plan.needs_context and plan.references.get("ordinal"):
         return RouteDecision(
             action="clarify",
             intent="context_clarification",
             reason="ORDINAL_WITHOUT_OPTIONS",
             confidence=0.99,
+        )
+
+    if plan.intent == "cfc_clarification_request":
+        return RouteDecision(
+            action="clarify",
+            intent=plan.intent,
+            reason="ACTIVE_GOAL_CLARIFICATION",
+            confidence=plan.intent_confidence,
         )
 
     if plan.intent == "company_contact_information":
@@ -98,6 +213,15 @@ def build_route_decision(
             tool="b2b_intake",
             intent=plan.intent,
             reason="B2B_LARGE_ORDER_INTAKE",
+            confidence=plan.intent_confidence,
+        )
+
+    if plan.brand == "cfc" and plan.intent == "cfc_purchase_request":
+        return RouteDecision(
+            action="tool",
+            tool="purchase_intake",
+            intent=plan.intent,
+            reason="EXPLICIT_PURCHASE_WITH_QUANTITY",
             confidence=plan.intent_confidence,
         )
 

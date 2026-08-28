@@ -117,6 +117,37 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(plan.intent, "cfc_dealer_location_request")
         self.assertNotIn("price", plan.attributes)
 
+    def test_cfc_explicit_purchase_quantity_beats_agronomy(self):
+        plan = self._plan(
+            "Tôi muốn mua 200kg phân bón trồng sầu riêng",
+            "toi muon mua 200kg phan bon trong sau rieng",
+            brand="cfc",
+        )
+        self.assertEqual(plan.intent, "cfc_purchase_request")
+
+    def test_cfc_large_order_and_dealer_routes_keep_priority(self):
+        b2b = self._plan(
+            "Tôi muốn mua 30 tấn NPK",
+            "toi muon mua 30 tan npk",
+            brand="cfc",
+        )
+        dealer = self._plan(
+            "Muốn mua 10 bao NPK thì ghé đại lý nào gần nhất?",
+            "muon mua 10 bao npk thi ghe dai ly nao gan nhat",
+            brand="cfc",
+        )
+        self.assertEqual(b2b.intent, "cfc_b2b_large_order_request")
+        self.assertEqual(dealer.intent, "cfc_dealer_location_request")
+
+    def test_cfc_short_clarification_uses_active_goal(self):
+        plan = self._plan(
+            "Là sao? Chưa hiểu",
+            "la sao chua hieu",
+            brand="cfc",
+            conversation_state={"active_goal": {"name": "purchase_intake"}},
+        )
+        self.assertEqual(plan.intent, "cfc_clarification_request")
+
     def test_cfc_operational_intents_and_entities(self):
         cases = [
             (

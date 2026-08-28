@@ -33,6 +33,7 @@ SUPPORTED_FOLLOWUP_INTENTS = {
     "loyalty_followup",
     "agronomy_followup",
     "wholesale_followup",
+    "purchase_followup",
     "complaint_followup",
     "lead_followup",
     "customer_profile_update",
@@ -54,6 +55,26 @@ ALLOWED_TOOLS = {
     "wholesale_intake",
     "complaint_intake",
     "lead_status_lookup",
+    "purchase_intake",
+    "customer_profile_update",
+}
+
+SEMANTIC_NEXT_ACTIONS = {
+    "none",
+    "product_lookup",
+    "sales_location_search",
+    "dealer_contact_lookup",
+    "delivery_policy_lookup",
+    "inventory_lookup",
+    "order_status_lookup",
+    "loyalty_lookup",
+    "agronomy_intake",
+    "wholesale_intake",
+    "complaint_intake",
+    "lead_status_lookup",
+    "purchase_intake",
+    "clarification",
+    "topic_switch",
     "customer_profile_update",
 }
 
@@ -167,8 +188,9 @@ def should_run_orchestrator(
     if mode in {"shadow", "primary"}:
         return True
 
-    # A first-turn, explicit request is already handled by the deterministic
-    # Redis/CRM route. Ollama is reserved for turns that need conversation context.
+    # A first-turn request has no conversation to interpret. Once a session exists,
+    # let the semantic planner see every turn instead of maintaining a growing list
+    # of follow-up keywords.
     has_context = bool(
         conversation_state.get("recent_turns")
         or conversation_state.get("last_tool_results")
@@ -176,6 +198,8 @@ def should_run_orchestrator(
         or conversation_state.get("conversation_summary")
         or (conversation_state.get("active_goal") or {}).get("name")
     )
+    # Profile replacement is a guarded action and may legitimately be the first
+    # turn, before a conversation context exists.
     if re.search(
         r"(?:\b(doi|thay|cap nhat|sua)\b.{0,24}\b(so|sdt|dien thoai)\b|"
         r"\b(so|sdt|dien thoai)\b.{0,24}\b(doi|thay|cap nhat|sua)\b)",
@@ -184,16 +208,7 @@ def should_run_orchestrator(
         return True
     if not has_context:
         return False
-
-    return bool(re.search(
-        r"\b(cac cho|cho do|cho tren|cho ay|cai nay|cai do|loai nay|loai do|san pham nay|"
-        r"vua roi|vua noi|o tren|the nao|thi sao|con khong|con hang|giao|ship|phi ship|"
-        r"so dien thoai|sdt|dien thoai|link|gia|bao nhieu|doi|thay|tiep|them|nua)\b",
-        normalized_text,
-    ) or len(normalized_text.split()) <= 5 and bool(re.search(
-        r"\b(con|vay|the|nay|do|tren|sao|tiep|them|nua)\b",
-        normalized_text,
-    )))
+    return True
 
 
 def validate_orchestrator_plan(value: Any) -> Optional[dict[str, Any]]:
@@ -224,6 +239,10 @@ def validate_orchestrator_plan(value: Any) -> Optional[dict[str, Any]]:
         },
         "requested_fields": [str(item)[:60] for item in (value.get("requested_fields") or [])[:10]],
         "tool": tool,
+        "next_action": str(value.get("next_action", "none")).strip().lower()
+        if str(value.get("next_action", "none")).strip().lower() in SEMANTIC_NEXT_ACTIONS
+        else "none",
+        "topic": str(value.get("topic", ""))[:80],
         "arguments": _redact_value(value.get("arguments") if isinstance(value.get("arguments"), dict) else {}),
         "missing_slots": [str(item)[:60] for item in (value.get("missing_slots") or [])[:10]],
         "reason_code": str(value.get("reason_code", ""))[:120],
@@ -235,11 +254,19 @@ def is_safe_assist_plan(plan: Optional[dict[str, Any]], *, min_confidence: float
         return False
     if float(plan.get("confidence", 0.0)) < min_confidence:
         return False
-    if not plan.get("is_followup") and plan.get("intent") != "customer_profile_update":
+    next_action = str(plan.get("next_action") or "none")
+    if (
+        not plan.get("is_followup")
+        and plan.get("intent") != "customer_profile_update"
+        and next_action not in {"purchase_intake", "clarification", "topic_switch"}
+    ):
         return False
     if plan.get("intent") in {"unknown", "clarification", "topic_switch"}:
         return False
-    return str(plan.get("tool", "none")) in ALLOWED_TOOLS
+    return (
+        str(plan.get("tool", "none")) in ALLOWED_TOOLS
+        and next_action in SEMANTIC_NEXT_ACTIONS
+    )
 
 
 def latest_tool_result(
@@ -253,6 +280,26 @@ def latest_tool_result(
     for result in reversed(results):
         if isinstance(result, dict) and (not tool or result.get("tool") == tool):
             return result
+    return None
+
+
+def _dealer_ordinal_indices(text: str) -> list[int]:
+    """Return zero-based dealer positions explicitly requested by the user."""
+    ordinal_patterns = (
+        (0, r"\b(?:so|thu)\s*1\b|\b(?:dai ly|cua hang)\s*1\b|\bthu nhat\b|\bdau tien\b"),
+        (1, r"\b(?:so|thu)\s*2\b|\b(?:dai ly|cua hang)\s*2\b|\bva\s*2\b|\bthu hai\b"),
+        (2, r"\b(?:so|thu)\s*3\b|\b(?:dai ly|cua hang)\s*3\b|\bva\s*3\b|\bthu ba\b"),
+        (3, r"\b(?:so|thu)\s*4\b|\b(?:dai ly|cua hang)\s*4\b|\bva\s*4\b|\bthu tu\b"),
+        (4, r"\b(?:so|thu)\s*5\b|\b(?:dai ly|cua hang)\s*5\b|\bva\s*5\b|\bthu nam\b"),
+    )
+    return [index for index, pattern in ordinal_patterns if re.search(pattern, text)]
+
+
+def _dealer_ordinal_index(text: str) -> Optional[int]:
+    """Return the first zero-based dealer position explicitly requested."""
+    indices = _dealer_ordinal_indices(text)
+    if indices:
+        return indices[0]
     return None
 
 
@@ -275,10 +322,13 @@ def recover_contextual_followup_plan(
     if not any(isinstance(item, dict) for item in previous_dealers.get("items", [])):
         return None
 
+    dealer_reference = bool(re.search(r"\b(dai ly|cua hang)\b", text))
+    dealer_ordinals = _dealer_ordinal_indices(text) if dealer_reference else []
+    dealer_ordinal = dealer_ordinals[0] if dealer_ordinals else None
     asks_contact = bool(re.search(
         r"\b(so dien thoai|sdt|dien thoai|so lien he|lien he|goi cho|contact)\b",
         text,
-    ))
+    )) or bool(dealer_reference and dealer_ordinals and re.search(r"\b(xin|cho|gui|lay|so)\b", text))
     refers_to_previous = bool(re.search(
         r"\b(cac cho|cho do|cho tren|cho ay|dai ly|cua hang|vua roi|o tren|nay|do|the do)\b",
         text,
@@ -289,7 +339,7 @@ def recover_contextual_followup_plan(
     ))
     if not asks_contact or asks_company_contact:
         return None
-    if not refers_to_previous:
+    if not refers_to_previous and dealer_ordinal is None:
         # A contact question without a previous-result reference is not enough to
         # safely select a business entity from memory.
         return None
@@ -306,9 +356,20 @@ def recover_contextual_followup_plan(
         },
         "requested_fields": ["public_phone"],
         "tool": "dealer_contact_lookup",
-        "arguments": {"selection": "all"},
+        "next_action": "dealer_contact_lookup",
+        "arguments": (
+            {"selection": "ordinals", "ordinals": [index + 1 for index in dealer_ordinals]}
+            if len(dealer_ordinals) > 1
+            else {"selection": "ordinal", "ordinal": dealer_ordinal + 1}
+            if dealer_ordinal is not None
+            else {"selection": "all"}
+        ),
         "missing_slots": [],
-        "reason_code": "CONTEXT_RECOVERY_PUBLIC_DEALER_CONTACT",
+        "reason_code": (
+            "CONTEXT_RECOVERY_PUBLIC_DEALER_CONTACT_ORDINAL"
+            if dealer_ordinal is not None
+            else "CONTEXT_RECOVERY_PUBLIC_DEALER_CONTACT"
+        ),
     }
 
 
@@ -324,6 +385,26 @@ def select_tool_result_items(
     if not items:
         return []
     reference = plan.get("reference") if isinstance(plan, dict) else {}
+    arguments = plan.get("arguments") if isinstance(plan, dict) else {}
+    if isinstance(arguments, dict) and arguments.get("selection") == "ordinals":
+        selected_indices: list[int] = []
+        for ordinal in arguments.get("ordinals") or []:
+            try:
+                index = int(ordinal) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index < len(items) and index not in selected_indices:
+                selected_indices.append(index)
+        return [items[index] for index in selected_indices]
+    if isinstance(arguments, dict) and arguments.get("selection") == "ordinal":
+        try:
+            index = int(arguments.get("ordinal")) - 1
+        except (TypeError, ValueError):
+            index = -1
+        if 0 <= index < len(items):
+            return [items[index]]
+        return []
+
     entity_ids = {
         str(item)
         for item in (reference.get("entity_ids") or [])
@@ -337,11 +418,9 @@ def select_tool_result_items(
         if selected:
             return selected
 
-    ordinal_match = re.search(r"\b(?:so|muc|loai|cai)\s*(\d+)\b", str(normalized_text or ""))
-    if ordinal_match:
-        index = int(ordinal_match.group(1)) - 1
-        if 0 <= index < len(items):
-            return [items[index]]
+    index = _dealer_ordinal_index(str(normalized_text or ""))
+    if index is not None and 0 <= index < len(items):
+        return [items[index]]
     return items
 
 

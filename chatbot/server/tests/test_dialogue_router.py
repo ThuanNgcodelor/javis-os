@@ -85,6 +85,49 @@ class DialogueRouterTests(unittest.TestCase):
                 self.assertEqual(decision.action, "capability_boundary")
                 self.assertEqual(decision.intent, expected_intent)
 
+    def test_ollama_semantic_purchase_can_override_crop_only_route(self):
+        plan = self._plan(
+            "Chốt giúp em 2 tạ phân nuôi trái sầu riêng",
+            "chot giup em 2 ta phan nuoi trai sau rieng",
+            brand="cfc",
+        )
+        self.assertEqual(plan.intent, "cfc_agronomy_review_request")
+        decision = build_route_decision(
+            plan,
+            {"active_goal": {"name": "agronomy_consultation"}},
+            conversation_plan={
+                "intent": "purchase_followup",
+                "confidence": 0.94,
+                "is_followup": True,
+                "topic_changed": True,
+                "tool": "purchase_intake",
+                "next_action": "purchase_intake",
+            },
+        )
+        self.assertEqual(decision.tool, "purchase_intake")
+        self.assertEqual(decision.reason, "OLLAMA_SEMANTIC_PURCHASE_INTENT")
+
+    def test_ollama_semantic_plan_cannot_override_protected_inventory_route(self):
+        plan = self._plan(
+            "NPK 16-16-8 trong kho còn hàng không",
+            "npk 16 16 8 trong kho con hang khong",
+            brand="cfc",
+        )
+        decision = build_route_decision(
+            plan,
+            {},
+            conversation_plan={
+                "intent": "purchase_followup",
+                "confidence": 0.99,
+                "is_followup": True,
+                "topic_changed": False,
+                "tool": "purchase_intake",
+                "next_action": "purchase_intake",
+            },
+        )
+        self.assertEqual(decision.action, "capability_boundary")
+        self.assertEqual(decision.intent, "cfc_inventory_unavailable")
+
 
 if __name__ == "__main__":
     unittest.main()

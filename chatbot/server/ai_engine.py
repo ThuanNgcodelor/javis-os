@@ -249,14 +249,14 @@ Intent hợp lệ:
 product_followup, product_price_followup, product_link_followup,
 product_availability_followup, dealer_followup, dealer_contact_followup,
 delivery_followup, order_status_followup, loyalty_followup, agronomy_followup,
-wholesale_followup, complaint_followup, lead_followup, topic_switch,
+wholesale_followup, purchase_followup, complaint_followup, lead_followup, topic_switch,
 customer_profile_update, clarification, unknown.
 
 Tool hợp lệ:
 none, product_lookup, sales_location_search, dealer_contact_lookup,
-delivery_policy_lookup, inventory_lookup, order_status_lookup, loyalty_lookup,
+    delivery_policy_lookup, inventory_lookup, order_status_lookup, loyalty_lookup,
     agronomy_intake, wholesale_intake, complaint_intake, lead_status_lookup,
-    customer_profile_update.
+    purchase_intake, customer_profile_update.
 
 Quy tắc bắt buộc:
 - Nếu câu hỏi hiện tại không liên quan lịch sử, is_followup=false.
@@ -270,7 +270,8 @@ Quy tắc bắt buộc:
 Schema:
 {"intent":"unknown","confidence":0.0,"is_followup":false,"topic_changed":false,
 "reference":{"type":"none","result_id":"","entity_ids":[]},
-"requested_fields":[],"tool":"none","arguments":{},"missing_slots":[],"reason_code":""}"""
+"requested_fields":[],"tool":"none","next_action":"none","topic":"",
+"arguments":{},"missing_slots":[],"reason_code":""}"""
     context_json = json.dumps(conversation_context or {}, ensure_ascii=False, separators=(",", ":"))
     prompt = (
         f"Brand: {brand}\n"

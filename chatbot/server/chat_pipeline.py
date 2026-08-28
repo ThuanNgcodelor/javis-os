@@ -229,6 +229,7 @@ CFC_GOAL_BY_INTENT = {
     "cfc_wholesale_policy_unverified": "wholesale_policy",
     "wholesale_dealer": "wholesale_policy",
     "cfc_price_unverified": "price_quote",
+    "cfc_purchase_request": "purchase_intake",
     "cfc_dosage_usage_review": "agronomy_consultation",
     "cfc_crop_consultation_request": "agronomy_consultation",
     "cfc_agronomy_review_request": "agronomy_consultation",
@@ -242,6 +243,7 @@ CFC_REQUIRED_SLOTS = {
     "loyalty_lookup": ("phone",),
     "wholesale_policy": ("phone", "area"),
     "price_quote": ("phone", "area", "crop", "product"),
+    "purchase_intake": ("phone", "area", "product", "quantity"),
     "agronomy_consultation": ("phone", "area", "crop", "crop_stage"),
 }
 
@@ -602,6 +604,7 @@ async def _lookup_sales_locations_from_redis(
     DISTRICT_PROVINCE_MAP = {
         "thoi lai": "can tho", "o mon": "can tho", "co do": "can tho", "vinh thanh": "can tho", "phong dien": "can tho",
         "cai rang": "can tho", "ninh kieu": "can tho", "binh thuy": "can tho", "thot not": "can tho", "dinh mon": "can tho",
+        "rach gia": "kien giang",
         "thap muoi": "dong thap", "cao lanh": "dong thap", "sa dec": "dong thap", "lai vung": "dong thap",
         "lap vo": "dong thap", "tam nong": "dong thap", "hong ngu": "dong thap", "thanh binh": "dong thap",
         "tri ton": "an giang", "tinh bien": "an giang", "chau doc": "an giang", "long xuyen": "an giang",
@@ -766,7 +769,11 @@ def _extract_cfc_confirmed_slots(
     elif re.search(r"\bnpk\s+chuyen lua\b", norm):
         slots["product"] = "NPK chuyên lúa"
     elif query_entities and query_entities.get("product"):
-        slots["product"] = str(query_entities["product"])
+        # A catalog overview such as "phân bón CFC có gì" is not a concrete
+        # product selection for purchase intake.
+        product_intent = str(query_entities.get("product_intent") or "").strip().lower()
+        if product_intent not in {"product_lines", "product_category_query"}:
+            slots["product"] = str(query_entities["product"])
 
     package_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(kg|g)\b", norm)
     if package_match:
@@ -776,6 +783,8 @@ def _extract_cfc_confirmed_slots(
     if quantity_match:
         unit = {"tan": "tấn"}.get(quantity_match.group(2), quantity_match.group(2))
         slots["quantity"] = f"{quantity_match.group(1)} {unit}"
+    elif package_match and re.search(r"\b(muon mua|can mua|dat mua|dat hang|lay hang|mua)\b", norm):
+        slots["quantity"] = f"{package_match.group(1)}{package_match.group(2)}"
 
     order_match = re.search(r"\b(?:ma\s+don\s+)?#?dh\s+(\d{4})\s+(\d+)\b", norm)
     if order_match:
@@ -931,6 +940,7 @@ def _cfc_context_summary(goal: str, slots: dict[str, Any]) -> str:
         "loyalty_lookup": ("phone",),
         "wholesale_policy": ("dealer_level", "area"),
         "price_quote": ("product", "package", "crop", "area"),
+        "purchase_intake": ("product", "quantity", "crop", "area"),
         "agronomy_consultation": ("crop", "crop_stage", "symptom", "acreage", "area"),
     }
     labels = {
@@ -998,6 +1008,41 @@ def _format_b2b_large_order_reply(user_message: str, query_entities: Optional[di
     else:
         lines.append("\nBạn vui lòng để lại **Tên người đại diện** và **Số điện thoại**, Giám đốc Kinh doanh khu vực sẽ liên hệ làm việc trực tiếp ngay nhé ạ!")
     return "\n".join(lines)
+
+
+def _format_cfc_purchase_intake_reply(slots: dict[str, Any]) -> str:
+    """Acknowledge explicit purchase intent without inventing price or stock."""
+    context = _cfc_context_summary("purchase_intake", slots)
+    context_line = f" Mình đã ghi nhận: {context}." if context else ""
+    missing = _cfc_missing_slots("purchase_intake", slots)
+    return (
+        "Dạ mình đã ghi nhận nhu cầu mua phân bón của bạn."
+        f"{context_line} "
+        "Để admin báo đúng sản phẩm, quy cách và hướng giao hàng, "
+        f"{_cfc_missing_slots_prompt(missing)}"
+    )
+
+
+def _format_cfc_clarification_reply(goal: str, slots: dict[str, Any]) -> str:
+    """Explain the current CFC goal without generating a new business fact."""
+    context = _cfc_context_summary(goal, slots)
+    context_line = f" Mình đang giữ thông tin: {context}." if context else ""
+    if goal == "purchase_intake":
+        return (
+            "Dạ ý mình là mình đã ghi nhận bạn muốn mua số lượng phân bón vừa nêu."
+            f"{context_line} "
+            f"{_cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots))}"
+        )
+    if goal == "agronomy_consultation":
+        return (
+            "Dạ ý mình là phần tư vấn cây trồng cần đủ giai đoạn, khu vực và thông tin liên hệ "
+            "để kỹ sư đối chiếu đúng, mình không tự đoán công thức hoặc liều lượng ạ."
+            f"{context_line}"
+        )
+    return (
+        "Dạ mình nói lại theo yêu cầu đang xử lý của bạn: "
+        f"{context_line} {_cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots))}"
+    ).strip()
 
 
 def _format_complaint_sop_reply(user_message: str, phone: str = "") -> str:
@@ -2798,7 +2843,11 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         elif not area and stored_area:
             area = stored_area
 
-        route_decision = build_route_decision(query_plan, conversation_state)
+        route_decision = build_route_decision(
+            query_plan,
+            conversation_state,
+            conversation_plan=conversation_plan,
+        )
         pipeline_trace_extra["dialogue_router"] = route_decision.to_dict()
         if conversation_plan:
             pipeline_trace_extra["conversation_orchestrator"] = {
@@ -2809,10 +2858,11 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 "topic_changed": bool(conversation_plan.get("topic_changed")),
                 "reference": conversation_plan.get("reference", {}),
                 "tool": conversation_plan.get("tool", "none"),
+                "next_action": conversation_plan.get("next_action", "none"),
                 "requested_fields": conversation_plan.get("requested_fields", []),
                 "reason_code": conversation_plan.get("reason_code", ""),
                 "latency_ms": round((time.perf_counter() - orchestrator_started) * 1000, 2),
-                "route_changed": False,
+                "route_changed": route_decision.reason.startswith("OLLAMA_SEMANTIC_"),
             }
         state_patch: dict[str, Any] = {"confirmed_slots": {}}
         if phone:
@@ -3051,6 +3101,30 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 query_entities=query_plan.entities,
                 location=location_slot,
             )
+
+            if route_decision.action == "clarify" and route_decision.reason == "ACTIVE_GOAL_CLARIFICATION":
+                active_goal = _active_goal_name(conversation_state)
+                answer = _format_cfc_clarification_reply(active_goal, cfc_slots)
+                _remember_response(
+                    answer,
+                    route_decision.intent,
+                    "collecting_contact",
+                    fallback_reason="ACTIVE_GOAL_CLARIFICATION",
+                    trace_extra={"clarification_goal": active_goal},
+                )
+                return ChatPipelineResponse(
+                    answer=_prettify_answer(answer),
+                    intent=route_decision.intent,
+                    confidence="high",
+                    score=route_decision.confidence,
+                    brand=brand.upper(),
+                    has_phone=has_phone,
+                    phone=phone,
+                    area=area,
+                    lead_stage="collecting_contact",
+                    fallback_reason="ACTIVE_GOAL_CLARIFICATION",
+                    latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                )
 
             if (
                 orchestrator_cfg["mode"] in {"assist", "primary"}
@@ -3424,6 +3498,30 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                     phone=incoming_phone,
                     area=area,
                     lead_stage="collecting_contact",
+                    latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                )
+
+            if route_decision.tool == "purchase_intake":
+                answer = _format_cfc_purchase_intake_reply(cfc_slots)
+                _queue_incoming_contact("Yêu cầu mua phân bón CFC theo khối lượng")
+                _remember_response(
+                    answer,
+                    route_decision.intent,
+                    "collecting_contact",
+                    fallback_reason="PURCHASE_INTAKE_REQUIRES_VERIFIED_QUOTE",
+                    trace_extra={"purchase_intake": True},
+                )
+                return ChatPipelineResponse(
+                    answer=_prettify_answer(answer),
+                    intent=route_decision.intent,
+                    confidence="high",
+                    score=route_decision.confidence,
+                    brand=brand.upper(),
+                    has_phone=has_phone,
+                    phone=phone,
+                    area=area,
+                    lead_stage="collecting_contact",
+                    fallback_reason="PURCHASE_INTAKE_REQUIRES_VERIFIED_QUOTE",
                     latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
                 )
 

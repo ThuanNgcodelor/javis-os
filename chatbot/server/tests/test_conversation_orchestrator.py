@@ -102,9 +102,18 @@ class ConversationOrchestratorUnitTests(unittest.TestCase):
         self.assertEqual(profile_plan["intent"], "customer_profile_update")
         self.assertTrue(is_safe_assist_plan(profile_plan, min_confidence=0.85))
 
-    def test_assist_only_reads_contextual_turns(self):
+        purchase_plan = validate_orchestrator_plan({
+            "intent": "purchase_followup",
+            "confidence": 0.92,
+            "is_followup": True,
+            "tool": "purchase_intake",
+            "next_action": "purchase_intake",
+        })
+        self.assertTrue(is_safe_assist_plan(purchase_plan, min_confidence=0.85))
+
+    def test_assist_reads_every_turn_after_context_exists(self):
         state = {"recent_turns": [{"user": "Tìm đại lý", "bot": "Đây là danh sách"}]}
-        self.assertFalse(should_run_orchestrator(
+        self.assertTrue(should_run_orchestrator(
             "assist",
             conversation_state=state,
             normalized_text="cho toi biet CFC co NPK khong",
@@ -153,6 +162,69 @@ class ConversationOrchestratorUnitTests(unittest.TestCase):
             }],
         }
         self.assertIsNone(recover_contextual_followup_plan(state, "xin hotline cong ty"))
+
+    def test_context_recovery_selects_explicit_dealer_ordinal(self):
+        state = {
+            "last_tool_results": [{
+                "result_id": "dealer-result-ordinal",
+                "tool": "sales_location_search",
+                "items": [
+                    {"entity_id": "dealer-1", "public_phone": "0292000001"},
+                    {"entity_id": "dealer-2", "public_phone": "0292000002"},
+                ],
+            }],
+        }
+        plan = recover_contextual_followup_plan(state, "xin so dai ly so 2 di")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["arguments"], {"selection": "ordinal", "ordinal": 2})
+        selected = select_tool_result_items(
+            state["last_tool_results"][0],
+            plan,
+            "xin so dai ly so 2 di",
+        )
+        self.assertEqual([item["entity_id"] for item in selected], ["dealer-2"])
+
+    def test_context_recovery_supports_vietnamese_ordinal_word(self):
+        state = {
+            "last_tool_results": [{
+                "result_id": "dealer-result-word-ordinal",
+                "tool": "sales_location_search",
+                "items": [{"entity_id": "dealer-1"}, {"entity_id": "dealer-2"}],
+            }],
+        }
+        plan = recover_contextual_followup_plan(state, "cho xin dai ly thu hai")
+        self.assertIsNotNone(plan)
+        selected = select_tool_result_items(
+            state["last_tool_results"][0],
+            plan,
+            "cho xin dai ly thu hai",
+        )
+        self.assertEqual([item["entity_id"] for item in selected], ["dealer-2"])
+
+    def test_context_recovery_selects_multiple_explicit_dealers(self):
+        state = {
+            "last_tool_results": [{
+                "result_id": "dealer-result-multiple-ordinals",
+                "tool": "sales_location_search",
+                "items": [
+                    {"entity_id": "dealer-1"},
+                    {"entity_id": "dealer-2"},
+                    {"entity_id": "dealer-3"},
+                ],
+            }],
+        }
+        plan = recover_contextual_followup_plan(state, "xin so dai ly so 2 va 3")
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["arguments"], {"selection": "ordinals", "ordinals": [2, 3]})
+        selected = select_tool_result_items(
+            state["last_tool_results"][0],
+            plan,
+            "xin so dai ly so 2 va 3",
+        )
+        self.assertEqual(
+            [item["entity_id"] for item in selected],
+            ["dealer-2", "dealer-3"],
+        )
 
 
 class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -292,6 +364,61 @@ class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase)
         self.assertIn("0292123456", result.answer)
         self.assertNotIn("cfccobay.com", result.answer)
 
+    async def test_dealer_contact_followup_selects_requested_ordinal_from_previous_result(self):
+        redis_client = FakeRedis()
+        session_key = "cfc:session:messenger:dealer-followup-ordinal"
+        chat_pipeline._local_session_cache[session_key] = {
+            "revision": 1,
+            "last_user_message": "Định Môn, Thới Lai có đại lý nào không?",
+            "last_bot_reply": "Có các đại lý...",
+            "last_intent": "cfc_dealer_location_request",
+            "conversation_state": {
+                "schema_version": 4,
+                "active_goal": {"name": "dealer_lookup", "stage": "browsing"},
+                "recent_turns": [{
+                    "user": "Định Môn, Thới Lai có đại lý nào không?",
+                    "bot": "Có các đại lý...",
+                }],
+                "last_tool_results": [{
+                    "result_id": "dealer-result-ordinal",
+                    "tool": "sales_location_search",
+                    "source_id": "amis:public:sales-locations:active",
+                    "items": [
+                        {
+                            "entity_id": "location-1",
+                            "display_name": "Đại lý Một",
+                            "public_phone": "0292123456",
+                            "public_address": "Thới Lai, Cần Thơ",
+                        },
+                        {
+                            "entity_id": "location-2",
+                            "display_name": "Đại lý Hai",
+                            "public_phone": "",
+                            "public_address": "Ô Môn, Cần Thơ",
+                        },
+                    ],
+                }],
+            },
+        }
+        with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=redis_client)), \
+                patch("chat_pipeline.load_orchestrator_config", return_value={
+                    "mode": "assist", "min_confidence": 0.85, "history_limit": 12,
+                }), \
+                patch("chat_pipeline.plan_conversation_turn_with_ollama", new=AsyncMock(return_value=None)), \
+                patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="dealer-followup-ordinal",
+                message_id="dealer-followup-ordinal-2",
+                text="Xin số đại lý số 2 đi",
+            ))
+
+        self.assertEqual(result.intent, "dealer_contact_followup")
+        self.assertIn("Đại lý Hai", result.answer)
+        self.assertIn("chưa có SĐT công khai", result.answer)
+        self.assertNotIn("Đại lý Một", result.answer)
+        self.assertNotIn("cfccobay.com", result.answer)
+
     async def test_customer_can_replace_own_phone_without_new_lead_notification(self):
         redis_client = FakeRedis()
         session_key = "cfc:session:messenger:phone-change"
@@ -335,6 +462,52 @@ class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase)
         self.assertEqual(chat_pipeline._local_customer_cache[customer_key]["phone"], "0363050996")
         update_profile.assert_awaited_once()
         notify.assert_not_awaited()
+
+    async def test_semantic_purchase_action_overrides_crop_only_pipeline_route(self):
+        redis_client = FakeRedis()
+        session_key = "cfc:session:messenger:semantic-purchase"
+        chat_pipeline._local_session_cache[session_key] = {
+            "revision": 1,
+            "last_user_message": "Có phân bón cho sầu riêng không?",
+            "last_bot_reply": "Mình có thể tư vấn theo giai đoạn cây.",
+            "last_intent": "cfc_agronomy_review_request",
+            "conversation_state": {
+                "schema_version": 4,
+                "active_goal": {"name": "agronomy_consultation", "stage": "collecting_slots"},
+                "confirmed_slots": {"crop": "sầu riêng"},
+                "recent_turns": [{
+                    "user": "Có phân bón cho sầu riêng không?",
+                    "bot": "Mình có thể tư vấn theo giai đoạn cây.",
+                }],
+            },
+        }
+        semantic_plan = {
+            "intent": "purchase_followup",
+            "confidence": 0.94,
+            "is_followup": True,
+            "topic_changed": True,
+            "tool": "purchase_intake",
+            "next_action": "purchase_intake",
+            "reference": {"type": "last_turn", "result_id": "", "entity_ids": []},
+        }
+        with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=redis_client)), \
+                patch("chat_pipeline.load_orchestrator_config", return_value={
+                    "mode": "assist", "min_confidence": 0.85, "history_limit": 6,
+                    "timeout_seconds": 6,
+                }), \
+                patch("chat_pipeline.plan_conversation_turn_with_ollama", new=AsyncMock(return_value=semantic_plan)), \
+                patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="semantic-purchase",
+                message_id="semantic-purchase-2",
+                text="Chốt giúp em 200kg phân nuôi trái sầu riêng",
+            ))
+
+        self.assertEqual(result.intent, "cfc_purchase_request")
+        trace = chat_pipeline._local_session_cache[session_key]["last_trace"]
+        self.assertEqual(trace["conversation_orchestrator"]["next_action"], "purchase_intake")
+        self.assertTrue(trace["conversation_orchestrator"]["route_changed"])
 
 
 class ConversationPlannerTests(unittest.IsolatedAsyncioTestCase):

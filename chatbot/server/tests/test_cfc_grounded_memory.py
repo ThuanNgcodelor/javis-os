@@ -102,6 +102,50 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["confirmed_slots"]["phone"], "0979176415")
         self.assertEqual(state["pending_slots"], ["area"])
 
+    async def test_explicit_purchase_keeps_crop_and_quantity_in_active_goal(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        with redis_patch, faq_patch, profile_patch, nlu_patch:
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="purchase-intake",
+                text="Tôi muốn mua 200kg phân bón trồng sầu riêng",
+            ))
+
+        self.assertEqual(result.intent, "cfc_purchase_request")
+        self.assertIn("200kg", result.answer)
+        self.assertIn("sầu riêng", result.answer)
+        state = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:purchase-intake"
+        ]["conversation_state"]
+        self.assertEqual(state["active_goal"]["name"], "purchase_intake")
+        self.assertEqual(state["confirmed_slots"]["quantity"], "200kg")
+        self.assertEqual(state["confirmed_slots"]["crop"], "sầu riêng")
+        self.assertIn("product", state["pending_slots"])
+        self.assertIn("phone", state["pending_slots"])
+
+    async def test_purchase_clarification_reuses_active_goal(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        with redis_patch, faq_patch, profile_patch, nlu_patch:
+            await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="purchase-clarification",
+                text="Tôi muốn mua 200kg phân bón trồng sầu riêng",
+            ))
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="purchase-clarification",
+                text="Là sao? Chưa hiểu",
+            ))
+
+        self.assertEqual(result.intent, "cfc_clarification_request")
+        self.assertIn("200kg", result.answer)
+        self.assertIn("mua", result.answer.lower())
+        state = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:purchase-clarification"
+        ]["conversation_state"]
+        self.assertEqual(state["active_goal"]["name"], "purchase_intake")
+        self.assertEqual(state["confirmed_slots"]["quantity"], "200kg")
+
     async def test_phone_with_loyalty_question_is_not_swallowed_by_contact_fast_path(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
         with redis_patch, faq_patch, profile_patch, nlu_patch:

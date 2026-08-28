@@ -371,6 +371,11 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
     ):
         return "cfc_dealer_location_request", 0.95
     if brand == "cfc" and (
+        re.search(r"\b(muon mua|can mua|dat mua|dat hang|lay hang|mua)\b", text)
+        and re.search(r"\b\d+(?:[.,]\d+)?\s*(kg|tan|bao|thung)\b", text)
+    ):
+        return "cfc_purchase_request", 0.97
+    if brand == "cfc" and (
         "usage" in attrs
         or entities.get("symptom")
         or entities.get("crop")
@@ -456,6 +461,15 @@ def build_query_plan(
     intent, confidence = _detect_intent(norm_text, attrs, entities, brand.lower())
     active_goal = conversation_state.get("active_goal") or {}
     active_goal_name = active_goal if isinstance(active_goal, str) else str(active_goal.get("name") or "")
+    if (
+        brand.lower() == "cfc"
+        and active_goal_name
+        and re.fullmatch(
+            r"(?:(?:la sao|y la sao|sao vay|noi gi vay|la nhu nao|giai thich lai)(?:\s+(?:chua hieu|khong hieu))?|(?:chua hieu|khong hieu)(?:\s+(?:la sao|y la sao))?)",
+            norm_text.strip(),
+        )
+    ):
+        intent, confidence = "cfc_clarification_request", 0.96
     if (
         brand.lower() == "cfc"
         and active_goal_name == "agronomy_consultation"
