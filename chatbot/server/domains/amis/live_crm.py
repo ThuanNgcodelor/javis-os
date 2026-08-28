@@ -71,6 +71,10 @@ def _ensure_crm_dataset_loaded() -> None:
 
         orders_by_code: dict[str, dict[str, Any]] = {}
         orders_by_customer: dict[str, list[dict[str, Any]]] = {}
+        
+        # Chỉ nạp các đơn hàng chính thức "Đã ghi", bỏ qua "Bản nháp" hoặc "Đề nghị ghi"
+        sale_orders = [o for o in sale_orders if o.get("revenue_status") == "Đã ghi"]
+        
         for o in sale_orders:
             sono = str(o.get("sale_order_no") or "").upper().strip()
             oid = str(o.get("id") or "").strip()

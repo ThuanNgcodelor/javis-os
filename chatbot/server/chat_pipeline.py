@@ -1105,8 +1105,8 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
         from domains.amis.live_crm import lookup_order_status, format_order_status_response
         order_match = (
             re.search(r"#([A-Za-z0-9\-_]+)", raw_text)
-            or re.search(r"(?:đơn hàng|don hang|mã đơn|ma don|đơn số|don so|[đd]ơn)\s*(?:số|so|mã|ma)?\s*[:#]?\s*([A-Za-z0-9\-_]+)", raw_text, re.IGNORECASE)
             or re.search(r"\b(0000\d{4}|DH[-_ ]?\d{4,8})\b", raw_text, re.IGNORECASE)
+            or re.search(r"(?:đơn hàng|don hang|mã đơn|ma don|đơn số|don so|[đd]ơn)\s*(?:số|so|mã|ma)?\s*[:#]?\s*([A-Za-z0-9\-_]+)", raw_text, re.IGNORECASE)
             or re.search(r"#?([A-Za-z]{2,5}[-_ ]?\d{2,6}[-_ ]?\d{2,6}|[A-Za-z]{2,5}\d{3,8}|#\d{3,8})", raw_text)
         )
         extracted_order_code = ""
