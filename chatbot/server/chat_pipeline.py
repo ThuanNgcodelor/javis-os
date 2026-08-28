@@ -83,6 +83,7 @@ from conversation_orchestrator import (
 )
 from nlu_shadow import schedule_nlu_shadow
 from query_understanding import build_query_plan
+from cfc_semantic_planner import plan_cfc_intents
 from telegram_notifier import notify_new_lead, notify_admin_unanswered, notify_urgent_complaint
 
 logger = logging.getLogger(__name__)
@@ -1004,7 +1005,7 @@ def _format_b2b_large_order_reply(user_message: str, query_entities: Optional[di
         "📞 **Hotline Trực Tiếp Ban Giám Đốc / Phòng Kinh Doanh:** 0292 3841 815 - 0906 929 292",
     ]
     if phone:
-        lines.append(f"\nBên mình đã ghi nhận số điện thoại liên hệ: **{phone}**. Giám đốc Kinh doanh khu vực sẽ liên hệ lại trực tiếp cho bạn ngay trong 15 phút nhé ạ!")
+        lines.append(f"\nBên mình đã ghi nhận số điện thoại liên hệ: **{phone}**. Giám đốc Kinh doanh khu vực sẽ liên hệ lại trực tiếp cho bạn ngay nhé ạ!")
     else:
         lines.append("\nBạn vui lòng để lại **Tên người đại diện** và **Số điện thoại**, Giám đốc Kinh doanh khu vực sẽ liên hệ làm việc trực tiếp ngay nhé ạ!")
     return "\n".join(lines)
@@ -2753,6 +2754,29 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         )
         query_plan_dict = query_plan.to_dict()
         pipeline_trace_extra: dict[str, Any] = {}
+        
+        # --- BẮT ĐẦU: SEMANTIC ROUTING BẰNG LLM ---
+        llm_nlu_mode, _, _ = _llm_nlu_config()
+        if brand.lower() == "cfc" and llm_nlu_mode in {"assist", "shadow"}:
+            from cfc_semantic_planner import plan_cfc_intents, resolve_priority, map_semantic_intent_to_query_intent
+            cfc_plan = await plan_cfc_intents(norm_text, conversation_state)
+            if cfc_plan:
+                pipeline_trace_extra["cfc_semantic_planner"] = {
+                    "mode": llm_nlu_mode,
+                    "plan": cfc_plan,
+                    "status": "planned"
+                }
+                if llm_nlu_mode == "assist":
+                    primary_semantic = resolve_priority(cfc_plan)
+                    if primary_semantic and primary_semantic.get("intent") != "faq":
+                        mapped_intent = map_semantic_intent_to_query_intent(primary_semantic.get("intent", ""))
+                        if mapped_intent != "unknown":
+                            query_plan.intent = mapped_intent
+                            query_plan.intent_confidence = 0.99
+                            query_plan_dict["intent"] = mapped_intent
+                            query_plan_dict["intent_confidence"] = 0.99
+        # --- KẾT THÚC: SEMANTIC ROUTING BẰNG LLM ---
+
         if should_run_conversation_orchestrator:
             conversation_messages = build_conversation_messages(
                 conversation_state,
@@ -4404,7 +4428,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             llm_nlu_mode in {"assist", "shadow"}
             and not is_return_or_claim
             and _should_try_llm_nlu(norm_text, brand)
-            and (brand != "cfc" or llm_nlu_mode == "shadow")
+            
         )
         nlu_conversation_summary = (
             f"previous_intent={previous_intent}; "
@@ -4448,6 +4472,9 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 "reference": bool(llm_nlu_plan.get("reference", False)),
                 "reason": llm_nlu_plan.get("reason", ""),
             }
+        
+
+
         if (
             llm_nlu_mode == "assist"
             and llm_nlu_plan

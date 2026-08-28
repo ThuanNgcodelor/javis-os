@@ -38,6 +38,8 @@ pkill -f "cloudflared" 2>/dev/null && echo "  ${GREEN}✓${NC} Đã dừng Cloud
 pkill -f "npx n8n" 2>/dev/null && echo "  ${GREEN}✓${NC} Đã dừng n8n daemon" || true
 pkill -f "uvicorn main:app" 2>/dev/null && echo "  ${GREEN}✓${NC} Đã dừng uvicorn server" || true
 pkill -f "ollama serve" 2>/dev/null && echo "  ${GREEN}✓${NC} Đã dừng Ollama serve" || true
+pkill -f "llama-server" 2>/dev/null && echo "  ${GREEN}✓${NC} Đã dọn dẹp tiến trình ngầm llama-server (Giải phóng RAM)" || true
+pkill -f "ollama" 2>/dev/null || true
 
 # 4. Dừng Redis Docker
 if [ -d "$REDIS_DIR" ]; then

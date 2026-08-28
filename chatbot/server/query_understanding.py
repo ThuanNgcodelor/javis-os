@@ -55,6 +55,8 @@ def _sync_dynamic_lists() -> None:
         if crops_raw:
             try:
                 crops_list = json.loads(crops_raw)
+                if isinstance(crops_list, dict) and "items" in crops_list:
+                    crops_list = crops_list["items"]
                 if isinstance(crops_list, list):
                     _DYNAMIC_CROP_TERMS = [str(c).strip().lower() for c in crops_list if str(c).strip()]
             except json.JSONDecodeError:
@@ -65,6 +67,8 @@ def _sync_dynamic_lists() -> None:
         if amis_locations_raw:
             try:
                 locations = json.loads(amis_locations_raw)
+                if isinstance(locations, dict) and "items" in locations:
+                    locations = locations["items"]
                 provinces = set()
                 districts = set()
                 if isinstance(locations, list):

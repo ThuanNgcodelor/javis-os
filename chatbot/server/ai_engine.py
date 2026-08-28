@@ -399,7 +399,7 @@ async def consult_cfc_agronomy_with_ollama(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
-            "options": {"temperature": 0.2, "num_predict": 256}
+            "options": {"temperature": 0.2, "num_predict": 512}
         }
 
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
