@@ -5320,24 +5320,8 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 )
                 lead_stage = "collecting_contact"
                 fallback_reason = "MISSING_SLOT"
-            elif brand.lower() == "cfc":
-                final_answer = (
-                    "Dạ mình chưa tìm thấy câu trả lời có nguồn phù hợp trong Knowledge CFC cho yêu cầu này. "
-                    "Để tránh trả lời sai, mình không tự suy đoán. Bạn nói rõ hơn tên sản phẩm/công thức, cây trồng, "
-                    "khu vực hoặc mã đơn; nếu đây là dữ liệu tồn kho, đơn hàng, tích điểm hay chiết khấu thì admin cần kiểm tra trên hệ thống nghiệp vụ ạ."
-                )
-                confidence = "medium"
-                intent = "cfc_grounded_fallback"
-                lead_stage = "collecting_contact"
-                fallback_reason = "NO_GROUNDED_KNOWLEDGE"
-                asyncio.create_task(notify_admin_unanswered(
-                    brand=brand,
-                    query=raw_text,
-                    sender_id=sender_id,
-                    score=best_score,
-                ))
             else:
-                # Thử cho Agent CSKH suy luận dựa trên câu hỏi và facts từ hệ thống
+                # Thử cho Agent CSKH suy luận dựa trên câu hỏi và facts từ hệ thống (Bật cho cả ZeO và CFC)
                 ai_attempt = await reason_and_answer_cskh(
                     user_query=raw_text,
                     brand=brand,

@@ -555,13 +555,28 @@ async def generate_ai_text(
     output_format: Optional[str] = None,
 ) -> dict:
     """
-    Sinh phản hồi AI với cơ chế Fallback thông minh:
-    Thử lần lượt: Gemini -> OpenRouter -> Groq -> Ollama Local.
+    Sinh phản hồi AI với cơ chế linh hoạt:
+    Cấu hình trong settings.json -> ai_providers:
+      - execution_mode: "cloud" | "local" | "auto" (mặc định: auto)
+      - preferred_provider: "groq" | "openrouter" | "gemini" | "ollama"
     """
-    providers_order = ["gemini", "openrouter", "groq", "ollama"]
-    if preferred_provider and preferred_provider in providers_order:
-        providers_order.remove(preferred_provider)
-        providers_order.insert(0, preferred_provider)
+    cfg = _load_settings().get("ai_providers", {})
+    execution_mode = str(cfg.get("execution_mode", "auto")).lower().strip()
+    preferred = preferred_provider or cfg.get("preferred_provider", "groq")
+
+    if execution_mode == "local":
+        providers_order = ["ollama"]
+    elif execution_mode == "cloud":
+        cloud_providers = ["gemini", "openrouter", "groq"]
+        if preferred in cloud_providers:
+            cloud_providers.remove(preferred)
+            cloud_providers.insert(0, preferred)
+        providers_order = cloud_providers
+    else:  # "auto"
+        providers_order = ["gemini", "openrouter", "groq", "ollama"]
+        if preferred and preferred in providers_order:
+            providers_order.remove(preferred)
+            providers_order.insert(0, preferred)
 
     for provider in providers_order:
         res = None
@@ -840,10 +855,6 @@ async def reason_and_answer_cskh(
     Nhận diện câu hỏi tự nhiên, đối chiếu với Dữ liệu thực tế (Facts & Products từ Google Sheet/Redis)
     và Lịch sử trò chuyện để trả lời trọn vẹn, thuyết phục, chuẩn văn phong 5 sao và TUYỆT ĐỐI không bịa đặt.
     """
-    if not (retrieved_facts or "").strip() and not catalog_products:
-        logger.info("Skip CSKH reasoning: empty retrieved_facts and catalog_products")
-        return None
-
     brand_upper = brand.upper()
     brand_display = "ZeO Vietnam (Chăm sóc gia đình sinh học: ZeO, PANO, Oplus)" if brand_upper == "ZEO" else "CFC Cò Bay (Phân bón & Dinh dưỡng cây trồng nông nghiệp Cần Thơ)"
 
@@ -870,10 +881,12 @@ QUY TẮC CỐT LÕI (BẮT BUỘC):
 6. Định dạng câu trả lời:
    - Ngắn gọn, súc tích, dễ đọc trên điện thoại di động (có thể gạch đầu dòng 1-3 ý chính).
    - Kết thúc bằng một lời gợi mở nhẹ nhàng (ví dụ hỏi thăm thêm nhu cầu, gửi link đặt hàng hoặc hỗ trợ tiếp).
-   - Chỉ xuất ra nội dung tin nhắn gửi khách hàng, không viết thêm bất kỳ lời bình luận nào của AI."""
+   - Chỉ xuất ra nội dung tin nhắn gửi khách hàng, không viết thêm bất kỳ lời bình luận nào của AI.
+7. Giao tiếp ngoài lề (Chit-chat) & Trả lời khi thiếu dữ liệu:
+   - Nếu khách chỉ chào hỏi, khen/chê hoặc hỏi các câu giao tiếp thông thường: Hãy trả lời tự nhiên, thân thiện để tạo thiện cảm.
+   - Nếu khách hỏi chuyên sâu về một sản phẩm, giá cả, hoặc chính sách mà trong 'DỮ LIỆU THỰC TẾ & SẢN PHẨM' KHÔNG CÓ thông tin: Tuyệt đối không tự suy đoán. Hãy khéo léo báo rằng bạn chưa có sẵn thông tin trên tay lúc này và xin số điện thoại để admin/chuyên viên hỗ trợ."""
 
-    # Chuẩn bị context. Không cho model tự trả lời khi không có fact:
-    # caller phải fallback/hỏi rõ/chuyển admin ở lớp deterministic.
+    # Chuẩn bị context.
     facts_block = retrieved_facts.strip()
 
     products_str = ""
