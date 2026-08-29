@@ -1172,13 +1172,37 @@ def _format_b2b_large_order_reply(user_message: str, query_entities: Optional[di
 
 def _format_order_lookup_reply(result: dict[str, Any]) -> tuple[str, str]:
     """Render only the minimum customer-safe result from the private AMIS cache."""
+    def _display_date(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).strftime("%d/%m/%Y")
+        except ValueError:
+            match = re.search(r"\b(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b", raw)
+            if match:
+                return f"{int(match.group(3)):02d}/{int(match.group(2)):02d}/{match.group(1)}"
+        return ""
+
     outcome = str(result.get("outcome") or "unavailable")
     if outcome == "found":
         order_code = str(result.get("order_code") or "đơn bạn cung cấp")
         status = str(result.get("status") or "Đang xử lý")
+        delivery_status = str(result.get("delivery_status") or "").strip()
+        order_date = _display_date(result.get("sale_order_date"))
+        deadline_date = _display_date(result.get("deadline_date"))
+        lines = [
+            f"Dạ mình đã tìm thấy đơn {order_code}:",
+            f"- Tình trạng đơn: {status}",
+        ]
+        if delivery_status:
+            lines.append(f"- Tình trạng giao hàng: {delivery_status}")
+        if order_date:
+            lines.append(f"- Ngày đặt đơn: {order_date}")
+        if deadline_date:
+            lines.append(f"- Hạn giao hàng trên đơn: {deadline_date}")
         return (
-            f"Dạ đơn {order_code} hiện có trạng thái: {status}. "
-            "Nếu bạn cần kiểm tra thêm tình hình giao hoặc nhận hàng, bạn cứ nhắn CFC hỗ trợ tiếp nhé.",
+            "\n".join(lines),
             "ORDER_CACHE_MATCHED",
         )
     if outcome in {"not_found", "phone_mismatch"}:
@@ -2895,10 +2919,28 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         )
         query_plan_dict = query_plan.to_dict()
         pipeline_trace_extra: dict[str, Any] = {}
+        # An explicit CFC order request is a protected deterministic route:
+        # QueryPlan already extracted the order code/phone, and the only fact
+        # source is the private AMIS cache. Do not spend 1.6-6 seconds asking
+        # Ollama to classify a request whose route cannot be changed by it.
+        deterministic_route = build_route_decision(query_plan, conversation_state)
+        skip_ai_planners_for_order_lookup = bool(
+            brand == "cfc"
+            and deterministic_route.tool == "order_status_lookup"
+        )
+        if skip_ai_planners_for_order_lookup:
+            pipeline_trace_extra["protected_fast_path"] = {
+                "tool": "order_status_lookup",
+                "reason": "EXACT_ORDER_ROUTE_SKIPS_AI_PLANNERS",
+            }
         
         # --- BẮT ĐẦU: SEMANTIC ROUTING BẰNG LLM ---
         llm_nlu_mode, _, _ = _llm_nlu_config()
-        if brand.lower() == "cfc" and llm_nlu_mode in {"assist", "shadow"}:
+        if (
+            brand.lower() == "cfc"
+            and not skip_ai_planners_for_order_lookup
+            and llm_nlu_mode in {"assist", "shadow"}
+        ):
             from cfc_semantic_planner import plan_cfc_intents
             cfc_plan = await plan_cfc_intents(norm_text, conversation_state)
             if cfc_plan:
@@ -2913,7 +2955,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 # confidence from an LLM-shaped JSON response.
         # --- KẾT THÚC: SEMANTIC ROUTING BẰNG LLM ---
 
-        if should_run_conversation_orchestrator:
+        if should_run_conversation_orchestrator and not skip_ai_planners_for_order_lookup:
             conversation_messages = build_conversation_messages(
                 conversation_state,
                 raw_text,

@@ -42,6 +42,10 @@ class FakePipeline:
         self.commands.append(("geoadd", key, values))
         return self
 
+    def hset(self, key, mapping):
+        self.commands.append(("hset", key, mapping))
+        return self
+
     async def execute(self):
         self.executed = True
         return [True] * len(self.commands)
@@ -108,6 +112,7 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
             allowed_revenue_statuses=("Đã ghi",),
             min_public_products=1,
             min_public_locations=1,
+            min_order_lookup_records=1,
             order_lookup_hmac_secret="unit-test-order-hmac",
         )
 
@@ -154,6 +159,10 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
         encoded_private = json.dumps(private_order_payload, ensure_ascii=False)
         self.assertNotIn("0292 000 0000", encoded_private)
         self.assertNotIn("account_name", encoded_private)
+        self.assertTrue(any(
+            command[0] == "hset" and command[1] == self.config.redis_order_lookup_index_key
+            for command in pipeline.commands
+        ))
 
     async def test_failed_location_gate_preserves_existing_snapshot(self):
         redis = FakeRedis()
@@ -167,6 +176,36 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertIsNone(redis.last_pipeline)
+
+    async def test_small_order_candidate_keeps_previous_private_order_snapshot(self):
+        redis = FakeRedis()
+        guarded_config = AmisConfig(
+            public_approval_field="chatbot_public",
+            public_phone_field="chatbot_public_phone",
+            public_address_field="chatbot_public_address",
+            public_recency_days=365,
+            allowed_revenue_statuses=("Đã ghi",),
+            min_public_products=1,
+            min_public_locations=1,
+            min_order_lookup_records=2,
+            order_lookup_hmac_secret="unit-test-order-hmac",
+        )
+
+        result = await sync_public_snapshots(
+            dry_run=False,
+            config=guarded_config,
+            client=FakeClient(datasets()),
+            redis_client=redis,
+            now=NOW,
+        )
+
+        self.assertTrue(result["written"])
+        self.assertTrue(result["snapshots"]["order_lookup"]["retained_previous"])
+        self.assertEqual(result["snapshots"]["order_lookup"]["candidate_record_count"], 1)
+        self.assertFalse(any(
+            command[0] == "set" and command[1] == guarded_config.redis_order_lookup_key
+            for command in redis.last_pipeline.commands
+        ))
 
 
 if __name__ == "__main__":

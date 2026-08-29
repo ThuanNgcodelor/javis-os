@@ -77,8 +77,20 @@ class AmisConfig:
     # both its code and the phone number on the order. This is deliberately
     # separate from the public product/location snapshots above.
     redis_order_lookup_key: str = "amis:internal:orders:active"
+    # Exact-code index for the private order cache. This contains only the
+    # same allowlisted, HMAC-protected values as redis_order_lookup_key.
+    redis_order_lookup_index_key: str = "amis:internal:orders:index:active"
     redis_order_lookup_metadata_key: str = "amis:internal:orders:last-success"
+    # Short-lived internal staging area used when n8n transfers a full AMIS
+    # dataset in chunks.  It is never read by the chatbot and is deleted after
+    # a successful commit (or expires if a run is interrupted).
+    redis_warm_staging_prefix: str = "amis:internal:warm:stage"
+    warm_staging_ttl_seconds: int = 7200
+    warm_staging_chunk_max_records: int = 100
     order_lookup_max_age_seconds: int = 5400
+    # Refuse a suspiciously small warm result so a partial AMIS response cannot
+    # replace a healthy private order cache.
+    min_order_lookup_records: int = 100
     order_lookup_hmac_secret: str = field(default="", repr=False)
     internal_token: str = field(default="", repr=False)
     warehouse_location: str = "Tổng kho Nhà máy Cần Thơ (KCN Trà Nóc)"
@@ -107,6 +119,8 @@ class AmisConfig:
             "internal_token_configured": bool(self.internal_token),
             "order_lookup_enabled": bool(self.order_lookup_hmac_secret),
             "order_lookup_max_age_seconds": self.order_lookup_max_age_seconds,
+            "warm_staging_ttl_seconds": self.warm_staging_ttl_seconds,
+            "warm_staging_chunk_max_records": self.warm_staging_chunk_max_records,
             "warehouse_location": self.warehouse_location,
         }
 
@@ -208,6 +222,13 @@ def load_amis_config() -> AmisConfig:
         redis_order_lookup_key=str(
             value("AMIS_REDIS_ORDER_LOOKUP_KEY", "redis_order_lookup_key", AmisConfig.redis_order_lookup_key)
         ).strip(),
+        redis_order_lookup_index_key=str(
+            value(
+                "AMIS_REDIS_ORDER_LOOKUP_INDEX_KEY",
+                "redis_order_lookup_index_key",
+                AmisConfig.redis_order_lookup_index_key,
+            )
+        ).strip(),
         redis_order_lookup_metadata_key=str(
             value(
                 "AMIS_REDIS_ORDER_LOOKUP_METADATA_KEY",
@@ -215,10 +236,32 @@ def load_amis_config() -> AmisConfig:
                 AmisConfig.redis_order_lookup_metadata_key,
             )
         ).strip(),
+        redis_warm_staging_prefix=str(
+            value(
+                "AMIS_REDIS_WARM_STAGING_PREFIX",
+                "redis_warm_staging_prefix",
+                AmisConfig.redis_warm_staging_prefix,
+            )
+        ).strip(),
+        warm_staging_ttl_seconds=_as_int(
+            value("AMIS_WARM_STAGING_TTL_SECONDS", "warm_staging_ttl_seconds", 7200),
+            7200,
+            300,
+        ),
+        warm_staging_chunk_max_records=_as_int(
+            value("AMIS_WARM_STAGING_CHUNK_MAX_RECORDS", "warm_staging_chunk_max_records", 100),
+            100,
+            1,
+        ),
         order_lookup_max_age_seconds=_as_int(
             value("AMIS_ORDER_LOOKUP_MAX_AGE_SECONDS", "order_lookup_max_age_seconds", 5400),
             5400,
             60,
+        ),
+        min_order_lookup_records=_as_int(
+            value("AMIS_MIN_ORDER_LOOKUP_RECORDS", "min_order_lookup_records", 100),
+            100,
+            1,
         ),
         order_lookup_hmac_secret=order_lookup_hmac_secret,
         internal_token=internal_token,

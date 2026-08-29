@@ -11,6 +11,7 @@ if str(SERVER_DIR) not in sys.path:
 
 from domains.amis.config import AmisConfig  # noqa: E402
 from domains.amis.order_cache import (  # noqa: E402
+    build_order_lookup_index,
     build_order_lookup_snapshot,
     lookup_cached_order_status,
 )
@@ -20,11 +21,15 @@ NOW = datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc)
 
 
 class FakeRedis:
-    def __init__(self, values):
+    def __init__(self, values, hashes=None):
         self.values = values
+        self.hashes = hashes or {}
 
     async def get(self, key):
         return self.values.get(key)
+
+    async def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
 
 
 class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
@@ -42,9 +47,12 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
                 }],
                 "sale_orders": [{
                     "account_code": "KH001",
-                    "sale_order_no": "DH-2026-889",
-                    "status": "Đang giao hàng",
-                    "modified_date": "2026-08-29T07:45:00+00:00",
+                "sale_order_no": "DH-2026-889",
+                "status": "Đang giao hàng",
+                "delivery_status": "Đã giao hàng",
+                "sale_order_date": "2026-08-28",
+                "deadline_date": "2026-08-30",
+                "modified_date": "2026-08-29T07:45:00+00:00",
                 }],
                 "products": [],
             },
@@ -60,6 +68,9 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Khách hàng không được lộ", encoded)
         self.assertNotIn("account_code", encoded)
         self.assertIn("phone_hmacs", encoded)
+        self.assertIn("delivery_status", encoded)
+        self.assertIn("sale_order_date", encoded)
+        self.assertNotIn("account_name", encoded)
 
     async def test_exact_order_code_and_matching_phone_returns_status(self):
         redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})
@@ -74,7 +85,33 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["outcome"], "found")
         self.assertEqual(result["order_code"], "DH-2026-889")
         self.assertEqual(result["status"], "Đang giao hàng")
+        self.assertEqual(result["delivery_status"], "Đã giao hàng")
+        self.assertEqual(result["sale_order_date"], "2026-08-28")
+        self.assertEqual(result["deadline_date"], "2026-08-30")
         self.assertEqual(result["source_id"], "amis:internal:order-warm")
+
+    async def test_schema_v2_index_uses_exact_order_key_without_loading_full_snapshot(self):
+        index = build_order_lookup_index(self.snapshot)
+        metadata = {
+            "schema_version": 2,
+            "synced_at": NOW.isoformat(),
+        }
+        redis = FakeRedis(
+            {self.config.redis_order_lookup_metadata_key: json.dumps(metadata)},
+            {self.config.redis_order_lookup_index_key: index},
+        )
+
+        result = await lookup_cached_order_status(
+            redis,
+            config=self.config,
+            order_code="DH-2026-889",
+            phone="0901234567",
+            now=NOW + timedelta(minutes=10),
+        )
+
+        self.assertEqual(result["outcome"], "found")
+        self.assertEqual(result["delivery_status"], "Đã giao hàng")
+        self.assertEqual(result["sale_order_date"], "2026-08-28")
 
     async def test_wrong_code_or_phone_does_not_leak_order_information(self):
         redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from .client import AmisApiError, AmisConfigurationError, AmisContractError
 from .config import load_amis_config
 from .service import AmisSyncSafetyError, sync_public_snapshots
+from .warm_staging import commit_warm_run, stage_warm_chunk
 
 
 class AmisRawDataset(BaseModel):
@@ -23,6 +24,21 @@ class AmisRawDataset(BaseModel):
     customers: list[dict[str, Any]]
     products: list[dict[str, Any]]
     sale_orders: list[dict[str, Any]]
+
+
+class AmisWarmChunk(BaseModel):
+    """One bounded raw AMIS dataset chunk sent by n8n."""
+
+    run_id: str
+    dataset: str
+    chunk_index: int
+    records: list[dict[str, Any]]
+    expected_counts: dict[str, int]
+    expected_chunks: dict[str, int]
+
+
+class AmisWarmCommit(BaseModel):
+    run_id: str
 
 
 router = APIRouter(prefix="/amis", tags=["AMIS CRM Read-Only Sync"])
@@ -128,3 +144,43 @@ async def amis_warm(
         logger.exception("AMIS warm endpoint failed: %s", exc)
         raise HTTPException(status_code=400, detail=f"AMIS projection/sync error: {exc}") from exc
 
+
+@router.post("/warm/stage")
+async def amis_warm_stage(
+    request: Request,
+    body: AmisWarmChunk,
+    x_internal_token: str = Header("", alias="X-Internal-Token"),
+):
+    """Stage one small n8n chunk; never changes active Redis snapshots."""
+    _require_internal(request, x_internal_token)
+    try:
+        return await stage_warm_chunk(
+            run_id=body.run_id,
+            dataset=body.dataset,
+            chunk_index=body.chunk_index,
+            records=body.records,
+            expected_counts=body.expected_counts,
+            expected_chunks=body.expected_chunks,
+        )
+    except AmisSyncSafetyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("AMIS warm staging failed: %s", exc)
+        raise HTTPException(status_code=400, detail="AMIS warm staging failed") from exc
+
+
+@router.post("/warm/commit")
+async def amis_warm_commit(
+    request: Request,
+    body: AmisWarmCommit,
+    x_internal_token: str = Header("", alias="X-Internal-Token"),
+):
+    """Publish only a complete staged run that passes all existing safety gates."""
+    _require_internal(request, x_internal_token)
+    try:
+        return await commit_warm_run(run_id=body.run_id)
+    except AmisSyncSafetyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("AMIS warm commit failed: %s", exc)
+        raise HTTPException(status_code=400, detail="AMIS warm commit failed") from exc

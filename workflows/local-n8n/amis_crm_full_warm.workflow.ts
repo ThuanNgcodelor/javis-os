@@ -2,7 +2,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 
 // <workflow-map>
 // Workflow : AMIS CRM Full Warm — Redis Sync Every 1h
-// Nodes   : 6  |  Connections: 5
+// Nodes   : 8  |  Connections: 7
 //
 // NODE INDEX
 // ──────────────────────────────────────────────────────────────────
@@ -11,7 +11,9 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 // ScheduleTrigger                    scheduleTrigger
 // FetchAmisData                      code
 // ValidateSourceCounts               code
-// WarmRedisViaFastapi                httpRequest
+// StageAmisWarmChunk                 httpRequest
+// PrepareAmisWarmCommit              code
+// CommitAmisWarmRun                  httpRequest
 // ValidateSyncResult                 code
 //
 // ROUTING MAP
@@ -19,8 +21,10 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 // ManualTrigger
 //    → FetchAmisData
 //      → ValidateSourceCounts
-//        → WarmRedisViaFastapi
-//          → ValidateSyncResult
+//        → StageAmisWarmChunk
+//          → PrepareAmisWarmCommit
+//            → CommitAmisWarmRun
+//              → ValidateSyncResult
 // ScheduleTrigger
 //    → FetchAmisData (↩ loop)
 // </workflow-map>
@@ -148,15 +152,15 @@ async function fetchAllPages(resource, maxPages) {
       } catch (err) {
         lastError = err;
         const msg = String(err.message || err);
-        if (msg.indexOf("401") !== -1 && page > 0) return all;
+        if (msg.indexOf("401") !== -1 && page > 0) {
+          throw new Error("[AMIS Warm] Authentication expired while fetching " + resource + " page " + page + ".");
+        }
         // Pause and retry on ECONNRESET, timeout or 502/503/429
         await sleep(500 * (attempt + 1));
       }
     }
 
     if (!raw && lastError) {
-      // If beyond first page, stop gracefully with what we have
-      if (page > 0) break;
       throw new Error("[AMIS Warm] GET " + resource + " page " + page + " failed: " + String(lastError.message || lastError));
     }
 
@@ -177,7 +181,9 @@ async function fetchAllPages(resource, maxPages) {
     if (!records || records.length === 0) break;
 
     const fp = resource + ":p" + page + ":n" + records.length + ":" + JSON.stringify(records[0]).slice(0, 60);
-    if (seen.has(fp)) break;
+    if (seen.has(fp)) {
+      throw new Error("[AMIS Warm] AMIS repeated a page while fetching " + resource + "; refusing a partial snapshot.");
+    }
     seen.add(fp);
 
     all.push.apply(all, records);
@@ -199,34 +205,64 @@ async function fetchAllPages(resource, maxPages) {
 const allCustomers = await fetchAllPages("Customers", 50);
 const customers = allCustomers.filter(function(c) {
   if (c.inactive === true) return false;
-  return Boolean(c.account_name || c.office_tel);
+  if (!c.purchase_date_first) return false;
+  var t = c.account_type;
+  if (!t) return false;
+  var types = Array.isArray(t) ? t : [t];
+  return types.some(function(v) {
+    var s = String(v);
+    return s === "KH001" || s === "KH002" || s.indexOf("001") !== -1 || s.indexOf("002") !== -1;
+  });
 });
 
 const products = await fetchAllPages("Products", 20);
 
 const rawOrders = await fetchAllPages("SaleOrders", 300);
 const saleOrders = rawOrders.filter(function(o) {
-  if (o.is_invoiced !== true) return false;
   var s = String(o.status || "").toLowerCase();
+  // Keep non-cancelled orders for the private, customer-owned status lookup.
+  // The FastAPI public dealer projection retains its own invoiced eligibility
+  // rule, so this must not remove valid orders from the private cache.
   return s.indexOf("huy") === -1 && s.indexOf("tu choi") === -1 &&
     s.indexOf("cancel") === -1 && s.indexOf("reject") === -1;
 });
 
-return [{
-  json: {
-    customers: customers,
-    products: products,
-    sale_orders: saleOrders,
-    fetched_at: new Date().toISOString(),
-    counts: {
-      customers_raw: allCustomers.length,
-      customers_eligible: customers.length,
-      products: products.length,
-      sale_orders_raw: rawOrders.length,
-      sale_orders_invoiced: saleOrders.length,
-    },
-  },
-}];
+// n8n serialises every item between nodes.  Emit bounded chunks immediately
+// so neither the next Code node nor an HTTP expression receives all CRM rows.
+const CHUNK_SIZE = 100;
+const sourceCounts = {
+  customers_raw: allCustomers.length,
+  customers_eligible: customers.length,
+  products: products.length,
+  sale_orders_raw: rawOrders.length,
+  sale_orders_eligible: saleOrders.length,
+};
+const runId = "amiswarm-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+const datasets = { customers: customers, products: products, sale_orders: saleOrders };
+const expectedCounts = {};
+const expectedChunks = {};
+for (const [dataset, records] of Object.entries(datasets)) {
+  expectedCounts[dataset] = records.length;
+  expectedChunks[dataset] = Math.ceil(records.length / CHUNK_SIZE);
+}
+
+const output = [];
+for (const [dataset, records] of Object.entries(datasets)) {
+  for (let chunkIndex = 0; chunkIndex < expectedChunks[dataset]; chunkIndex++) {
+    output.push({
+      json: {
+        run_id: runId,
+        dataset: dataset,
+        chunk_index: chunkIndex,
+        records: records.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE),
+        expected_counts: expectedCounts,
+        expected_chunks: expectedChunks,
+        source_counts: sourceCounts,
+      },
+    });
+  }
+}
+return output;
 `,
     };
 
@@ -239,8 +275,12 @@ return [{
     })
     ValidateSourceCounts = {
         jsCode: `
-const data = $input.first().json;
-const c = data.counts || {};
+const chunks = $input.all();
+if (!chunks.length) {
+  throw new Error("[AMIS Warm] Fetch returned no chunks.");
+}
+const first = chunks[0].json || {};
+const c = first.source_counts || {};
 
 if (!c.customers_eligible || c.customers_eligible < 5) {
   throw new Error(
@@ -252,30 +292,98 @@ if (!c.customers_eligible || c.customers_eligible < 5) {
 if (!c.products || c.products < 1) {
   throw new Error("[AMIS Warm] No products fetched. Check AMIS Products API.");
 }
-if (!c.sale_orders_invoiced || c.sale_orders_invoiced < 1) {
+if (!c.sale_orders_eligible || c.sale_orders_eligible < 1) {
   throw new Error(
-    "[AMIS Warm] No invoiced sale orders (raw=" + (c.sale_orders_raw || 0) + "). " +
-    "Python projection needs sale orders to determine dealer brand scopes."
+    "[AMIS Warm] No eligible non-cancelled sale orders (raw=" + (c.sale_orders_raw || 0) + "). " +
+    "Check AMIS SaleOrders API response and status values."
   );
 }
 
-console.log("[AMIS Warm] Source OK — customers=" + c.customers_eligible +
-  " products=" + c.products + " orders=" + c.sale_orders_invoiced);
+const expectedChunks = first.expected_chunks || {};
+const expectedTotal = Object.values(expectedChunks).reduce((sum, value) => sum + Number(value || 0), 0);
+const received = new Set();
+for (const item of chunks) {
+  const chunk = item.json || {};
+  if (chunk.run_id !== first.run_id || JSON.stringify(chunk.expected_chunks || {}) !== JSON.stringify(expectedChunks)) {
+    throw new Error("[AMIS Warm] Inconsistent chunk metadata from Fetch AMIS Data.");
+  }
+  received.add(String(chunk.dataset) + ":" + String(chunk.chunk_index));
+}
+if (received.size !== expectedTotal) {
+  throw new Error("[AMIS Warm] Fetch generated an incomplete chunk plan: expected " + expectedTotal + ", got " + received.size);
+}
 
-return $input.all();
+console.log("[AMIS Warm] Source OK; staging " + chunks.length + " chunks — customers=" +
+  c.customers_eligible + " products=" + c.products + " orders=" + c.sale_orders_eligible);
+
+return chunks;
 `,
     };
 
     @node({
         id: 'a1b2c3d4-e5f6-7890-abcd-ef1234560005',
-        name: 'Warm Redis via FastAPI',
+        name: 'Stage AMIS Warm Chunk',
         type: 'n8n-nodes-base.httpRequest',
         version: 4.4,
         position: [928, 240],
     })
-    WarmRedisViaFastapi = {
+    StageAmisWarmChunk = {
         method: 'POST',
-        url: 'http://127.0.0.1:7777/admin/amis/warm',
+        url: 'http://127.0.0.1:7777/admin/amis/warm/stage',
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: '={{ $json }}',
+        options: {
+            timeout: 60000,
+        },
+    };
+
+    @node({
+        id: 'a1b2c3d4-e5f6-7890-abcd-ef1234560007',
+        name: 'Prepare AMIS Warm Commit',
+        type: 'n8n-nodes-base.code',
+        version: 2,
+        position: [1232, 240],
+    })
+    PrepareAmisWarmCommit = {
+        jsCode: `
+const staged = $input.all().map((item) => item.json || {});
+if (!staged.length) {
+  throw new Error("[AMIS Warm] No staged chunks returned by FastAPI.");
+}
+const first = staged[0];
+const runId = first.run_id;
+const expected = first.expected_chunks || {};
+if (!runId || first.status !== "staged") {
+  throw new Error("[AMIS Warm] FastAPI did not acknowledge the first staged chunk.");
+}
+
+const expectedTotal = Object.values(expected).reduce((sum, value) => sum + Number(value || 0), 0);
+const received = new Set();
+for (const result of staged) {
+  if (result.status !== "staged" || result.run_id !== runId) {
+    throw new Error("[AMIS Warm] Inconsistent staging acknowledgement.");
+  }
+  received.add(String(result.dataset) + ":" + String(result.chunk_index));
+}
+if (received.size !== expectedTotal) {
+  throw new Error("[AMIS Warm] Incomplete staging acknowledgement: expected " + expectedTotal + ", got " + received.size);
+}
+
+return [{ json: { run_id: runId } }];
+`,
+    };
+
+    @node({
+        id: 'a1b2c3d4-e5f6-7890-abcd-ef1234560008',
+        name: 'Commit AMIS Warm Run',
+        type: 'n8n-nodes-base.httpRequest',
+        version: 4.4,
+        position: [1536, 240],
+    })
+    CommitAmisWarmRun = {
+        method: 'POST',
+        url: 'http://127.0.0.1:7777/admin/amis/warm/commit',
         sendBody: true,
         specifyBody: 'json',
         jsonBody: '={{ $json }}',
@@ -289,7 +397,7 @@ return $input.all();
         name: 'Validate Sync Result',
         type: 'n8n-nodes-base.code',
         version: 2,
-        position: [1232, 240],
+        position: [1840, 240],
     })
     ValidateSyncResult = {
         jsCode: `
@@ -315,15 +423,25 @@ const productCount = (result.snapshots && result.snapshots.products)
   ? (result.snapshots.products.record_count || 0) : 0;
 const withCoords = (result.metrics && result.metrics.locations)
   ? (result.metrics.locations.with_coordinates_count || 0) : 0;
+const orderLookup = (result.snapshots && result.snapshots.order_lookup)
+  ? result.snapshots.order_lookup : {};
 
 if (locationCount < 1) {
   throw new Error("[AMIS Warm] Zero locations in snapshot! " +
     "Set AMIS_PILOT_APPROVE_ALL=true and ensure dealers have GPS coordinates in AMIS.");
 }
+if (orderLookup.enabled !== true) {
+  throw new Error(
+    "[AMIS Warm] Private order cache was not safely refreshed. candidate=" +
+    String(orderLookup.candidate_record_count || 0) +
+    " published=" + String(orderLookup.record_count || 0) +
+    " reason=" + String(orderLookup.reason || "unknown")
+  );
+}
 
 console.log("[AMIS Warm] SUCCESS — locations=" + locationCount +
   " gps=" + withCoords + " products=" + productCount +
-  " at=" + result.synced_at);
+  " orders=" + orderLookup.record_count + " at=" + result.synced_at);
 
 return [{
   json: {
@@ -333,6 +451,7 @@ return [{
     location_count: locationCount,
     location_with_coordinates_count: withCoords,
     product_count: productCount,
+    order_lookup_count: Number(orderLookup.record_count || 0),
     locations_snapshot_hash: (result.snapshots && result.snapshots.locations)
       ? result.snapshots.locations.snapshot_hash : "",
     products_snapshot_hash: (result.snapshots && result.snapshots.products)
@@ -351,7 +470,9 @@ return [{
         this.ManualTrigger.out(0).to(this.FetchAmisData.in(0));
         this.ScheduleTrigger.out(0).to(this.FetchAmisData.in(0));
         this.FetchAmisData.out(0).to(this.ValidateSourceCounts.in(0));
-        this.ValidateSourceCounts.out(0).to(this.WarmRedisViaFastapi.in(0));
-        this.WarmRedisViaFastapi.out(0).to(this.ValidateSyncResult.in(0));
+        this.ValidateSourceCounts.out(0).to(this.StageAmisWarmChunk.in(0));
+        this.StageAmisWarmChunk.out(0).to(this.PrepareAmisWarmCommit.in(0));
+        this.PrepareAmisWarmCommit.out(0).to(this.CommitAmisWarmRun.in(0));
+        this.CommitAmisWarmRun.out(0).to(this.ValidateSyncResult.in(0));
     }
 }

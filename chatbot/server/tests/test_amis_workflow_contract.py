@@ -28,6 +28,18 @@ class AmisWorkflowContractTests(unittest.TestCase):
         # Verify no literal secret is hardcoded in git repo template
         self.assertNotRegex(source, r"CLIENT_SECRET\s*=\s*['\"][a-zA-Z0-9_-]{10,}['\"]")
 
+    def test_full_warm_stages_small_chunks_before_commit(self):
+        source = WORKFLOW_FULL_WARM.read_text(encoding="utf-8")
+
+        for contract in (
+            "const CHUNK_SIZE = 100",
+            "/admin/amis/warm/stage",
+            "/admin/amis/warm/commit",
+            "Prepare AMIS Warm Commit",
+            "refusing a partial snapshot",
+        ):
+            self.assertIn(contract, source)
+
     def test_embedded_code_node_javascript_is_valid(self):
         for workflow_path in (WORKFLOW_PUBLIC_SYNC, WORKFLOW_FULL_WARM):
             source = workflow_path.read_text(encoding="utf-8")
@@ -53,4 +65,3 @@ class AmisWorkflowContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

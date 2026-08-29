@@ -188,6 +188,9 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             "outcome": "found",
             "order_code": "DH-2026-889",
             "status": "Đang giao hàng",
+            "delivery_status": "Đã giao hàng",
+            "sale_order_date": "2026-08-28",
+            "deadline_date": "2026-08-30",
             "order_updated_at": "2026-08-29T07:45:00+00:00",
             "synced_at": "2026-08-29T08:00:00+00:00",
             "source_id": "amis:internal:order-warm",
@@ -204,7 +207,9 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.intent, "cfc_order_status_request")
         self.assertIn("DH-2026-889", result.answer)
         self.assertIn("Đang giao hàng", result.answer)
-        self.assertIn("Nếu bạn cần kiểm tra thêm tình hình giao hoặc nhận hàng", result.answer)
+        self.assertIn("Tình trạng giao hàng: Đã giao hàng", result.answer)
+        self.assertIn("Ngày đặt đơn: 28/08/2026", result.answer)
+        self.assertIn("Hạn giao hàng trên đơn: 30/08/2026", result.answer)
         self.assertNotIn("2026-08-29T", result.answer)
         self.assertNotIn("chưa kết nối", result.answer.lower())
         self.assertNotIn("CRM", result.answer)
@@ -212,6 +217,46 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             "cfc:session:messenger:order-warm-match"
         ]["last_trace"]
         self.assertEqual(trace["source_id"], "amis:internal:order-warm")
+
+    async def test_explicit_order_lookup_skips_ollama_semantic_and_conversation_planners(self):
+        redis_patch, faq_patch, profile_patch, _ = self._patches()
+        cached_lookup = AsyncMock(return_value={
+            "outcome": "found",
+            "order_code": "00005065",
+            "status": "Đã thực hiện",
+            "delivery_status": "Đã giao hàng",
+            "sale_order_date": "2026-08-28",
+            "deadline_date": "2026-08-30",
+            "source_id": "amis:internal:order-warm",
+        })
+        semantic_planner = AsyncMock(return_value=[])
+        conversation_planner = AsyncMock(return_value=None)
+        sender_id = "order-fast-path"
+        session_key = f"cfc:session:messenger:{sender_id}"
+        state = chat_pipeline._default_conversation_state("cfc")
+        state["recent_turns"] = [{"user": "Tôi cần hỗ trợ", "bot": "Bạn gửi mã đơn nhé."}]
+        chat_pipeline._local_session_cache[session_key] = {
+            "conversation_state": state,
+            "last_intent": "general_faq",
+        }
+        with redis_patch, faq_patch, profile_patch, \
+                patch("chat_pipeline._llm_nlu_config", return_value=("assist", 1.6, 0.72)), \
+                patch("chat_pipeline.load_orchestrator_config", return_value={
+                    "mode": "assist", "min_confidence": 0.85, "history_limit": 6, "timeout_seconds": 6.0,
+                }), \
+                patch("cfc_semantic_planner.plan_cfc_intents", new=semantic_planner), \
+                patch("chat_pipeline.plan_conversation_turn_with_ai", new=conversation_planner), \
+                patch("chat_pipeline.lookup_cached_order_status", new=cached_lookup):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id=sender_id,
+                text="Tra cứu đơn 00005065 số điện thoại 0976000085",
+            ))
+
+        self.assertEqual(result.intent, "cfc_order_status_request")
+        semantic_planner.assert_not_awaited()
+        conversation_planner.assert_not_awaited()
+        self.assertIn("Tình trạng giao hàng: Đã giao hàng", result.answer)
 
     async def test_order_status_preserves_plain_numeric_order_code_for_warm_lookup(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()

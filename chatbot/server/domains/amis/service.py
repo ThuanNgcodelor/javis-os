@@ -11,7 +11,7 @@ from domains.common.db import get_redis_client
 
 from .client import AmisClient
 from .config import AmisConfig, load_amis_config
-from .order_cache import build_order_lookup_snapshot
+from .order_cache import build_order_lookup_index, build_order_lookup_snapshot
 from .projection import (
     assert_public_projection_safe,
     build_public_products,
@@ -137,14 +137,18 @@ async def _write_bundle_to_redis(
         json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
     )
     if order_snapshot is not None:
+        order_index = build_order_lookup_index(order_snapshot)
         pipeline.set(
             config.redis_order_lookup_key,
             json.dumps(order_snapshot, ensure_ascii=False, separators=(",", ":")),
         )
+        pipeline.delete(config.redis_order_lookup_index_key)
+        if order_index:
+            pipeline.hset(config.redis_order_lookup_index_key, mapping=order_index)
         pipeline.set(
             config.redis_order_lookup_metadata_key,
             json.dumps({
-                "schema_version": 1,
+                "schema_version": order_snapshot.get("schema_version", 1),
                 "source": order_snapshot.get("source", "amis_crm_order_warm"),
                 "synced_at": order_snapshot.get("synced_at", ""),
                 "record_count": order_snapshot.get("record_count", 0),
@@ -174,6 +178,14 @@ async def sync_public_snapshots(
         include_private_order_snapshot=True,
     )
     order_snapshot = bundle.pop("_private_order_snapshot", None)
+    order_lookup_skip_reason = ""
+    candidate_order_count = int((order_snapshot or {}).get("record_count") or 0)
+    if order_snapshot is not None and candidate_order_count < cfg.min_order_lookup_records:
+        # Do not replace the last known-good private cache with a partial AMIS
+        # page/filter result. Products and public dealer snapshots can still
+        # refresh; the old private order cache remains atomically intact.
+        order_snapshot = None
+        order_lookup_skip_reason = "ORDER_LOOKUP_RECORD_COUNT_BELOW_MINIMUM"
     products_snapshot = _snapshot(bundle["products"], synced_at=synced_at)
     locations_snapshot = _snapshot(bundle["locations"], synced_at=synced_at)
 
@@ -199,8 +211,11 @@ async def sync_public_snapshots(
             "order_lookup": {
                 "key": cfg.redis_order_lookup_key,
                 "record_count": int((order_snapshot or {}).get("record_count") or 0),
+                "candidate_record_count": candidate_order_count,
                 "snapshot_hash": str((order_snapshot or {}).get("snapshot_hash") or ""),
                 "enabled": bool(order_snapshot),
+                "retained_previous": bool(order_lookup_skip_reason),
+                "reason": order_lookup_skip_reason,
             },
         },
     }
