@@ -1,6 +1,6 @@
 # Tổng hợp hiện trạng và bộ test Conversation Intelligence CFC
 
-**Ngày chốt hiện trạng:** 27/08/2026  
+**Ngày chốt hiện trạng:** 30/08/2026
 **Phạm vi:** chatbot CFC trên Messenger, Javis OS, Redis, AMIS và Ollama Local  
 **Mục đích:** tài liệu handoff độc lập để phân tích kiến trúc, đánh giá độ thông minh hội thoại và đề xuất hướng nâng cấp mà không phá các output grounded đang hoạt động.
 
@@ -17,6 +17,103 @@ Chatbot hiện tại là một hệ thống hybrid, không phải một cuộc h
 - Ollama không được phép tự tạo số điện thoại, giá, tồn kho, trạng thái đơn, chiết khấu, link, chính sách hoặc liều lượng.
 
 Vì vậy, việc "đưa mỗi khách vào một conversation của Ollama" không tự động giải quyết memory. Ứng dụng vẫn phải lưu state, chọn đúng lịch sử, resolve entity và gửi lại context cho model ở từng request.
+
+## 0. Bản chốt triển khai đến 30/08/2026
+
+Phần này là bản tóm tắt ưu tiên để không nhầm giữa **đã sửa trong local**, **đã kiểm thử**, **đã đồng bộ workflow** và **đã chạy production**.
+
+### 0.1 Trạng thái Phase 0 → 5
+
+| Phase | Đã triển khai | Trạng thái thực tế |
+|---|---|---|
+| 0 — Containment & grounding | Fail-closed cho fact chưa có nguồn, chặn free-generation/nông học không được duyệt, source challenge an toàn, guard lỗi n8n/sync | Local đã triển khai; chưa đủ bằng chứng canary live |
+| 1 — Runtime evidence | Runtime manifest, trace route/source/claim/fallback, freshness và provider metadata | Local foundation đã có; chưa chốt revision/trace live trên Page |
+| 2 — Conversation intelligence | QueryPlan, GoalFrame, reference/tool-result, correction, topic routing, semantic shadow | Local regression đã có; chưa đạt acceptance trên traffic thật |
+| 3 — AMIS security | Public projection, private order warm cache, HMAC mã đơn + SĐT, freshness, Redis index O(1), catalogue filter | Local đã có; chưa có privileged realtime/OTP và chưa xác nhận toàn bộ live workflow |
+| 4 — Approved agronomy | `approved_facts.json`, validator nguồn/approval/expiry, eligibility sầu riêng, expert handoff | Gate kỹ thuật local đã có; chưa có protocol liều lượng được kỹ sư duyệt để public |
+| 5 — Evaluation/canary | Replay manifest/scorer, redacted shadow v2, stable canary primitive, bộ test CFC/ZeO | Nền tảng local đã có; chưa bật shadow/canary production và chưa có baseline live được duyệt |
+
+Không phase nào được gọi là “hoàn tất production” chỉ dựa trên unit test. Các mục còn thiếu nằm trong [PHASE_3_4_5_IMPLEMENTATION_CHECKLIST.md](zeo-cfc-phases/PHASE_3_4_5_IMPLEMENTATION_CHECKLIST.md).
+
+### 0.2 Những thay đổi code đã thực hiện
+
+#### Grounding và an toàn câu trả lời
+
+- `chat_pipeline.py`, `ai_engine.py`, `grounding_policy.py`: nguồn fact phải là FAQ/catalog/approved fact/public tool/privileged tool được allowlist; Ollama, Groq hoặc provider cloud chỉ là generator/planner, không phải bằng chứng.
+- Câu thiếu nguồn không còn được lấp bằng văn bản model tự nghĩ; chuyển sang clarification hoặc handoff an toàn.
+- Câu hỏi nông học được tách thành eligibility, product-fit, protocol/liều lượng và triệu chứng rủi ro. Eligibility có fact được duyệt mới trả ngắn; protocol thiếu approval chuyển kỹ sư.
+- Source challenge như “thông tin đó có thật không?” đọc claim/source trace gần nhất; không lộ Redis key, prompt, provider nội bộ hoặc raw CRM.
+- Error từ FastAPI/n8n không được biến thành câu trả lời customer-facing; response rỗng, duplicate hoặc `suppress_send` được chặn trước Send Messenger.
+
+#### Conversation intelligence
+
+- `query_understanding.py`: deterministic QueryPlan nhận diện intent, entity, constraint, ordinal/reference và correction trước khi gọi model.
+- `conversation_orchestrator.py`, `dialogue_router.py`: GoalFrame, confirmed/pending slots, reference candidates, topic switch và action validation.
+- Ollama chạy ở vai trò hỗ trợ JSON decision khi câu mơ hồ hoặc cần hiểu follow-up; plan phải qua confidence/allowlist, không được tự tạo fact.
+- `acknowledgement` như “à ok”, “ừ”, “cảm ơn” được tách khỏi câu hỏi mới để không tự đổi goal.
+- Purchase/B2B ưu tiên khi có động từ mua + số lượng; dealer ordinal dùng `last_tool_results`; correction số điện thoại cập nhật slot thay vì tạo state mới.
+- `nlu_shadow.py`, `evaluation_ops.py`, replay evaluator ghi decision/route/source/fallback/latency đã redaction, không ghi raw query/sender/model reason.
+
+#### AMIS, CRM và Redis
+
+- Public product/location snapshot dùng projection allowlist; không đưa giá, tồn kho, công nợ, raw customer, địa chỉ private hoặc dòng đơn vào public Redis.
+- Private order cache yêu cầu **mã đơn chính xác + SĐT khớp HMAC**; freshness mặc định tối đa 90 phút. Mismatch chỉ báo không tìm thấy, không nói “chưa kết nối CRM”.
+- Order cache có snapshot JSON tương thích cũ và Redis Hash index theo mã đơn để lookup O(1), giữ last-known-good khi warm partial/fail.
+- Sau thay đổi mới nhất, private order cache có thêm `shop_name` lấy từ `account_name`/`account_short_name` sau khi xác minh đúng mã đơn + SĐT. Tên shop chỉ xuất hiện customer-facing sau match; không xuất phone/address/financial data.
+- Order formatter hiện hiển thị mã đơn, tên cửa hàng (nếu cache đã warm trường này), tình trạng đơn, tình trạng giao hàng, ngày đặt, hạn giao và “Cập nhật gần nhất” nghiệp vụ; không hiển thị thời điểm Redis đồng bộ.
+- `amis_crm_public_sync.workflow.ts`: node gọi public sync đã được bổ sung `X-Internal-Token` và remote đã pull/reconcile để xác minh cấu hình header.
+- `amis_crm_full_warm.workflow.ts`: local có staging/chunk header để tránh expression memory limit; lần push có remote conflict nên **chưa tuyên bố đã overwrite/activate live**. Cần reconcile workflow live trước khi chạy.
+- `routes.py` bảo vệ `/admin/amis/*` bằng `X-Internal-Token`; không dán client secret vào node. Secret/internal token phải lấy từ n8n Environment/Secret hoặc credential được quản trị, không đưa vào tài liệu.
+
+#### CFC public catalog
+
+- Runtime đọc `amis:public:products:active`, lọc các dòng không phải phân bón và loại áo mưa, bột giặt, bao bì, máy móc, quà tặng…
+- Formula query được so khớp chính xác; `20-20-10` không được tự đổi thành `20-10-10` hoặc `15-15-15`.
+- Kết quả danh mục chỉ hiển thị tên sản phẩm; mã hàng vẫn giữ trong trace nội bộ để nhân viên đối chiếu, không còn đưa mã vào tin nhắn khách.
+- Query trực tiếp AMIS ngày 30/08/2026 trả 932 sản phẩm: không có `20-20-10`; có 13 bản ghi `20-10-10`/`20.10.10`. Mã `01.1060` là `NPK Cò bay 15-15-15+TE`, không phải 20-20-10.
+
+#### Nghiệp vụ customer-facing đã chốt
+
+| Nhu cầu | Hành vi hiện tại |
+|---|---|
+| FAQ website/giao hàng/chính sách | Trả từ CFC/ZeO FAQ có nguồn; source challenge không gọi planner không cần thiết |
+| Có phân cho cây sầu riêng? | Trả eligibility ngắn từ approved fact, hỏi giai đoạn nếu muốn tư vấn sâu |
+| Công thức/liều lượng/trị bệnh | Chỉ trả khi có protocol được duyệt; nếu thiếu thu thập dữ kiện và chuyển Khuyến nông |
+| Hỏi sản phẩm CFC | Lọc catalog AMIS; chỉ tên sản phẩm, không giá/tồn kho/mã hàng customer-facing |
+| Mua 200kg–nhiều tấn/B2B | Ghi nhận sản phẩm, số lượng, khu vực; không báo giá/chiết khấu; chuyển Trưởng phòng Kinh doanh |
+| Tra đơn | Mã đơn + SĐT khớp private cache; trả allowlist trạng thái/date/shop name nếu đã warm |
+| Giá/tồn kho/loyalty | Chưa phải capability public đã verified; không bịa hoặc lấy raw CRM |
+| Đại lý | Tra location public + số/address/map nếu có field được duyệt; thiếu số thì nói chưa có SĐT công khai |
+| Khiếu nại | Lời lẽ xoa dịu, xin ảnh mã lô/bao bì và thông tin liên hệ; không tự hứa tạo ticket khi chưa có tool |
+
+### 0.3 Test và bằng chứng đã có
+
+- Nhóm test order-cache, CFC grounded-memory và CFC catalog mới nhất: **35/35 pass**.
+- Test catalog có exact-formula guard, loại hàng lẫn, projection không chứa giá/tồn và B2B contact.
+- Phase 0 trước đó có nhóm regression **68/68 OK**; đây là bằng chứng local, không thay thế live proof.
+- Các manual suite đã tạo:
+  - [TEST_CFC_REAL_WORLD_PHASE_0_5.md](../server/manual_tests/TEST_CFC_REAL_WORLD_PHASE_0_5.md): 56 case, ưu tiên CFC.
+  - [TEST_ZEO_REAL_WORLD_PHASE_0_5.md](../server/manual_tests/TEST_ZEO_REAL_WORLD_PHASE_0_5.md): 38 case.
+- `git diff --check` pass sau các thay đổi gần nhất.
+- Một số test có log `Ollama Local: ConnectError` do môi trường test không chạy Ollama; test contract vẫn pass. Không dùng việc đó để tuyên bố Ollama production ổn định.
+- Full suite trước đó có lỗi assertion/metrics cũ ở AMIS projection/workflow contract; cần chạy lại sau khi chốt patch cuối, không gộp thành “toàn bộ xanh”.
+
+### 0.4 Trạng thái deploy và dữ liệu
+
+- Python chatbot hiện là **local working tree**, chưa push Git trong đợt thay đổi này.
+- Public AMIS sync workflow đã được reconcile header trên remote theo lần xác minh trước.
+- Full Warm workflow chưa được xác nhận overwrite live do conflict với chỉnh sửa trên n8n UI.
+- Redis public catalog/order cache chỉ chứa dữ liệu của lần warm gần nhất; sau khi thêm `shop_name`, phải chạy lại Full Warm/AMIS warm thành công thì đơn cũ mới có tên shop.
+- Chưa bật canary, chưa tự ý đổi credential, chưa `FLUSHALL`, chưa tuyên bố Page production đã chạy revision mới nếu chưa restart và smoke-test bằng sender riêng.
+
+### 0.5 Việc cần làm sau tài liệu này
+
+1. Chốt/reconcile `amis_crm_full_warm` trên n8n, chạy một warm đầy đủ qua staging → commit; kiểm tra product/order counts, hashes và `shop_name` trong private cache.
+2. Restart server để nạp Python revision mới; dùng sender CFC test riêng, không dùng conversation khách thật.
+3. Chạy câu catalog `Có NPK 20-10-10 không?` và `Có NPK 20-20-10 không?`; xác nhận chỉ tên sản phẩm, không mã hàng.
+4. Chạy order fixture mã + SĐT đúng/sai; xác nhận đúng shop name, mismatch không rò dữ liệu.
+5. Chạy toàn bộ manual CFC trước, sau đó ZeO; lưu answer + trace đã che PII và latency.
+6. Chỉ khi các gate trên pass mới đánh giá shadow/canary Phase 5; giữ rollback do chủ hệ thống quản lý.
 
 Hệ thống đã cải thiện ở các flow mua hàng, clarification và số điện thoại đại lý. Tuy nhiên reference resolver, topic switch, resume goal và các câu nói vu vơ vẫn chưa được giải quyết đồng nhất trên mọi domain.
 
@@ -630,4 +727,3 @@ Không cần gửi secrets, raw CRM customer records hoặc toàn bộ Redis dum
 - Ollama timeout hoặc malformed JSON không làm mất câu trả lời grounded.
 - Mỗi dynamic answer có source/freshness phù hợp.
 - Không phải thêm một regex mới cho mỗi paraphrase mới.
-
