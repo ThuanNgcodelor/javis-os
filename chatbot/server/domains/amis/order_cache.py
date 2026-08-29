@@ -3,7 +3,7 @@
 The AMIS warm job may contain raw customer and sale-order records.  Public
 Redis snapshots must never expose those records, so this module publishes only
 the allowlisted server-side matching data: order code variants, HMAC'd phones,
-status, delivery status and approved order dates. A chat lookup must provide
+approved shop display name, status, delivery status and approved order dates. A chat lookup must provide
 both an exact order code and the phone that belongs to that order.
 """
 
@@ -85,12 +85,13 @@ def build_order_lookup_snapshot(
     config: AmisConfig,
     synced_at: str,
 ) -> dict[str, Any] | None:
-    """Create a minimal private cache without raw PII or order-line values."""
+    """Create a minimal private cache without raw CRM or order-line values."""
     secret = str(config.order_lookup_hmac_secret or "")
     if not secret:
         return None
 
     phones_by_account: dict[str, set[str]] = {}
+    shop_names_by_account: dict[str, str] = {}
     for customer in datasets.get("customers") or []:
         if not isinstance(customer, dict):
             continue
@@ -99,10 +100,14 @@ def build_order_lookup_snapshot(
             for field in ("office_tel", "phone", "mobile_phone", "tel", "chatbot_public_phone")
         }
         phones.discard("")
-        if not phones:
-            continue
+        customer_name = _safe_text(
+            customer.get("account_name") or customer.get("account_short_name")
+        )
         for key in _account_keys(customer):
-            phones_by_account.setdefault(key, set()).update(phones)
+            if phones:
+                phones_by_account.setdefault(key, set()).update(phones)
+            if customer_name:
+                shop_names_by_account.setdefault(key, customer_name)
 
     items: list[dict[str, Any]] = []
     for order in datasets.get("sale_orders") or []:
@@ -126,13 +131,22 @@ def build_order_lookup_snapshot(
             order.get("modified_date") or order.get("updated_at") or order.get("created_date"),
             limit=80,
         )
+        shop_name = _safe_text(
+            order.get("account_name") or order.get("account_short_name")
+        )
+        if not shop_name:
+            for account_key in sorted(_account_keys(order)):
+                shop_name = shop_names_by_account.get(account_key, "")
+                if shop_name:
+                    break
         items.append({
             "order_code": display_code,
             "order_keys": sorted(keys),
             "phone_hmacs": sorted({_phone_digest(phone, secret) for phone in phones}),
+            "shop_name": shop_name,
             "status": status,
-            # Customer-visible allowlist. Do not add customer names, phone
-            # numbers, addresses, prices, debts, invoices or free-text notes.
+            # Customer-visible allowlist after ownership verification. Do not
+            # add phone numbers, addresses, prices, debts, invoices or notes.
             "delivery_status": _safe_text(order.get("delivery_status")),
             "sale_order_date": _safe_text(order.get("sale_order_date"), limit=80),
             "deadline_date": _safe_text(order.get("deadline_date"), limit=80),
@@ -284,6 +298,7 @@ async def lookup_cached_order_status(
     return {
         "outcome": "found",
         "order_code": str(matched.get("order_code") or order_code),
+        "shop_name": str(matched.get("shop_name") or ""),
         "status": str(matched.get("status") or "Đang xử lý"),
         "delivery_status": str(matched.get("delivery_status") or ""),
         "sale_order_date": str(matched.get("sale_order_date") or ""),

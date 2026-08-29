@@ -1232,10 +1232,13 @@ def _format_order_lookup_reply(result: dict[str, Any]) -> tuple[str, str]:
         order_date = _display_date(result.get("sale_order_date"))
         deadline_date = _display_date(result.get("deadline_date"))
         updated_at = _display_updated_at(result.get("order_updated_at"))
+        shop_name = str(result.get("shop_name") or "").strip()
         lines = [
             f"Dạ mình đã tìm thấy đơn {order_code}:",
-            f"- Tình trạng đơn: {status}",
         ]
+        if shop_name:
+            lines.append(f"- Tên cửa hàng: {shop_name}")
+        lines.append(f"- Tình trạng đơn: {status}")
         if delivery_status:
             lines.append(f"- Tình trạng giao hàng: {delivery_status}")
         if order_date:

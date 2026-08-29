@@ -223,6 +223,7 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         cached_lookup = AsyncMock(return_value={
             "outcome": "found",
             "order_code": "00005065",
+            "shop_name": "Cửa hàng Minh An",
             "status": "Đã thực hiện",
             "delivery_status": "Đã giao hàng",
             "sale_order_date": "2026-08-28",
@@ -372,6 +373,7 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         answer, reason = chat_pipeline._format_order_lookup_reply({
             "outcome": "found",
             "order_code": "00005065",
+            "shop_name": "Cửa hàng Minh An",
             "status": "Đã thực hiện",
             "sale_order_date": "2026-08-26T00:00:00+07:00",
             "order_updated_at": "2026-08-28T09:03:40+07:00",
@@ -380,6 +382,7 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reason, "ORDER_CACHE_MATCHED")
         self.assertIn("Cập nhật gần nhất: 09:03 ngày 28/08/2026", answer)
+        self.assertIn("Tên cửa hàng: Cửa hàng Minh An", answer)
         self.assertNotIn("đồng bộ", answer.lower())
 
     async def test_cfc_accented_acknowledgement_does_not_fall_back_to_general_support(self):

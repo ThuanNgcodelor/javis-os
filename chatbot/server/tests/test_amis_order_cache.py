@@ -42,7 +42,7 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
             {
                 "customers": [{
                     "account_number": "KH001",
-                    "account_name": "Khách hàng không được lộ",
+                    "account_name": "Cửa hàng Minh An",
                     "office_tel": "0901 234 567",
                 }],
                 "sale_orders": [{
@@ -65,12 +65,13 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.snapshot["record_count"], 1)
         self.assertIn("DH-2026-889", encoded)
         self.assertNotIn("0901 234 567", encoded)
-        self.assertNotIn("Khách hàng không được lộ", encoded)
+        self.assertIn("Cửa hàng Minh An", encoded)
         self.assertNotIn("account_code", encoded)
         self.assertIn("phone_hmacs", encoded)
         self.assertIn("delivery_status", encoded)
         self.assertIn("sale_order_date", encoded)
-        self.assertNotIn("account_name", encoded)
+        self.assertNotIn('"account_name"', encoded)
+        self.assertIn('"shop_name"', encoded)
 
     async def test_exact_order_code_and_matching_phone_returns_status(self):
         redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})
@@ -84,6 +85,7 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["outcome"], "found")
         self.assertEqual(result["order_code"], "DH-2026-889")
+        self.assertEqual(result["shop_name"], "Cửa hàng Minh An")
         self.assertEqual(result["status"], "Đang giao hàng")
         self.assertEqual(result["delivery_status"], "Đã giao hàng")
         self.assertEqual(result["sale_order_date"], "2026-08-28")
