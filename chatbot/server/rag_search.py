@@ -9,12 +9,14 @@ Hỗ trợ:
 """
 
 import csv
+import hashlib
 import json
 import logging
 import re
 import struct
+import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -32,6 +34,7 @@ _knowledge_items: dict[str, list[dict]] = {"zeo": [], "cfc": []}
 _intent_map: dict[str, dict[str, dict]] = {"zeo": {}, "cfc": {}}
 _phrase_map: dict[str, dict[str, str]] = {"zeo": {}, "cfc": {}}
 _cache_loaded: dict[str, bool] = {"zeo": False, "cfc": False}
+_cache_status: dict[str, dict[str, Any]] = {"zeo": {}, "cfc": {}}
 
 VI_QUERY_ALIASES = {
     "k": "khong",
@@ -198,11 +201,13 @@ async def refresh_knowledge_cache(
             raise ValueError("snapshot_key is outside the approved active/candidate keys")
         items: list[dict] = []
         source = "redis"
+        snapshot_hash = ""
 
         try:
             raw_snap = await r.get(kb_key)
             if raw_snap:
                 raw_str = raw_snap.decode("utf-8") if isinstance(raw_snap, bytes) else str(raw_snap)
+                snapshot_hash = "sha256:" + hashlib.sha256(raw_str.encode("utf-8")).hexdigest()
                 data = json.loads(raw_str)
                 if isinstance(data, list):
                     items = data
@@ -222,6 +227,9 @@ async def refresh_knowledge_cache(
                 raise RuntimeError(f"REDIS_SNAPSHOT_EMPTY_OR_INVALID:{b}")
             items = _load_csv_fallback(b)
             source = "csv_fallback"
+            snapshot_hash = "sha256:" + hashlib.sha256(
+                json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
 
         eligible_items: list[dict] = []
         next_intent_map: dict[str, dict] = {}
@@ -256,14 +264,40 @@ async def refresh_knowledge_cache(
         _intent_map[b] = next_intent_map
         _phrase_map[b] = next_phrase_map
         _cache_loaded[b] = True
+        _cache_status[b] = {
+            "status": "ok",
+            "source": source,
+            "snapshot_key": kb_key,
+            "snapshot_hash": snapshot_hash,
+            "item_count": len(eligible_items),
+            "phrase_count": len(next_phrase_map),
+            "loaded_at": datetime.now(timezone.utc).isoformat(),
+        }
         refresh_meta["brands"][b] = {
             "source": source,
             "snapshot_key": kb_key,
             "item_count": len(eligible_items),
             "phrase_count": len(next_phrase_map),
+            "snapshot_hash": snapshot_hash,
+            "loaded_at": _cache_status[b]["loaded_at"],
         }
         logger.info("In-memory knowledge cache loaded for %s: %d items, %d indexed phrases", b.upper(), len(eligible_items), len(next_phrase_map))
     return refresh_meta
+
+
+def get_knowledge_runtime_status(brand: Optional[str] = None) -> dict[str, Any]:
+    """Read-only in-process cache status; unknown stays explicit after a restart."""
+    brands = [brand.lower()] if brand else ["zeo", "cfc"]
+    return {
+        "schema_version": 1,
+        "brands": {
+            current: {
+                "loaded": bool(_cache_loaded.get(current)),
+                **dict(_cache_status.get(current) or {}),
+            }
+            for current in brands if current in {"zeo", "cfc"}
+        },
+    }
 
 
 async def _ensure_cache_loaded(brand: str):

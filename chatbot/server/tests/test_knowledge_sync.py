@@ -88,10 +88,14 @@ class KnowledgeSyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["snapshot_validated"])
         self.assertTrue(result["vector_rebuilt"])
         self.assertTrue(result["hot_cache_refreshed"])
+        self.assertTrue(result["source_snapshot_hash"].startswith("sha256:"))
         self.assertEqual(result["errors"], 0)
         self.assertEqual(len(fake.hsets), 1)
         refresh.assert_awaited_once_with("cfc", strict=True)
         self.assertTrue(fake.closed)
+        status = knowledge_sync.get_sync_runtime_status("cfc")["brands"]["cfc"]
+        self.assertTrue(status["complete"])
+        self.assertEqual(status["source_snapshot_hash"], result["source_snapshot_hash"])
 
     async def test_embedding_failure_does_not_mutate_vector_or_hot_cache(self):
         fake = FakeRedis(_snapshot(_active_item()))

@@ -7,10 +7,12 @@ Hoặc gọi qua API: POST /sync?brand=zeo
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,6 +21,7 @@ import redis.asyncio as aioredis
 from embedder import embed_text, get_embed_dim, vec_to_bytes
 
 logger = logging.getLogger(__name__)
+_sync_runtime_status: dict[str, dict[str, Any]] = {"zeo": {}, "cfc": {}}
 
 
 class KnowledgeSyncError(RuntimeError):
@@ -105,6 +108,14 @@ def get_kb_key(brand: str, cfg: dict) -> str:
     return cfg["rag"]["zeo_kb_key"]
 
 
+def get_sync_runtime_status(brand: Optional[str] = None) -> dict[str, Any]:
+    brands = [brand.lower()] if brand else ["zeo", "cfc"]
+    return {
+        "schema_version": 1,
+        "brands": {current: dict(_sync_runtime_status.get(current) or {}) for current in brands if current in {"zeo", "cfc"}},
+    }
+
+
 async def ensure_index(r: aioredis.Redis, index_name: str, embed_dim: int) -> None:
     """Tạo RediSearch Vector Index nếu chưa có."""
     try:
@@ -180,6 +191,8 @@ async def sync_brand(brand: str = "zeo", snapshot_key: Optional[str] = None) -> 
             raise KnowledgeSyncError("snapshot_validation", "SNAPSHOT_EMPTY_OR_INVALID", checkpoints)
 
         checkpoints["snapshot_validated"] = True
+        raw_text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        source_snapshot_hash = "sha256:" + hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
 
         # Prepare and validate every customer-facing vector before mutating the index.
         prepared_docs: list[tuple[str, dict[str, Any]]] = []
@@ -270,13 +283,14 @@ async def sync_brand(brand: str = "zeo", snapshot_key: Optional[str] = None) -> 
             ) from exc
         checkpoints["hot_cache_refreshed"] = True
         logger.info("✓ [%s] In-memory hot knowledge cache refreshed", normalized_brand.upper())
-
-        return {
+        completed_at = datetime.now(timezone.utc).isoformat()
+        result = {
             "status": "ok",
             "complete": True,
             "brand": normalized_brand,
             "index": index_name,
             "snapshot_key": requested_kb_key,
+            "source_snapshot_hash": source_snapshot_hash,
             **checkpoints,
             "synced": synced,
             "skipped": skipped,
@@ -285,6 +299,26 @@ async def sync_brand(brand: str = "zeo", snapshot_key: Optional[str] = None) -> 
             "total": len(items),
             "hot_cache": refresh_result,
         }
+        _sync_runtime_status[normalized_brand] = {
+            "status": "ok",
+            "complete": True,
+            "completed_at": completed_at,
+            "snapshot_key": requested_kb_key,
+            "source_snapshot_hash": source_snapshot_hash,
+            "vector_source_snapshot_hash": source_snapshot_hash,
+            "hot_cache_snapshot_hash": str(
+                ((refresh_result.get("brands") or {}).get(normalized_brand) or {}).get("snapshot_hash") or ""
+            ),
+            "checkpoints": dict(checkpoints),
+            "synced": synced,
+        }
+        setter = getattr(r, "set", None)
+        if callable(setter):
+            await setter(
+                f"{normalized_brand}:knowledge:sync:last-complete",
+                json.dumps(_sync_runtime_status[normalized_brand], ensure_ascii=False, separators=(",", ":")),
+            )
+        return result
     finally:
         await r.aclose()
 

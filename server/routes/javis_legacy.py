@@ -5,7 +5,7 @@ from typing import Any
 # pyrefly: ignore [missing-import]
 import httpx
 # pyrefly: ignore [missing-import]
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 # pyrefly: ignore [missing-import]
 from pydantic import BaseModel
 
@@ -41,6 +41,21 @@ def _make_router() -> APIRouter:
     @router.get("/legacy-javis/status")
     async def legacy_javis_status():
         return legacy_javis_runtime.status(_legacy_settings())
+
+    @router.get("/admin/runtime-evidence")
+    async def runtime_evidence_status_endpoint(
+        request: Request,
+        x_internal_token: str = Header("", alias="X-Internal-Token"),
+    ):
+        """Internal-only diagnostics; never returns prompt, PII or credentials."""
+        try:
+            from domains.amis.routes import _require_internal
+            _require_internal(request, x_internal_token)
+            return await legacy_javis_runtime.runtime_evidence_status(_legacy_settings())
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _legacy_error(exc) from exc
 
     @router.post("/api/chat-pipeline")
     async def chat_pipeline_endpoint(payload: dict[str, Any]):

@@ -1,7 +1,7 @@
 import json
 import logging
 from typing import List, Dict, Any, Optional
-from ai_engine import call_ollama
+from ai_engine import generate_ai_text
 
 logger = logging.getLogger("cfc_semantic_planner")
 
@@ -45,17 +45,20 @@ async def plan_cfc_intents(text: str, conversation_state: Dict[str, Any] = None)
         for turn in recent[-2:]:
             messages.append({"role": "user", "content": turn.get("user", "")})
             messages.append({"role": "assistant", "content": turn.get("bot", "")})
+    if messages:
+        history = "\n".join(f"{item['role']}: {item['content']}" for item in messages)
+        prompt = f"Lịch sử gần nhất:\n{history}\n\n{prompt}"
 
     try:
-        response_text = await call_ollama(
+        result = await generate_ai_text(
             prompt=prompt,
             system_prompt=_PLANNER_SYSTEM_PROMPT,
-            model="qwen2.5:7b-instruct",
+            preferred_provider="ollama",
             temperature=0.1,
-            num_predict=512,
-            messages=messages,
-            output_format="json"
+            output_format="json",
+            prompt_id="cfc.semantic-plan.v1",
         )
+        response_text = result.get("text", "") if result.get("success") else ""
         if response_text:
             plan = json.loads(response_text)
             if isinstance(plan, list):

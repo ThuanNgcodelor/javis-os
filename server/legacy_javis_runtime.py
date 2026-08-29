@@ -209,3 +209,27 @@ def status(settings: dict | None = None) -> dict[str, Any]:
             "/api/shopee/refresh-cache",
         ],
     }
+
+
+async def runtime_evidence_status(settings: dict | None = None) -> dict[str, Any]:
+    """Read-only, redacted Phase 1 diagnostics for the legacy chatbot worker."""
+    mods = load_modules(settings)
+    from runtime_manifest import runtime_manifest_status
+    from evidence_trace import latest_provider_trace
+    from knowledge_sync import get_sync_runtime_status
+
+    rag_status = mods.rag_search.get_knowledge_runtime_status()
+    amis_status: dict[str, Any] = {"status": "unknown"}
+    try:
+        from domains.amis.config import load_amis_config
+        amis_status = {"status": "ok", "config": load_amis_config().safe_status()}
+    except Exception:
+        pass
+    return {
+        "schema_version": 1,
+        "runtime": runtime_manifest_status(),
+        "knowledge_hot_cache": rag_status,
+        "knowledge_sync": get_sync_runtime_status(),
+        "provider_trace_last_completed": latest_provider_trace(),
+        "amis": amis_status,
+    }

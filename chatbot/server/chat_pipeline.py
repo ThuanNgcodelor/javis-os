@@ -38,9 +38,11 @@ from conversation_store import (
 from dialogue_router import build_route_decision
 from domains.amis.config import load_amis_config
 from domains.amis.order_cache import lookup_cached_order_status
+from evidence_trace import begin_request_trace, build_answer_trace, end_request_trace
 from grounding_policy import assess_grounding
 from message_idempotency import begin_message, complete_message, release_message
-from rag_search import get_redis, get_faq_by_intent, semantic_search, refresh_knowledge_cache
+from rag_search import get_redis, get_faq_by_intent, get_knowledge_runtime_status, semantic_search, refresh_knowledge_cache
+from runtime_manifest import get_runtime_manifest
 from shopee_matcher import (
     load_shopee_catalog,
     match_shopee_product,
@@ -2355,6 +2357,8 @@ class ChatPipelineResponse(BaseModel):
     idempotency_status: str = ""
     message_id: str = ""
     suppress_send: bool = False
+    answer_id: str = ""
+    runtime_manifest_id: str = ""
 
 
 async def _sheet_fast_response(
@@ -5580,6 +5584,31 @@ async def _finalize_pipeline_response(req: ChatPipelineRequest, response: ChatPi
         }
         _local_session_cache[session_key] = snapshot
 
+    trace = snapshot.get("last_trace") or {}
+    if not isinstance(trace, dict):
+        trace = {}
+        snapshot["last_trace"] = trace
+    if "grounding" not in trace:
+        trace["grounding"] = assess_grounding(
+            intent=response.intent,
+            source_id=str(trace.get("source_id") or ""),
+            fallback_reason=str(response.fallback_reason or ""),
+        ).to_dict()
+    knowledge_status = get_knowledge_runtime_status(brand)
+    source_snapshot = (knowledge_status.get("brands") or {}).get(brand) or {}
+    answer_trace = build_answer_trace(
+        answer=response.answer,
+        intent=response.intent,
+        source_id=str(trace.get("source_id") or ""),
+        fallback_reason=str(response.fallback_reason or ""),
+        query_plan=trace.get("query_plan") if isinstance(trace.get("query_plan"), dict) else {},
+        source_snapshot=source_snapshot,
+    )
+    trace["runtime_manifest_id"] = answer_trace["runtime_manifest_id"]
+    trace["answer_trace"] = answer_trace
+    response.answer_id = answer_trace["answer_id"]
+    response.runtime_manifest_id = answer_trace["runtime_manifest_id"]
+
     now_str = datetime.now(timezone.utc).isoformat()
     revision = int(snapshot.get("revision") or 0) + 1
     snapshot["revision"] = revision
@@ -5599,13 +5628,6 @@ async def _finalize_pipeline_response(req: ChatPipelineRequest, response: ChatPi
         "timestamp": now_str,
         "revision": revision,
     }
-    trace = snapshot.get("last_trace") or {}
-    if isinstance(trace, dict) and "grounding" not in trace:
-        trace["grounding"] = assess_grounding(
-            intent=response.intent,
-            source_id=str(trace.get("source_id") or ""),
-            fallback_reason=str(response.fallback_reason or ""),
-        ).to_dict()
     if not all(callable(getattr(redis_client, name, None)) for name in ("set", "rpush", "ltrim")):
         return
     try:
@@ -5632,7 +5654,9 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
     if decision.status == "cached" and decision.cached_response:
         cached = dict(decision.cached_response)
         cached.update({"duplicate": True, "idempotency_status": "cached", "message_id": message_id})
-        return ChatPipelineResponse(**cached)
+        response = ChatPipelineResponse(**cached)
+        response.runtime_manifest_id = response.runtime_manifest_id or get_runtime_manifest()["runtime_manifest_id"]
+        return response
     if decision.status == "in_flight":
         return ChatPipelineResponse(
             answer="",
@@ -5645,6 +5669,7 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
             message_id=message_id,
         )
 
+    trace_token = begin_request_trace()
     try:
         if hasattr(redis_client, "set"):
             async with sender_lease(
@@ -5675,6 +5700,8 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
     except Exception:
         await release_message(redis_client, decision)
         raise
+    finally:
+        end_request_trace(trace_token)
 
 
 def _fast_response(answer: str, intent: str, brand: str, start_time: float, lead_stage: str = "new", fallback_reason: str = "") -> ChatPipelineResponse:

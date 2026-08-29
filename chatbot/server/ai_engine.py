@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Optional, List
 
 import httpx
+from evidence_trace import provider_trace, record_provider_attempt
 from shopee_matcher import _fold
 
 logger = logging.getLogger(__name__)
@@ -47,11 +48,14 @@ async def call_gemini(
     model: str = "gemini-2.0-flash",
     temperature: float = 0.3,
     output_format: Optional[str] = None,
+    prompt_id: str = "unspecified",
+    execution_mode: str = "cloud",
 ) -> Optional[str]:
     """Gọi Google Gemini API (Miễn phí 15 requests/phút)."""
     cfg = _load_settings().get("ai_providers", {}).get("gemini", {})
     key = api_key or cfg.get("api_key", "")
     if not key:
+        record_provider_attempt(provider="gemini", model=model, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="skipped", reason_code="CREDENTIAL_UNAVAILABLE", latency_ms=0)
         return None
 
     model_name = model or cfg.get("model", "gemini-2.0-flash")
@@ -73,6 +77,7 @@ async def call_gemini(
     if output_format == "json":
         payload["generationConfig"]["responseMimeType"] = "application/json"
 
+    started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(url, json=payload)
@@ -82,9 +87,14 @@ async def call_gemini(
             if candidates:
                 parts = candidates[0].get("content", {}).get("parts", [])
                 if parts:
-                    return parts[0].get("text", "").strip()
+                    text = parts[0].get("text", "").strip()
+                    record_provider_attempt(provider="gemini", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="success" if text else "empty", latency_ms=(time.perf_counter() - started) * 1000)
+                    return text or None
     except Exception as e:
-        logger.warning("Lỗi khi gọi Google Gemini API: %s", e)
+        record_provider_attempt(provider="gemini", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="error", reason_code=type(e).__name__, latency_ms=(time.perf_counter() - started) * 1000)
+        logger.warning("Lỗi khi gọi Google Gemini API: %s", type(e).__name__)
+    else:
+        record_provider_attempt(provider="gemini", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="empty", latency_ms=(time.perf_counter() - started) * 1000)
     return None
 
 
@@ -95,11 +105,14 @@ async def call_openrouter(
     model: str = "google/gemini-2.0-flash-exp:free",
     temperature: float = 0.3,
     output_format: Optional[str] = None,
+    prompt_id: str = "unspecified",
+    execution_mode: str = "cloud",
 ) -> Optional[str]:
     """Gọi OpenRouter API (Hỗ trợ các model miễn phí)."""
     cfg = _load_settings().get("ai_providers", {}).get("openrouter", {})
     key = api_key or cfg.get("api_key", "")
     if not key:
+        record_provider_attempt(provider="openrouter", model=model, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="skipped", reason_code="CREDENTIAL_UNAVAILABLE", latency_ms=0)
         return None
 
     model_name = model or cfg.get("model", "google/gemini-2.0-flash-exp:free")
@@ -124,6 +137,7 @@ async def call_openrouter(
     if output_format == "json":
         payload["response_format"] = {"type": "json_object"}
 
+    started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=35.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
@@ -131,9 +145,14 @@ async def call_openrouter(
             data = resp.json()
             choices = data.get("choices", [])
             if choices:
-                return choices[0].get("message", {}).get("content", "").strip()
+                text = choices[0].get("message", {}).get("content", "").strip()
+                record_provider_attempt(provider="openrouter", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="success" if text else "empty", latency_ms=(time.perf_counter() - started) * 1000)
+                return text or None
     except Exception as e:
-        logger.warning("Lỗi khi gọi OpenRouter API: %s", e)
+        record_provider_attempt(provider="openrouter", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="error", reason_code=type(e).__name__, latency_ms=(time.perf_counter() - started) * 1000)
+        logger.warning("Lỗi khi gọi OpenRouter API: %s", type(e).__name__)
+    else:
+        record_provider_attempt(provider="openrouter", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="empty", latency_ms=(time.perf_counter() - started) * 1000)
     return None
 
 
@@ -144,11 +163,14 @@ async def call_groq(
     model: str = "llama-3.3-70b-versatile",
     temperature: float = 0.3,
     output_format: Optional[str] = None,
+    prompt_id: str = "unspecified",
+    execution_mode: str = "cloud",
 ) -> Optional[str]:
     """Gọi Groq Cloud API (Miễn phí, siêu nhanh)."""
     cfg = _load_settings().get("ai_providers", {}).get("groq", {})
     key = api_key or cfg.get("api_key", "")
     if not key:
+        record_provider_attempt(provider="groq", model=model, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="skipped", reason_code="CREDENTIAL_UNAVAILABLE", latency_ms=0)
         return None
 
     primary_model = model or cfg.get("model", "openai/gpt-oss-120b")
@@ -176,6 +198,7 @@ async def call_groq(
         }
         if output_format == "json":
             payload["response_format"] = {"type": "json_object"}
+        started = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
                 resp = await client.post(url, headers=headers, json=payload)
@@ -183,13 +206,19 @@ async def call_groq(
                     data = resp.json()
                     choices = data.get("choices", [])
                     if choices:
-                        return choices[0].get("message", {}).get("content", "").strip()
+                        text = choices[0].get("message", {}).get("content", "").strip()
+                        record_provider_attempt(provider="groq", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="success" if text else "empty", latency_ms=(time.perf_counter() - started) * 1000)
+                        return text or None
+                    record_provider_attempt(provider="groq", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="empty", latency_ms=(time.perf_counter() - started) * 1000)
                 elif resp.status_code == 404:
+                    record_provider_attempt(provider="groq", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="error", reason_code="HTTP_404", latency_ms=(time.perf_counter() - started) * 1000)
                     continue  # thử model tiếp theo
                 else:
-                    logger.warning("Groq API error (%s): %s", resp.status_code, resp.text[:150])
+                    record_provider_attempt(provider="groq", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="error", reason_code=f"HTTP_{resp.status_code}", latency_ms=(time.perf_counter() - started) * 1000)
+                    logger.warning("Groq API error status=%s", resp.status_code)
         except Exception as e:
-            logger.warning("Lỗi khi gọi Groq API (%s): %s", model_name, e)
+            record_provider_attempt(provider="groq", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="error", reason_code=type(e).__name__, latency_ms=(time.perf_counter() - started) * 1000)
+            logger.warning("Lỗi khi gọi Groq API (%s): %s", model_name, type(e).__name__)
     return None
 
 
@@ -201,6 +230,8 @@ async def call_ollama(
     num_predict: int = 1024,
     messages: Optional[List[dict[str, str]]] = None,
     output_format: Optional[str] = None,
+    prompt_id: str = "unspecified",
+    execution_mode: str = "local",
 ) -> Optional[str]:
     """Gọi Ollama Local (Mặc định chạy offline)."""
     cfg = _load_settings().get("ollama", {})
@@ -225,14 +256,18 @@ async def call_ollama(
     if output_format:
         payload["format"] = output_format
 
+    started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=40.0) as client:
             resp = await client.post(url, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("message", {}).get("content", "").strip()
+            text = data.get("message", {}).get("content", "").strip()
+            record_provider_attempt(provider="ollama", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="success" if text else "empty", latency_ms=(time.perf_counter() - started) * 1000)
+            return text or None
     except Exception as e:
-        logger.warning("Lỗi khi gọi Ollama Local: %s", e)
+        record_provider_attempt(provider="ollama", model=model_name, prompt=prompt, system_prompt=system_prompt, prompt_id=prompt_id, execution_mode=execution_mode, status="error", reason_code=type(e).__name__, latency_ms=(time.perf_counter() - started) * 1000)
+        logger.warning("Lỗi khi gọi Ollama Local: %s", type(e).__name__)
     return None
 
 
@@ -309,7 +344,8 @@ Schema:
                 system_prompt=system_prompt,
                 preferred_provider=preferred_provider,
                 temperature=0.0,
-                output_format="json"
+                output_format="json",
+                prompt_id="conversation.plan.v1",
             ),
             timeout=max(0.3, min(float(timeout), 8.0)),
         )
@@ -462,7 +498,8 @@ Chỉ xuất JSON object đúng schema."""
                 system_prompt=system_prompt,
                 preferred_provider=preferred_provider,
                 temperature=0.0,
-                output_format="json"
+                output_format="json",
+                prompt_id="intent.plan.v1",
             ),
             timeout=timeout,
         )
@@ -519,6 +556,7 @@ async def generate_ai_text(
     preferred_provider: Optional[str] = None,
     temperature: float = 0.3,
     output_format: Optional[str] = None,
+    prompt_id: str = "unspecified",
 ) -> dict:
     """
     Sinh phản hồi AI với cơ chế linh hoạt:
@@ -547,25 +585,31 @@ async def generate_ai_text(
     for provider in providers_order:
         res = None
         if provider == "gemini":
-            res = await call_gemini(prompt, system_prompt, temperature=temperature, output_format=output_format)
+            res = await call_gemini(prompt, system_prompt, temperature=temperature, output_format=output_format, prompt_id=prompt_id, execution_mode=execution_mode)
         elif provider == "openrouter":
-            res = await call_openrouter(prompt, system_prompt, temperature=temperature, output_format=output_format)
+            res = await call_openrouter(prompt, system_prompt, temperature=temperature, output_format=output_format, prompt_id=prompt_id, execution_mode=execution_mode)
         elif provider == "groq":
-            res = await call_groq(prompt, system_prompt, temperature=temperature, output_format=output_format)
+            res = await call_groq(prompt, system_prompt, temperature=temperature, output_format=output_format, prompt_id=prompt_id, execution_mode=execution_mode)
         elif provider == "ollama":
-            res = await call_ollama(prompt, system_prompt, temperature=temperature, output_format=output_format)
+            res = await call_ollama(prompt, system_prompt, temperature=temperature, output_format=output_format, prompt_id=prompt_id, execution_mode=execution_mode)
 
         if res:
+            generator = provider_trace()
             return {
                 "success": True,
                 "provider": provider,
+                "model": generator["model"],
                 "text": res,
+                "generator": generator,
             }
 
+    generator = provider_trace()
     return {
         "success": False,
         "provider": "none",
+        "model": "",
         "text": "Không thể kết nối tới bất kỳ nhà cung cấp AI nào. Vui lòng kiểm tra API key hoặc Ollama.",
+        "generator": generator,
     }
 
 
@@ -918,6 +962,7 @@ Hãy soạn câu trả lời CSKH 5 sao hoàn chỉnh gửi cho khách:"""
                 system_prompt=system_prompt,
                 preferred_provider="ollama",
                 temperature=0.25,
+                prompt_id="cskh.answer.v1",
             ),
             timeout=timeout,
         )

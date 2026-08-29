@@ -1,9 +1,45 @@
 # Phase 1 — Runtime manifest, provider trace và evidence contract
 
-Trạng thái: `PLANNED`  
+Trạng thái: `BLOCKED — LOCAL IMPLEMENTATION COMPLETE; chờ canary/live evidence`
 Ưu tiên: P1, nền tảng cho source challenge và rollout  
 Ước lượng: 3–5 ngày  
 Phụ thuộc: Phase 0 exit gate đạt phần server/grounding
+
+> Cập nhật 2026-08-29, local working tree sau Phase 0. Đã sửa và kiểm thử ở local; **không** push/deploy/activate workflow, không đổi credential và không truy cập CRM live. Chưa được đánh dấu `DONE`: runtime đang deploy, Redis snapshot, vector index và credential/provider live vẫn phải được canary có owner phê duyệt xác nhận.
+
+## Kết quả triển khai local
+
+| Work package | Trạng thái local | Thay đổi đã thực hiện |
+|---|---|---|
+| WP1 runtime manifest | Hoàn thành | `runtime_manifest.py` tạo fingerprint immutable khi worker import: git SHA/dirty, hash source đang chạy, config đã redacted, version prompt/policy và Python version. `runtime_manifest_id` đi cùng response/history. |
+| WP2 provider trace | Hoàn thành cho đường `generate_ai_text()` | Gemini, OpenRouter, Groq, Ollama ghi attempt/model thực tế, mode, status, latency, prompt ID/hash; không lưu prompt/raw upstream error/API key. CFC semantic planner đi qua adapter này. |
+| WP3 evidence registry | Hoàn thành mức P1 | Mỗi answer có evidence bundle; `FAQ/catalog/public_tool/privileged_tool` là source type hợp lệ. Provider/model không bao giờ được biến thành evidence. |
+| WP4 claim ledger tối thiểu | Hoàn thành mức P1 | Mỗi answer có opaque `answer_id`, claim đã redact PII, evidence IDs và quyết định grounding Phase 0 (`verified`, `unverified`, `blocked`). Đây là ledger để replay/audit, không phải engine tự suy nguồn mới. |
+| WP5 persistence | Hoàn thành | Trace envelope được dual-write vào `last_trace` và history hiện hữu; session cũ tự nhận field mới khi có turn kế tiếp, không reset Redis. |
+| WP6 diagnostics | Hoàn thành local | `GET /admin/runtime-evidence` nội bộ-only trả manifest, hot cache, lần sync hoàn tất trong worker, provider trace cuối và trạng thái AMIS đã redacted. Không refresh/call AI. |
+| WP7 sync/cache observability | Hoàn thành local | Snapshot hash, hot-cache hash/count/time và checkpoint vector/hot-cache được ghi khi sync chỉ hoàn tất thành công; Redis có bản `*:knowledge:sync:last-complete` nếu writer hỗ trợ. |
+
+### File thay đổi
+
+- Mới: `chatbot/server/runtime_manifest.py`, `chatbot/server/evidence_trace.py`, `chatbot/server/tests/test_phase1_runtime_evidence.py`.
+- Cập nhật: `ai_engine.py`, `cfc_semantic_planner.py`, `chat_pipeline.py`, `rag_search.py`, `knowledge_sync.py`, `server/legacy_javis_runtime.py`, `server/routes/javis_legacy.py`, `test_knowledge_sync.py`.
+- Không đụng workflow n8n trong Phase 1 này.
+
+### Bằng chứng kiểm thử local
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `py_compile` các module Phase 1 | OK |
+| `git diff --check` | OK |
+| Phase 1 + grounding/query/sync/CFC memory regressions | `61/61 OK` ngày 2026-08-29 |
+| `test_conversation_orchestrator` đầy đủ | Chưa dùng làm exit gate: 7 test cũ patch API `plan_conversation_turn_with_ollama` đã không còn tồn tại từ trước Phase 1; không sửa/ép quay lại contract đó trong phase trace này. |
+
+### Điều kiện canary trước khi `DONE`
+
+1. Gọi `/admin/runtime-evidence` từ internal network/token, đối chiếu `runtime_manifest_id` với checkout/revision thực đang chạy.
+2. Chạy một FAQ/catalog có source, một safe fallback và một request có provider; xác nhận history có `answer_id`, evidence/claim, attempt/model đúng thực tế và không có PII/secret.
+3. Chạy sync ZeO + CFC được phê duyệt, đối chiếu source snapshot hash, vector checkpoint và hot-cache hash.
+4. Xác minh diagnostics AMIS chỉ là trạng thái cấu hình/cache; không được suy diễn thành realtime nếu chưa có adapter Phase 3.
 
 ## 1. Mục tiêu
 
@@ -327,4 +363,3 @@ Rollback:
 - [ ] Secret/PII redaction suite xanh.
 - [ ] Critical claim enforcement xanh.
 - [ ] Rollback schema/enforcement được thử.
-
