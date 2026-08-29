@@ -9,6 +9,7 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 import chat_pipeline  # noqa: E402
+import ai_engine  # noqa: E402
 from chat_pipeline import ChatPipelineRequest, process_chat_pipeline  # noqa: E402
 from shopee_matcher import match_price_extreme  # noqa: E402
 
@@ -19,6 +20,21 @@ class FakeRedis:
 
 
 class LlmNluPlannerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_ai_planner_returns_runtime_provider_and_model_without_name_error(self):
+        raw = '{"intent":"product_search","confidence":0.91,"sort":"","need_type":"","category":"","product":"nước giặt","reference":false,"reason":"test"}'
+        with patch(
+            "ai_engine.generate_ai_text",
+            new=AsyncMock(return_value={"text": raw, "provider": "groq", "model": "test-model"}),
+        ):
+            plan = await ai_engine.plan_chat_intent_with_ai(
+                user_query="Zeo có nước giặt không?",
+                brand="zeo",
+            )
+
+        self.assertIsNotNone(plan)
+        self.assertEqual(plan["provider"], "groq")
+        self.assertEqual(plan["model"], "test-model")
+
     async def test_ollama_plan_can_route_unseen_highest_price_wording_to_catalog_tool(self):
         catalog = [
             {
@@ -59,7 +75,7 @@ class LlmNluPlannerTests(unittest.IsolatedAsyncioTestCase):
         chat_pipeline._local_customer_cache.clear()
         with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=FakeRedis())), \
                 patch("chat_pipeline._llm_nlu_config", return_value=("assist", 0.3, 0.72)), \
-                patch("chat_pipeline.plan_chat_intent_with_ollama", side_effect=fake_planner), \
+                patch("chat_pipeline.plan_chat_intent_with_ai", side_effect=fake_planner), \
                 patch("shopee_matcher.load_shopee_catalog", return_value=catalog), \
                 patch("chat_pipeline._async_save_session", new=AsyncMock()):
             res = await process_chat_pipeline(ChatPipelineRequest(

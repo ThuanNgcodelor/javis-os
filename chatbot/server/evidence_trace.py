@@ -87,6 +87,54 @@ def redact_text(value: str, *, limit: int = 360) -> str:
     return text[:limit]
 
 
+def assess_previous_answer_challenge(answer_trace: Any) -> dict[str, Any]:
+    """Resolve a source challenge from the stored Phase-1 ledger only.
+
+    This function intentionally does not retrieve, call a tool or infer a fact.
+    It returns an explicit state for the customer-facing policy layer to phrase.
+    """
+    if not isinstance(answer_trace, dict):
+        return {"status": "missing", "answer_id": "", "claim_ids": [], "source_types": []}
+    answer_id = str(answer_trace.get("answer_id") or "")
+    claims = [item for item in (answer_trace.get("claims") or []) if isinstance(item, dict)]
+    evidence = [item for item in (answer_trace.get("evidence") or []) if isinstance(item, dict)]
+    source_types = sorted({str(item.get("source_type") or "") for item in evidence if item.get("source_type")})
+    claim_ids = [str(item.get("claim_id") or "") for item in claims if item.get("claim_id")]
+    if not answer_id or not claims:
+        return {"status": "missing", "answer_id": answer_id, "claim_ids": claim_ids, "source_types": source_types}
+    now = datetime.now(timezone.utc)
+    expired = False
+    for item in evidence:
+        expires_at = str(item.get("expires_at") or "")
+        if not expires_at:
+            continue
+        try:
+            expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            expired = expired or expires <= now
+        except ValueError:
+            # An unparsable expiry cannot prove freshness.
+            expired = True
+    statuses = {str(item.get("status") or "unverified") for item in claims}
+    if expired:
+        status = "stale"
+    elif statuses == {"verified"} and evidence and all(
+        str(item.get("allowed_audience") or "public") == "public" for item in evidence
+    ):
+        status = "verified"
+    elif "blocked" in statuses:
+        status = "blocked"
+    else:
+        status = "unverified"
+    return {
+        "status": status,
+        "answer_id": answer_id,
+        "claim_ids": claim_ids,
+        "source_types": source_types,
+    }
+
+
 def _source_type(source_id: str) -> str:
     source = str(source_id or "").casefold()
     if source.startswith("amis:internal:"):

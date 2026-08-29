@@ -79,9 +79,18 @@ def _make_router() -> APIRouter:
             raise _legacy_error(exc, 400) from exc
 
     @router.post("/sync")
-    async def sync_knowledge_endpoint(brand: str = Query("zeo", description="'zeo', 'cfc', hoặc 'all'")):
+    async def sync_knowledge_endpoint(
+        brand: str = Query("zeo", description="'zeo', 'cfc', hoặc 'all'"),
+        snapshot_key: str | None = Query(None, description="Approved active/candidate Redis snapshot key"),
+    ):
         try:
-            return await legacy_javis_runtime.sync(brand, _legacy_settings())
+            if brand.lower() == "all" and snapshot_key:
+                raise HTTPException(status_code=400, detail="snapshot_key không dùng được với brand=all")
+            return await legacy_javis_runtime.sync(
+                brand,
+                snapshot_key=snapshot_key,
+                settings=_legacy_settings(),
+            )
         except legacy_javis_runtime.LegacyJavisRuntimeError as exc:
             raise _legacy_error(exc, 400) from exc
         except Exception as exc:  # noqa: BLE001 - compatibility boundary

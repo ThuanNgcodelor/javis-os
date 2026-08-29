@@ -204,12 +204,38 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.intent, "cfc_order_status_request")
         self.assertIn("DH-2026-889", result.answer)
         self.assertIn("Đang giao hàng", result.answer)
+        self.assertIn("Nếu bạn cần kiểm tra thêm tình hình giao hoặc nhận hàng", result.answer)
+        self.assertNotIn("2026-08-29T", result.answer)
         self.assertNotIn("chưa kết nối", result.answer.lower())
         self.assertNotIn("CRM", result.answer)
         trace = chat_pipeline._local_session_cache[
             "cfc:session:messenger:order-warm-match"
         ]["last_trace"]
         self.assertEqual(trace["source_id"], "amis:internal:order-warm")
+
+    async def test_order_status_preserves_plain_numeric_order_code_for_warm_lookup(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        cached_lookup = AsyncMock(return_value={
+            "outcome": "found",
+            "order_code": "00005065",
+            "status": "Đang xử lý",
+            "order_updated_at": "2026-08-29T07:45:00+00:00",
+            "synced_at": "2026-08-29T08:00:00+00:00",
+            "source_id": "amis:internal:order-warm",
+        })
+        with redis_patch, faq_patch, profile_patch, nlu_patch, \
+                patch("chat_pipeline.lookup_cached_order_status", new=cached_lookup):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="order-numeric-match",
+                text="Tra cứu giúp tôi đơn 00005065 số điện thoại 0976000085",
+            ))
+
+        cached_lookup.assert_awaited_once()
+        self.assertEqual(cached_lookup.await_args.kwargs["order_code"], "00005065")
+        self.assertEqual(cached_lookup.await_args.kwargs["phone"], "0976000085")
+        self.assertEqual(result.intent, "cfc_order_status_request")
+        self.assertIn("Đang xử lý", result.answer)
 
     async def test_order_status_reports_no_match_without_disclosing_any_order(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
@@ -262,11 +288,25 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn(result.intent, {"cfc_crop_consultation_request", "cfc_dosage_usage_review"})
         self.assertIn("sầu riêng", result.answer)
-        self.assertIn("kỹ sư cần đối chiếu", result.answer)
+        self.assertIn("CFC có các dòng NPK và phân hữu cơ", result.answer)
+        self.assertIn("kỹ sư sẽ đối chiếu", result.answer)
+        self.assertNotIn("số điện thoại", result.answer.lower())
         self.assertNotRegex(result.answer, r"\b\d{1,3}\s*kg/ha\b")
         self.assertNotRegex(result.answer, r"\b\d{1,2}-\d{1,2}-\d{1,2}\b")
         self.assertNotIn("giá xuất xưởng", result.answer.lower())
         self.assertNotIn("miễn phí vận chuyển", result.answer.lower())
+
+    async def test_cfc_accented_acknowledgement_does_not_fall_back_to_general_support(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        with redis_patch, faq_patch, profile_patch, nlu_patch:
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="cfc-acknowledgement",
+                text="À ok",
+            ))
+
+        self.assertEqual(result.intent, "acknowledgement")
+        self.assertNotIn("cần admin hỗ trợ gì", result.answer.lower())
 
     async def test_source_challenge_retracts_previous_ungrounded_details(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()

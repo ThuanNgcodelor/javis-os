@@ -278,9 +278,25 @@ def latest_tool_result(
     if not isinstance(results, list):
         return None
     for result in reversed(results):
-        if isinstance(result, dict) and (not tool or result.get("tool") == tool):
+        if isinstance(result, dict) and not _tool_result_expired(result) and (not tool or result.get("tool") == tool):
             return result
     return None
+
+
+def _tool_result_expired(result: dict[str, Any]) -> bool:
+    """Reject stale references rather than silently reusing prior public data."""
+    expires_at = result.get("expires_at")
+    if expires_at in (None, ""):
+        return False
+    try:
+        if isinstance(expires_at, (int, float)):
+            return float(expires_at) <= datetime.now(timezone.utc).timestamp()
+        expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        return expiry <= datetime.now(timezone.utc)
+    except (TypeError, ValueError):
+        return True
 
 
 def _dealer_ordinal_indices(text: str) -> list[int]:
@@ -379,7 +395,7 @@ def select_tool_result_items(
     normalized_text: str = "",
 ) -> list[dict[str, Any]]:
     """Select only entities already present in a stored public tool result."""
-    if not isinstance(tool_result, dict):
+    if not isinstance(tool_result, dict) or _tool_result_expired(tool_result):
         return []
     items = [item for item in (tool_result.get("items") or []) if isinstance(item, dict)]
     if not items:
@@ -458,11 +474,11 @@ async def _collect_conversation_shadow(
     deterministic_plan: dict[str, Any],
     retention_seconds: int,
 ) -> None:
-    from ai_engine import plan_conversation_turn_with_ollama
+    from ai_engine import plan_conversation_turn_with_ai
     from rag_search import get_redis
 
     started = datetime.now(timezone.utc)
-    plan = await plan_conversation_turn_with_ollama(
+    plan = await plan_conversation_turn_with_ai(
         user_query=user_query,
         brand=brand,
         conversation_messages=conversation_messages,

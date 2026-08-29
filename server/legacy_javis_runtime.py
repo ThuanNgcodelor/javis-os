@@ -105,7 +105,11 @@ async def search(payload: dict[str, Any], settings: dict | None = None) -> dict[
     return result if isinstance(result, dict) else {"result": result}
 
 
-async def sync(brand: str = "zeo", settings: dict | None = None) -> dict[str, Any]:
+async def sync(
+    brand: str = "zeo",
+    snapshot_key: str | None = None,
+    settings: dict | None = None,
+) -> dict[str, Any]:
     mods = load_modules(settings)
     brand = str(brand or "zeo").lower()
     if brand == "all":
@@ -115,7 +119,7 @@ async def sync(brand: str = "zeo", settings: dict | None = None) -> dict[str, An
         }
     if brand not in ("zeo", "cfc"):
         raise LegacyJavisRuntimeError("brand phải là 'zeo', 'cfc', hoặc 'all'")
-    return await mods.knowledge_sync.sync_brand(brand)
+    return await mods.knowledge_sync.sync_brand(brand, snapshot_key=snapshot_key)
 
 
 async def refresh_shopee_cache(brand: str = "all", settings: dict | None = None) -> dict[str, Any]:

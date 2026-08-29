@@ -29,6 +29,26 @@ def test_legacy_javis_modules_load():
     assert hasattr(mods.shopee_matcher, "refresh_shopee_cache")
 
 
+def test_legacy_sync_forwards_candidate_snapshot_key():
+    calls = []
+
+    class FakeKnowledgeSync:
+        async def sync_brand(self, brand, snapshot_key=None):
+            calls.append((brand, snapshot_key))
+            return {"brand": brand, "snapshot_key": snapshot_key}
+
+    fake_modules = SimpleNamespace(knowledge_sync=FakeKnowledgeSync())
+    with patch.object(legacy_javis_runtime, "load_modules", return_value=fake_modules):
+        result = asyncio.run(legacy_javis_runtime.sync(
+            "cfc",
+            snapshot_key="cfc:kb:basic:candidate",
+            settings={},
+        ))
+
+    assert calls == [("cfc", "cfc:kb:basic:candidate")]
+    assert result["snapshot_key"] == "cfc:kb:basic:candidate"
+
+
 class FakeRedis:
     def __init__(self):
         self.values = {}

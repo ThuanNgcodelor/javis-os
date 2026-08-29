@@ -21,6 +21,7 @@ import re
 import time
 import unicodedata
 import urllib.parse
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Tuple
@@ -38,7 +39,12 @@ from conversation_store import (
 from dialogue_router import build_route_decision
 from domains.amis.config import load_amis_config
 from domains.amis.order_cache import lookup_cached_order_status
-from evidence_trace import begin_request_trace, build_answer_trace, end_request_trace
+from evidence_trace import (
+    assess_previous_answer_challenge,
+    begin_request_trace,
+    build_answer_trace,
+    end_request_trace,
+)
 from grounding_policy import assess_grounding
 from message_idempotency import begin_message, complete_message, release_message
 from rag_search import get_redis, get_faq_by_intent, get_knowledge_runtime_status, semantic_search, refresh_knowledge_cache
@@ -517,6 +523,145 @@ def _active_goal_name(state: dict[str, Any]) -> str:
     return ""
 
 
+def _goal_frame_id() -> str:
+    return "goal:" + uuid.uuid4().hex
+
+
+def _goal_name_for_intent(brand: str, intent: str, fallback: str = "") -> str:
+    if brand.lower() == "cfc":
+        return CFC_GOAL_BY_INTENT.get(intent) or fallback
+    if intent in {"product_price_query", "product_link_query", "product_availability_query", "multi_attribute_product_query"}:
+        return "product_lookup"
+    if intent in {"return_policy_or_claim", "return_process", "return_eligible_cases"}:
+        return "return_request"
+    return fallback
+
+
+def _goal_resume_target(normalized_text: str) -> str:
+    """Map an explicit 'quay lại …' phrase to a stable, fact-free goal name."""
+    text = str(normalized_text or "")
+    if not re.search(r"\b(quay lai|tro lai|noi tiep)\b", text):
+        return ""
+    mappings = {
+        "order_tracking": r"\b(don|ma don|van don)\b",
+        "dealer_lookup": r"\b(dai ly|diem ban|cua hang)\b",
+        "purchase_intake": r"\b(mua|dat hang|lay hang)\b",
+        "agronomy_consultation": r"\b(cay|phan|bon|sau rieng|lua)\b",
+        "price_quote": r"\b(gia|bao gia)\b",
+    }
+    return next((goal for goal, pattern in mappings.items() if re.search(pattern, text)), "")
+
+
+def _migrate_goal_frames(state: dict[str, Any], brand: str) -> None:
+    """Lazy schema-4 -> schema-5 migration; it never deletes old state."""
+    frames = state.get("goal_frames")
+    if not isinstance(frames, list):
+        frames = []
+    frames = [item for item in frames if isinstance(item, dict)][-5:]
+    active_goal = _active_goal_name(state)
+    if not frames and active_goal:
+        inherited_slots = {
+            str(key): value for key, value in (state.get("confirmed_slots") or {}).items()
+            if key not in {"phone", "area", "location"} and value not in (None, "")
+        }
+        frames.append({
+            "goal_id": _goal_frame_id(),
+            "name": active_goal,
+            "status": "active",
+            "slots": inherited_slots,
+            "entity_refs": [],
+            "result_ids": [],
+            "last_answer_id": "",
+            "pending_action": str((state.get("pending_action") or {}).get("name") or ""),
+            "created_at": str(state.get("updated_at") or ""),
+            "updated_at": str(state.get("updated_at") or ""),
+        })
+    active_id = str(state.get("active_goal_id") or "")
+    if active_id and not any(str(item.get("goal_id") or "") == active_id for item in frames):
+        active_id = ""
+    if not active_id:
+        active = next((item for item in reversed(frames) if item.get("status") == "active"), None)
+        active_id = str((active or {}).get("goal_id") or "")
+    state["goal_frames"] = frames
+    state["active_goal_id"] = active_id
+    state["schema_version"] = max(5, int(state.get("schema_version") or 0))
+
+
+def _update_goal_frames(
+    state: dict[str, Any],
+    *,
+    brand: str,
+    intent: str,
+    lead_stage: str,
+    user_message: str,
+    local_slots: dict[str, Any] | None = None,
+) -> None:
+    """Pause/switch/resume goal frames without borrowing another goal's slots."""
+    _migrate_goal_frames(state, brand)
+    frames = [dict(item) for item in state.get("goal_frames") or [] if isinstance(item, dict)]
+    now_str = datetime.now(timezone.utc).isoformat()
+    desired_goal = _goal_name_for_intent(brand, intent, _active_goal_name(state))
+    resume_goal = _goal_resume_target(_normalize_vn(user_message))
+    if resume_goal:
+        desired_goal = resume_goal
+    if not desired_goal:
+        state["goal_frames"] = frames[-5:]
+        return
+
+    current_id = str(state.get("active_goal_id") or "")
+    current = next((item for item in frames if str(item.get("goal_id") or "") == current_id), None)
+    target = next((
+        item for item in reversed(frames)
+        if item.get("name") == desired_goal and item.get("status") in {"active", "paused"}
+    ), None)
+    if current and current is not target and current.get("status") == "active":
+        current["status"] = "paused"
+        current["updated_at"] = now_str
+    if target is None:
+        target = {
+            "goal_id": _goal_frame_id(),
+            "name": desired_goal,
+            "status": "active",
+            "slots": {},
+            "entity_refs": [],
+            "result_ids": [],
+            "last_answer_id": "",
+            "pending_action": "",
+            "created_at": now_str,
+            "updated_at": now_str,
+        }
+        frames.append(target)
+    else:
+        target["status"] = "active"
+        target["updated_at"] = now_str
+    if isinstance(local_slots, dict):
+        # phone/area/location are profile-shared in confirmed_slots; all other
+        # slots belong to this goal and never leak across a topic switch.
+        goal_slots = dict(target.get("slots") or {})
+        goal_slots.update({
+            str(key): value for key, value in local_slots.items()
+            if key not in {"phone", "area", "location"} and value not in (None, "")
+        })
+        target["slots"] = goal_slots
+    target["pending_action"] = str((state.get("pending_action") or {}).get("name") or "")
+    state["goal_frames"] = frames[-5:]
+    state["active_goal_id"] = str(target["goal_id"])
+    shared_slots = {
+        key: value for key, value in (state.get("confirmed_slots") or {}).items()
+        if key in {"phone", "area", "location"} and value not in (None, "")
+    }
+    # The legacy pipeline still reads confirmed_slots. Rehydrate it from the
+    # selected frame so an order ID/crop/product cannot silently travel into a
+    # different goal after switch/resume.
+    shared_slots.update(dict(target.get("slots") or {}))
+    state["confirmed_slots"] = shared_slots
+    state["active_goal"] = {
+        "name": desired_goal,
+        "stage": str((state.get("active_goal") or {}).get("stage") or lead_stage or "active"),
+        "updated_at": now_str,
+    }
+
+
 async def _lookup_sales_locations_from_redis(
     *,
     user_message: str = "",
@@ -791,9 +936,24 @@ def _extract_cfc_confirmed_slots(
     elif package_match and re.search(r"\b(muon mua|can mua|dat mua|dat hang|lay hang|mua)\b", norm):
         slots["quantity"] = f"{package_match.group(1)}{package_match.group(2)}"
 
-    order_match = re.search(r"\b(?:ma\s+don\s+)?#?dh\s+(\d{4})\s+(\d+)\b", norm)
-    if order_match:
-        slots["order_id"] = f"DH-{order_match.group(1)}-{order_match.group(2)}"
+    # QueryPlan already recognizes common codes such as `00005065`.  Reuse that
+    # extraction here; otherwise the route sees an order intent but the AMIS
+    # lookup receives an empty order_id and asks the customer for the same code
+    # again.  Keep the local patterns as a fallback for direct callers.
+    query_order_id = str((query_entities or {}).get("order_id") or "").strip()
+    if query_order_id:
+        slots["order_id"] = query_order_id
+    else:
+        order_match = re.search(r"\b(?:ma\s+don\s+)?#?dh\s+(\d{4})\s+(\d+)\b", norm)
+        if order_match:
+            slots["order_id"] = f"DH-{order_match.group(1)}-{order_match.group(2)}"
+        else:
+            numeric_order = re.search(
+                r"\b(?:ma\s+don|don\s*(?:hang|so)?)\s*[:#]?\s*(\d{6,20})\b",
+                norm,
+            )
+            if numeric_order:
+                slots["order_id"] = numeric_order.group(1)
 
     crop_labels = {
         "sau rieng": "sầu riêng",
@@ -1016,12 +1176,9 @@ def _format_order_lookup_reply(result: dict[str, Any]) -> tuple[str, str]:
     if outcome == "found":
         order_code = str(result.get("order_code") or "đơn bạn cung cấp")
         status = str(result.get("status") or "Đang xử lý")
-        synced_at = str(result.get("synced_at") or "")
-        updated_at = str(result.get("order_updated_at") or "")
-        freshness = f" Dữ liệu được đồng bộ lúc {synced_at}." if synced_at else ""
-        detail = f" Trạng thái đơn được cập nhật lúc {updated_at}." if updated_at else ""
         return (
-            f"Dạ mình đã tìm thấy đơn {order_code}. Trạng thái hiện ghi nhận là: {status}.{detail}{freshness}",
+            f"Dạ đơn {order_code} hiện có trạng thái: {status}. "
+            "Nếu bạn cần kiểm tra thêm tình hình giao hoặc nhận hàng, bạn cứ nhắn CFC hỗ trợ tiếp nhé.",
             "ORDER_CACHE_MATCHED",
         )
     if outcome in {"not_found", "phone_mismatch"}:
@@ -1144,6 +1301,19 @@ def _build_cfc_agronomy_intake_answer(*args, **kwargs) -> str:
     if goal in {"crop_consultation", "dosage_usage"}:
         goal = "agronomy_consultation"
 
+    crop = str(slots.get("crop") or "").strip()
+    crop_stage = str(slots.get("crop_stage") or "").strip()
+    # A broad eligibility question is not a request for a dosage.  Give the
+    # customer the approved product-family fact first, then ask only for the
+    # next useful agronomy detail.  Formulae and doses remain behind the
+    # stricter expert-review boundary below.
+    if crop and not crop_stage:
+        return (
+            f"Dạ CFC có các dòng NPK và phân hữu cơ cho {crop}. "
+            "Để chọn dòng phù hợp, bạn cho mình biết vườn đang kiến thiết, ra hoa hay nuôi trái nhé. "
+            "Khi cần chốt công thức hoặc liều lượng, kỹ sư sẽ đối chiếu thêm điều kiện canh tác trước khi hướng dẫn ạ."
+        )
+
     context = _cfc_context_summary(goal, slots)
     context_line = f" Mình đang ghi nhận: {context}." if context else ""
     missing_prompt = _cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots), expert=True)
@@ -1177,6 +1347,7 @@ def _default_conversation_state(brand: str) -> dict[str, Any]:
         "confirmed_slots": {},
         "active_goal": {"name": "", "stage": ""},
         "pending_request": {},
+        "pending_requests": [],
         "last_capability_boundary": {},
         "active_flow": {"name": "", "stage": ""},
         "pending_action": {"name": "", "status": ""},
@@ -1189,6 +1360,7 @@ def _default_conversation_state(brand: str) -> dict[str, Any]:
         "covered_fact_ids": [],
         "last_tool_results": [],
         "reference_stack": [],
+        "last_answer_reference": {},
         "recent_turns": [],
         "conversation_summary": "",
         "last_source_id": "",
@@ -1235,6 +1407,8 @@ def _load_conversation_state(existing_session: dict, brand: str) -> dict[str, An
         state["active_goal"] = {"name": "", "stage": ""}
     if not isinstance(state.get("pending_request"), dict):
         state["pending_request"] = {}
+    if not isinstance(state.get("pending_requests"), list):
+        state["pending_requests"] = []
     if not isinstance(state.get("last_capability_boundary"), dict):
         state["last_capability_boundary"] = {}
     if not isinstance(state.get("active_flow"), dict):
@@ -1254,8 +1428,11 @@ def _load_conversation_state(existing_session: dict, brand: str) -> dict[str, An
         state["last_tool_results"] = []
     if not isinstance(state.get("reference_stack"), list):
         state["reference_stack"] = []
+    if not isinstance(state.get("last_answer_reference"), dict):
+        state["last_answer_reference"] = {}
     if not isinstance(state.get("recent_turns"), list):
         state["recent_turns"] = []
+    _migrate_goal_frames(state, brand)
     return state
 
 
@@ -1356,6 +1533,29 @@ def _resolve_reference(raw_text: str, norm_text: str, conversation_state: dict[s
         if isinstance(item, dict) and item.get("name")
     ]
     active = conversation_state.get("active_entities") or {}
+    answer_reference = conversation_state.get("last_answer_reference") or {}
+    asks_about_answer = bool(re.search(
+        r"\b(du lieu|thong tin|cau tra loi|noi dung).{0,24}\b(vua noi|vua tra loi|o tren|luc nay|do)\b",
+        norm_text,
+    ))
+
+    if asks_about_answer and isinstance(answer_reference, dict) and answer_reference.get("answer_id"):
+        return {
+            "references_previous_turn": True,
+            "resolved": True,
+            "reference_type": "last_answer",
+            "answer_id": str(answer_reference.get("answer_id") or ""),
+            "claim_ids": [str(item) for item in (answer_reference.get("claim_ids") or [])[:10]],
+            "product": "",
+            "product_intent": "",
+            "category": "",
+            "product_id": "",
+            "shopee_url": "",
+            "price": None,
+            "rank": None,
+            "resolved_query": raw_text,
+            "reason": "last_answer_reference",
+        }
 
     if not _has_reference_signal(norm_text) or (not products and not active.get("product")):
         return {
@@ -1784,6 +1984,16 @@ def _build_next_conversation_state(
         corrections = state.get("corrections") or []
         corrections.append({"text": user_message[:240], "timestamp": now_str})
         state["corrections"] = corrections[-5:]
+    explicit_correction = (state_patch or {}).get("correction") if isinstance(state_patch, dict) else None
+    if isinstance(explicit_correction, dict):
+        corrections = state.get("corrections") or []
+        corrections.append({
+            "previous_answer_id": str(explicit_correction.get("previous_answer_id") or ""),
+            "claim_ids": [str(item) for item in (explicit_correction.get("claim_ids") or [])[:10]],
+            "reason": str(explicit_correction.get("reason") or "")[:120],
+            "timestamp": now_str,
+        })
+        state["corrections"] = corrections[-5:]
 
     normalized_reply = _normalize_vn(bot_reply)
     asks_for_link_confirmation = bool(re.search(
@@ -1871,6 +2081,11 @@ def _build_next_conversation_state(
         state["last_tool_results"] = [
             item for item in patch_tool_results[-5:] if isinstance(item, dict)
         ]
+    patch_pending_requests = (state_patch or {}).get("pending_requests") if isinstance(state_patch, dict) else None
+    if isinstance(patch_pending_requests, list):
+        state["pending_requests"] = [
+            item for item in patch_pending_requests[-5:] if isinstance(item, dict)
+        ]
 
     if reference_resolution.get("resolved"):
         reference_stack = [
@@ -1885,12 +2100,23 @@ def _build_next_conversation_state(
         })
         state["reference_stack"] = reference_stack[-10:]
 
+    # GoalFrame v5 keeps task-local slots separate while sharing only profile
+    # fields. It does not alter the legacy route selected for this response.
+    _update_goal_frames(
+        state,
+        brand=brand,
+        intent=intent,
+        lead_stage=lead_stage,
+        user_message=user_message,
+        local_slots=(new_slots if brand.lower() == "cfc" else query_entities),
+    )
+
     if not cfc_goal:
         if lead_stage == "collecting_contact":
             state["pending_slots"] = ["phone", "area"]
         elif lead_stage == "lead_ready":
             state["pending_slots"] = []
-    state["schema_version"] = 4
+    state["schema_version"] = 5
     if lead_stage == "escalated":
         takeover = state.get("takeover_state") or {}
         if takeover.get("status") != "pending":
@@ -2120,6 +2346,8 @@ def _detect_source_challenge(norm_text: str) -> bool:
     return _has_any(norm_text, [
         r"\b(nguon|bang chung|can cu|dua vao dau|lay thong tin o dau)\b",
         r"\b(co that|dung that|thuc khong|chac khong|xac minh duoc khong)\b",
+        r"\b(that|thuc)\s*(?:ko|khong|hong)\b",
+        r"\b(lay tu dau ra|dua vao dau vay|nguon gi vay)\b",
         r"\b(thong tin|du lieu|cau tra loi).{0,35}\b(dung|that|chac|nguon|xac minh)\b",
     ])
 
@@ -2671,23 +2899,18 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         # --- BẮT ĐẦU: SEMANTIC ROUTING BẰNG LLM ---
         llm_nlu_mode, _, _ = _llm_nlu_config()
         if brand.lower() == "cfc" and llm_nlu_mode in {"assist", "shadow"}:
-            from cfc_semantic_planner import plan_cfc_intents, resolve_priority, map_semantic_intent_to_query_intent
+            from cfc_semantic_planner import plan_cfc_intents
             cfc_plan = await plan_cfc_intents(norm_text, conversation_state)
             if cfc_plan:
                 pipeline_trace_extra["cfc_semantic_planner"] = {
                     "mode": llm_nlu_mode,
-                    "plan": cfc_plan,
-                    "status": "planned"
+                    "proposal_intents": [str(item.get("intent") or "") for item in cfc_plan if isinstance(item, dict)],
+                    "status": "proposal_only",
                 }
-                if llm_nlu_mode == "assist":
-                    primary_semantic = resolve_priority(cfc_plan)
-                    if primary_semantic and primary_semantic.get("intent") != "faq":
-                        mapped_intent = map_semantic_intent_to_query_intent(primary_semantic.get("intent", ""))
-                        if mapped_intent != "unknown":
-                            query_plan.intent = mapped_intent
-                            query_plan.intent_confidence = 0.99
-                            query_plan_dict["intent"] = mapped_intent
-                            query_plan_dict["intent_confidence"] = 0.99
+                # Phase 2 keeps legacy deterministic intent as the only route
+                # authority. A semantic proposal is observable for parity work,
+                # but cannot overwrite protected routes or manufacture a 0.99
+                # confidence from an LLM-shaped JSON response.
         # --- KẾT THÚC: SEMANTIC ROUTING BẰNG LLM ---
 
         if should_run_conversation_orchestrator:
@@ -2825,6 +3048,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             trace_extra: Optional[dict[str, Any]] = None,
             products_shown: Optional[list[dict[str, Any]]] = None,
             tool_result: Optional[dict[str, Any]] = None,
+            state_patch_extra: Optional[dict[str, Any]] = None,
         ) -> None:
             if not source_id and products_shown:
                 first_product = next((item for item in products_shown if isinstance(item, dict)), {})
@@ -2832,6 +3056,30 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 if product_id:
                     source_id = f"{brand}:shopee_catalog:{product_id}"
             next_state_patch = dict(state_patch)
+            if isinstance(state_patch_extra, dict):
+                next_state_patch.update(state_patch_extra)
+            candidate_by_id = {
+                str(item.get("candidate_id") or ""): item
+                for item in (query_plan_dict.get("intent_candidates") or [])
+                if isinstance(item, dict)
+            }
+            secondary_requests = []
+            for candidate_id in query_plan_dict.get("secondary_candidate_ids") or []:
+                candidate = candidate_by_id.get(str(candidate_id))
+                if not candidate:
+                    continue
+                # Do not execute a secondary in the same turn. Persist only a
+                # fact-free pointer so a future explicit follow-up can resume it.
+                secondary_requests.append({
+                    "candidate_id": str(candidate.get("candidate_id") or ""),
+                    "intent": str(candidate.get("intent") or ""),
+                    "action": str(candidate.get("action") or ""),
+                    "risk": str(candidate.get("risk") or ""),
+                    "status": "pending",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                })
+            if secondary_requests:
+                next_state_patch["pending_requests"] = secondary_requests
             if products_shown and not tool_result:
                 product_items = []
                 for item in products_shown[:8]:
@@ -2955,24 +3203,45 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         if _detect_source_challenge(norm_text) and existing_session.get("last_bot_reply"):
             previous_trace = existing_session.get("last_trace") or {}
             previous_source = str(previous_trace.get("source_id") or "").strip()
-            previous_fallback = str(previous_trace.get("fallback_reason") or "").strip()
-            previous_grounding = assess_grounding(
+            previous_answer_trace = previous_trace.get("answer_trace") if isinstance(previous_trace, dict) else {}
+            challenge = assess_previous_answer_challenge(previous_answer_trace)
+            challenge_status = str(challenge.get("status") or "missing")
+            # Lazy migration for pre-Phase-1 sessions: a known safe source can
+            # still be described by type, but new answers always use the ledger.
+            legacy_grounding = assess_grounding(
                 intent=previous_intent or "previous_answer",
                 source_id=previous_source,
-                fallback_reason=previous_fallback,
+                fallback_reason=str(previous_trace.get("fallback_reason") or ""),
             )
-            source_is_trusted = previous_grounding.status == "grounded"
-            if source_is_trusted:
+            if challenge_status == "verified" or (
+                challenge_status == "missing" and legacy_grounding.status == "grounded"
+            ):
+                source_label = {
+                    "faq": "mục kiến thức/FAQ đã được ghi nguồn",
+                    "catalog": "danh mục sản phẩm đã ghi nguồn",
+                    "public_tool": "dữ liệu công khai đã được chiếu lọc",
+                    "privileged_tool": "kết quả tra cứu được phép trong phiên này",
+                }.get((challenge.get("source_types") or [""])[0], _safe_source_type(previous_source))
                 answer = (
-                    f"Dạ thông tin trước được đối chiếu từ {_safe_source_type(previous_source)}. "
+                    f"Dạ thông tin trước được đối chiếu từ {source_label}. "
                     "Bạn cho mình biết phần nào cần kiểm tra lại, mình sẽ đối chiếu đúng thông tin đó cho bạn ạ."
                 )
                 response_source = previous_source
-                challenge_outcome = "SOURCE_TYPE_ACKNOWLEDGED"
+                challenge_outcome = (
+                    "CLAIM_VERIFIED_ACKNOWLEDGED"
+                    if challenge_status == "verified" else "SOURCE_TYPE_ACKNOWLEDGED"
+                )
+            elif challenge_status == "stale":
+                answer = (
+                    "Dạ thông tin trước có nguồn nhưng thời điểm xác minh đã không còn đủ mới để mình khẳng định tiếp. "
+                    "Mình sẽ cần kiểm tra lại đúng nguồn trước khi trả lời chi tiết hơn ạ."
+                )
+                response_source = ""
+                challenge_outcome = "CLAIM_STALE_RECHECK_REQUIRED"
             else:
                 answer = (
-                    "Dạ bạn hỏi đúng. Phần thông tin trước chưa có căn cứ rõ để mình kiểm tra lại, "
-                    "nên mình xin không khẳng định thêm chi tiết đó. Bạn cho mình biết phần nào cần xác minh để mình đối chiếu lại nhé ạ."
+                    "Dạ bạn hỏi đúng. Phần thông tin trước chưa có căn cứ đã xác minh đầy đủ, "
+                    "nên mình xin rút lại chi tiết đó và không khẳng định thêm. Bạn cho mình biết phần nào cần kiểm tra để bên mình đối chiếu lại nhé ạ."
                 )
                 response_source = ""
                 challenge_outcome = "UNVERIFIED_DETAILS_RETRACTED"
@@ -2984,10 +3253,20 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 fallback_reason="SOURCE_CHALLENGE_SAFE_FALLBACK",
                 trace_extra={
                     "source_challenge": {
-                        "previous_grounding_status": previous_grounding.status,
+                        "previous_answer_id": challenge.get("answer_id", ""),
+                        "claim_ids": challenge.get("claim_ids", []),
+                        "status": challenge_status,
                         "outcome": challenge_outcome,
                     }
                 },
+                state_patch_extra=(
+                    {"correction": {
+                        "previous_answer_id": challenge.get("answer_id", ""),
+                        "claim_ids": challenge.get("claim_ids", []),
+                        "reason": challenge_outcome,
+                    }}
+                    if challenge_status in {"missing", "unverified", "blocked"} else None
+                ),
             )
             return _fast_response(
                 answer,
@@ -4208,7 +4487,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                         )
 
             # 3. Xác nhận / Kết thúc hội thoại ('z ok', 'vay ok', 'da ok', 'ok nha', 'the thoi')
-            if re.search(r"^(z ok|vay ok|da ok|ok nha|ok nhe|ok shop|oke shop|the thoi|the nha|vay dc roi|vay duoc roi|ok roi|ok|oke|okay|da|vang|uh|um|roi|duoc|biet roi|hieu roi)\b", norm_text) and not re.search(r"(cam on|thanks)", norm_text):
+            if re.search(r"^(a ok|a oke|a okay|a roi|z ok|vay ok|da ok|ok nha|ok nhe|ok shop|oke shop|the thoi|the nha|vay dc roi|vay duoc roi|ok roi|ok|oke|okay|da|vang|uh|um|roi|duoc|biet roi|hieu roi)\b", norm_text) and not re.search(r"(cam on|thanks)", norm_text):
                 ack = "Dạ vâng ạ! Bạn cần thêm thông tin gì cứ nhắn ZeO nhé." if brand == "zeo" else "Dạ vâng ạ! Khi nào cần phân bón chất lượng cao bạn cứ nhắn Cò Bay nha."
                 return _fast_response(ack, "acknowledgement", brand, start_time)
 
@@ -5608,6 +5887,34 @@ async def _finalize_pipeline_response(req: ChatPipelineRequest, response: ChatPi
     trace["answer_trace"] = answer_trace
     response.answer_id = answer_trace["answer_id"]
     response.runtime_manifest_id = answer_trace["runtime_manifest_id"]
+
+    # Attach the Phase-1 answer ID to the active schema-v5 GoalFrame only after
+    # the response trace exists. Older sessions simply gain this on their next
+    # write; no Redis migration or reset is required.
+    state_for_answer = snapshot.get("conversation_state") or {}
+    if isinstance(state_for_answer, dict):
+        state_for_answer["last_answer_reference"] = {
+            "answer_id": response.answer_id,
+            "claim_ids": [
+                str(item.get("claim_id") or "")
+                for item in (answer_trace.get("claims") or [])
+                if isinstance(item, dict) and item.get("claim_id")
+            ],
+            "source_types": [
+                str(item.get("source_type") or "")
+                for item in (answer_trace.get("evidence") or [])
+                if isinstance(item, dict) and item.get("source_type")
+            ],
+            "created_at": answer_trace.get("created_at", ""),
+        }
+        active_goal_id = str(state_for_answer.get("active_goal_id") or "")
+        frames = state_for_answer.get("goal_frames") or []
+        if isinstance(frames, list):
+            for frame in frames:
+                if isinstance(frame, dict) and str(frame.get("goal_id") or "") == active_goal_id:
+                    frame["last_answer_id"] = response.answer_id
+                    frame["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    break
 
     now_str = datetime.now(timezone.utc).isoformat()
     revision = int(snapshot.get("revision") or 0) + 1

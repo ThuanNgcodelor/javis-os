@@ -238,7 +238,7 @@ class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase)
                 patch("chat_pipeline.load_orchestrator_config", return_value={
                     "mode": "assist", "min_confidence": 0.85, "history_limit": 12,
                 }), \
-                patch("chat_pipeline.plan_conversation_turn_with_ollama", new=AsyncMock(return_value=PHONE_UPDATE_PLAN)):
+                patch("chat_pipeline.plan_conversation_turn_with_ai", new=AsyncMock(return_value=PHONE_UPDATE_PLAN)):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
                 sender_id="phone-change-missing",
@@ -303,7 +303,7 @@ class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase)
                 patch("chat_pipeline.load_orchestrator_config", return_value={
                     "mode": "assist", "min_confidence": 0.85, "history_limit": 12,
                 }), \
-                patch("chat_pipeline.plan_conversation_turn_with_ollama", new=AsyncMock(return_value=plan)), \
+                patch("chat_pipeline.plan_conversation_turn_with_ai", new=AsyncMock(return_value=plan)), \
                 patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
@@ -351,7 +351,7 @@ class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase)
                 patch("chat_pipeline.load_orchestrator_config", return_value={
                     "mode": "assist", "min_confidence": 0.85, "history_limit": 12,
                 }), \
-                patch("chat_pipeline.plan_conversation_turn_with_ollama", new=AsyncMock(return_value=None)), \
+                patch("chat_pipeline.plan_conversation_turn_with_ai", new=AsyncMock(return_value=None)), \
                 patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
@@ -404,7 +404,7 @@ class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase)
                 patch("chat_pipeline.load_orchestrator_config", return_value={
                     "mode": "assist", "min_confidence": 0.85, "history_limit": 12,
                 }), \
-                patch("chat_pipeline.plan_conversation_turn_with_ollama", new=AsyncMock(return_value=None)), \
+                patch("chat_pipeline.plan_conversation_turn_with_ai", new=AsyncMock(return_value=None)), \
                 patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
@@ -446,7 +446,7 @@ class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase)
                 patch("chat_pipeline.load_orchestrator_config", return_value={
                     "mode": "assist", "min_confidence": 0.85, "history_limit": 12,
                 }), \
-                patch("chat_pipeline.plan_conversation_turn_with_ollama", new=AsyncMock(return_value=PHONE_UPDATE_PLAN)), \
+                patch("chat_pipeline.plan_conversation_turn_with_ai", new=AsyncMock(return_value=PHONE_UPDATE_PLAN)), \
                 patch("chat_pipeline._async_update_customer_profile", new=AsyncMock()) as update_profile, \
                 patch("chat_pipeline.notify_new_lead", new=AsyncMock()) as notify:
             result = await process_chat_pipeline(ChatPipelineRequest(
@@ -495,7 +495,7 @@ class ConversationOrchestratorIntegrationTests(unittest.IsolatedAsyncioTestCase)
                     "mode": "assist", "min_confidence": 0.85, "history_limit": 6,
                     "timeout_seconds": 6,
                 }), \
-                patch("chat_pipeline.plan_conversation_turn_with_ollama", new=AsyncMock(return_value=semantic_plan)), \
+                patch("chat_pipeline.plan_conversation_turn_with_ai", new=AsyncMock(return_value=semantic_plan)), \
                 patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
@@ -540,8 +540,8 @@ class ConversationPlannerTests(unittest.IsolatedAsyncioTestCase):
             "requested_fields": ["public_phone"],
             "tool": "dealer_contact_lookup",
         })
-        with patch.object(ai_engine, "call_ollama", new=AsyncMock(return_value=raw)) as call:
-            result = await ai_engine.plan_conversation_turn_with_ollama(
+        with patch.object(ai_engine, "generate_ai_text", new=AsyncMock(return_value={"success": True, "text": raw})) as call:
+            result = await ai_engine.plan_conversation_turn_with_ai(
                 user_query="xin số điện thoại các chỗ trên",
                 brand="cfc",
                 conversation_messages=[
@@ -554,4 +554,4 @@ class ConversationPlannerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["intent"], "dealer_contact_followup")
         self.assertEqual(result["reference"]["result_id"], "r1")
-        self.assertEqual(call.await_args.kwargs["messages"][-1]["content"], "Có danh sách")
+        self.assertIn("assistant: Có danh sách", call.await_args.kwargs["prompt"])

@@ -9,6 +9,7 @@ Sheet/Redis/catalog/RAG ở các lớp phía sau.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import hashlib
 import re
 from typing import Any, Optional
 import json
@@ -107,6 +108,14 @@ class QueryPlan:
     needs_product_tool: bool = False
     rewritten_query: str = ""
     ambiguity_reason: str = ""
+    # V2 keeps every V1 field above. Candidates are planning metadata only: no
+    # answer, business fact, source ID, price, stock or dosage may appear here.
+    schema_version: int = 2
+    intent_candidates: list[dict[str, Any]] = field(default_factory=list)
+    primary_candidate_id: str = ""
+    secondary_candidate_ids: list[str] = field(default_factory=list)
+    context_action: str = "continue"
+    ambiguities: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -458,6 +467,154 @@ def _build_rewritten_query(original: str, entities: dict[str, Any], references: 
     return " ".join(parts).strip() or original
 
 
+def _candidate_spec(intent: str, attrs: list[str], brand: str) -> tuple[str, str, str]:
+    """Return action/source-family/risk for planning only, never a fact route."""
+    normalized = str(intent or "unknown")
+    protected = {
+        "privacy_sensitive_lookup": ("privacy_boundary", "none", "high"),
+        "cfc_product_complaint_request": ("complaint_intake", "none", "high"),
+        "cfc_order_status_request": ("order_status_lookup", "privileged_tool", "high"),
+        "cfc_loyalty_lookup_request": ("loyalty_lookup", "privileged_tool", "high"),
+        "cfc_inventory_request": ("inventory_lookup", "privileged_tool", "high"),
+        "cfc_b2b_large_order_request": ("b2b_intake", "none", "high"),
+        "cfc_purchase_request": ("purchase_intake", "catalog", "medium"),
+        "cfc_dealer_location_request": ("sales_location_search", "public_tool", "medium"),
+        "cfc_agronomy_review_request": ("agronomy_intake", "approved_protocol", "high"),
+        "cfc_price_unverified": ("price_review", "catalog", "high"),
+        "product_price_query": ("product_lookup", "catalog", "medium"),
+        "product_link_query": ("product_lookup", "catalog", "low"),
+        "product_availability_query": ("product_lookup", "catalog", "medium"),
+        "multi_attribute_product_query": ("product_lookup", "catalog", "medium"),
+    }
+    if normalized in protected:
+        return protected[normalized]
+    if "contact" in normalized or "website" in normalized:
+        return "faq_lookup", "faq", "low"
+    if "return" in normalized or "policy" in normalized:
+        return "faq_lookup", "faq", "medium"
+    if "price" in attrs or "availability" in attrs or "link" in attrs:
+        return "product_lookup", "catalog", "medium" if "availability" in attrs else "low"
+    return "faq_lookup", "faq", "low"
+
+
+def _candidate_priority(candidate: dict[str, Any]) -> tuple[int, float, str]:
+    """Stable arbitration order. Lower rank wins; confidence only breaks ties."""
+    action = str(candidate.get("action") or "")
+    rank = {
+        "privacy_boundary": 0,
+        "complaint_intake": 1,
+        "order_status_lookup": 2,
+        "loyalty_lookup": 2,
+        "inventory_lookup": 2,
+        "b2b_intake": 2,
+        "purchase_intake": 3,
+        "price_review": 4,
+        "product_lookup": 5,
+        "sales_location_search": 5,
+        "agronomy_intake": 6,
+        "faq_lookup": 7,
+    }.get(action, 9)
+    return rank, -float(candidate.get("confidence") or 0.0), str(candidate.get("candidate_id") or "")
+
+
+def _make_candidate(
+    *,
+    clause_id: str,
+    intent: str,
+    confidence: float,
+    entities: dict[str, Any],
+    attributes: list[str],
+    constraints: dict[str, Any],
+    references: dict[str, Any],
+    brand: str,
+    origin: str = "deterministic",
+) -> dict[str, Any]:
+    action, source_family, risk = _candidate_spec(intent, attributes, brand)
+    identity = {
+        "clause": clause_id,
+        "intent": intent,
+        "action": action,
+        "entities": entities,
+        "attributes": attributes,
+        "constraints": constraints,
+        "reference": references,
+        "origin": origin,
+    }
+    return {
+        "candidate_id": "qc:" + hashlib.sha256(
+            json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:20],
+        "clause_id": clause_id,
+        "intent": intent,
+        "action": action,
+        "source_family": source_family,
+        "entities": dict(entities),
+        "attributes": list(attributes),
+        "constraints": dict(constraints),
+        "reference": dict(references),
+        "risk": risk,
+        "confidence": round(max(0.0, min(float(confidence), 1.0)), 3),
+        "origin": origin,
+    }
+
+
+def _build_intent_candidates(
+    *,
+    intent: str,
+    confidence: float,
+    attrs: list[str],
+    entities: dict[str, Any],
+    constraints: dict[str, Any],
+    references: dict[str, Any],
+    brand: str,
+) -> list[dict[str, Any]]:
+    """Build deterministic candidates without executing secondary requests."""
+    candidates = [_make_candidate(
+        clause_id="clause-1", intent=intent, confidence=confidence,
+        entities=entities, attributes=attrs, constraints=constraints,
+        references=references, brand=brand,
+    )]
+    attr_intents = {
+        "price": "product_price_query",
+        "availability": "product_availability_query",
+        "link": "product_link_query",
+    }
+    # The primary legacy intent remains untouched. Attribute candidates make a
+    # compound turn observable and can become pending work in a later turn.
+    for index, attr in enumerate(attrs, start=2):
+        candidate_intent = attr_intents.get(attr)
+        if not candidate_intent or candidate_intent == intent:
+            continue
+        candidates.append(_make_candidate(
+            clause_id=f"clause-{index}", intent=candidate_intent,
+            confidence=min(confidence, 0.86), entities=entities,
+            attributes=[attr], constraints=constraints, references=references,
+            brand=brand,
+        ))
+    # Explicit purchase must be visible separately from an advisory crop
+    # request. It is only a candidate; routing still retains P0 capability
+    # boundaries and executes one primary action.
+    if brand.lower() == "cfc" and intent == "cfc_purchase_request" and entities.get("crop"):
+        candidates.append(_make_candidate(
+            clause_id=f"clause-{len(candidates) + 1}",
+            intent="cfc_agronomy_review_request", confidence=0.82,
+            entities={"crop": entities["crop"]}, attributes=["usage"],
+            constraints={}, references=references, brand=brand,
+        ))
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for candidate in candidates:
+        key = (
+            str(candidate["action"]),
+            str(candidate["source_family"]),
+            json.dumps(candidate["entities"], ensure_ascii=False, sort_keys=True),
+        )
+        if key not in seen:
+            seen.add(key)
+            deduped.append(candidate)
+    return sorted(deduped, key=_candidate_priority)
+
+
 def build_query_plan(
     *,
     raw_text: str,
@@ -485,7 +642,7 @@ def build_query_plan(
     ordinal = _ordinal_index(norm_text)
     if ordinal:
         references["ordinal"] = ordinal
-    for key in ("product", "product_intent", "category", "product_id", "shopee_url", "price"):
+    for key in ("product", "product_intent", "category", "product_id", "shopee_url", "price", "answer_id", "claim_ids", "reference_type"):
         if reference_resolution.get(key):
             references[key] = reference_resolution[key]
 
@@ -531,6 +688,28 @@ def build_query_plan(
         )
     )
 
+    candidates = _build_intent_candidates(
+        intent=intent,
+        confidence=confidence,
+        attrs=attrs,
+        entities=entities,
+        constraints=constraints,
+        references=references,
+        brand=brand,
+    )
+    primary_candidate_id = str(candidates[0].get("candidate_id") or "") if candidates else ""
+    active_goal = conversation_state.get("active_goal") or {}
+    active_goal_name = active_goal if isinstance(active_goal, str) else str(active_goal.get("name") or "")
+    resume_requested = bool(re.search(r"\b(quay lai|tro lai|noi tiep)\b", norm_text))
+    context_action = "resume" if resume_requested and active_goal_name else (
+        "clarify" if needs_context else "continue"
+    )
+    ambiguities = ["UNRESOLVED_REFERENCE"] if needs_context else []
+    if len(candidates) > 1 and candidates[0].get("risk") == candidates[1].get("risk") and abs(
+        float(candidates[0].get("confidence") or 0.0) - float(candidates[1].get("confidence") or 0.0)
+    ) < 0.04:
+        ambiguities.append("EQUAL_PRIORITY_CANDIDATES")
+
     plan = QueryPlan(
         original_query=raw_text,
         normalized_query=norm_text,
@@ -546,5 +725,12 @@ def build_query_plan(
         needs_product_tool=needs_product_tool,
         rewritten_query=_build_rewritten_query(raw_text, entities, references, attrs),
         ambiguity_reason="UNRESOLVED_REFERENCE" if needs_context else "",
+        intent_candidates=candidates,
+        primary_candidate_id=primary_candidate_id,
+        secondary_candidate_ids=[
+            str(candidate.get("candidate_id") or "") for candidate in candidates[1:]
+        ],
+        context_action=context_action,
+        ambiguities=ambiguities,
     )
     return plan

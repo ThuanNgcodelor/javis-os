@@ -545,8 +545,12 @@ Chỉ xuất JSON object đúng schema."""
         "product": str(obj.get("product", "")).strip()[:160],
         "reference": bool(obj.get("reference", False)),
         "reason": str(obj.get("reason", "")).strip()[:160],
-        "provider": "ollama",
-        "model": model,
+        # generate_ai_text may use Groq, OpenRouter, Gemini, or Ollama according
+        # to runtime settings.  This planner must report the provider result,
+        # rather than referencing a local `model` variable that does not exist
+        # in this function.
+        "provider": str(raw_res.get("provider") or preferred_provider or "unknown"),
+        "model": str(raw_res.get("model") or ""),
     }
 
 

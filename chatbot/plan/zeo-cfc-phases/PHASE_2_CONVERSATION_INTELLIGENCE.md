@@ -1,9 +1,54 @@
 # Phase 2 — QueryPlan v2, multi-intent, memory/reference và source challenge
 
-Trạng thái: `PLANNED`  
+Trạng thái: `BLOCKED — LOCAL CORE IMPLEMENTED; chờ shadow/canary evidence`
 Ưu tiên: P2 sau nền an toàn/evidence  
 Ước lượng: 6–7 ngày  
 Phụ thuộc: Phase 0 safety; Phase 1 có `answer_id`, evidence/claim ledger và runtime trace tối thiểu
+
+> Cập nhật 2026-08-29. Đã sửa/test tại local; không push/deploy/activate workflow, không đổi credential, không flush Redis và không gọi CRM live. `DONE` chỉ sau shadow/replay/canary đạt exit metrics bên dưới.
+
+## Kết quả triển khai local
+
+| Work package | Trạng thái local | Thay đổi thực tế |
+|---|---|---|
+| WP1 QueryPlan v2 | Hoàn thành, backward-compatible | `QueryPlan` giữ mọi field v1 và thêm schema v2, candidate fact-free, primary/secondary IDs, risk, source family, context action và ambiguity. Legacy `intent` vẫn là route authority. |
+| WP2 semantic planners | Hoàn thành phần safety | CFC semantic plan chỉ là proposal trace theo intent; không còn ghi đè deterministic intent bằng confidence `0.99`. Conversation shadow dùng API provider-agnostic hiện hành thay vì tên hàm Ollama cũ. |
+| WP3 arbitration/multi-intent | Hoàn thành mức an toàn | Candidate primary áp thứ tự privacy/complaint/operational/purchase/advisory. Chỉ primary được execute; secondary chỉ được lưu pointer fact-free trong `pending_requests`, không tự chạy tool nhạy cảm. |
+| WP4 GoalFrame/state v5 | Hoàn thành | Lazy migrate schema 4 -> 5, tối đa 5 goal frame; switch pause goal cũ, “quay lại …” resume frame đúng. Chỉ phone/area/location dùng chung; order/crop/product slot được rehydrate từ goal đang active, không rò sang goal khác. |
+| WP5 references | Hoàn thành phần local | Giữ product/dealer ordinal hiện hữu, thêm `last_answer_reference` với answer/claim ID từ Phase 1 và chặn tool result đã hết hạn. Resolution vẫn giới hạn trong cùng session/brand/sender. |
+| WP6 verify previous claim | Hoàn thành | Source challenge đọc claim ledger Phase 1 trước; verified chỉ nêu loại nguồn an toàn, stale yêu cầu kiểm tra lại, unverified/blocked rút claim và lưu correction link tới answer cũ. Session cũ chưa có ledger dùng safe fallback theo source type để không gãy lịch sử. |
+| WP7 RAG ambiguity | Giữ guard hiện hữu | Rerank/margin/intent anchoring sẵn có không bị nới lỏng. Chưa tuyên bố các tỷ lệ exit gate khi chưa replay/live canary. |
+
+### Khắc phục từ test Messenger ngày 2026-08-29
+
+Các lỗi dưới đây được phát hiện khi chạy qua page thật sau knowledge sync, không phải suy đoán từ unit test:
+
+- Mã đơn số thuần như `00005065` được QueryPlan nhận ra nhưng bị mất khi tạo `confirmed_slots`; đã dùng lại `query_entities.order_id` và thêm fallback cho dạng “đơn/mã đơn + số”, nên AMIS warm lookup nhận đủ mã đơn và SĐT trong cùng lượt.
+- Source challenge nhận thêm cách nói tự nhiên như “thật ko, lấy từ đâu ra?”; vẫn chỉ trả loại nguồn an toàn từ ledger Phase 1.
+- “À ok” được normalize thành `a ok`; nay được nhận là acknowledgement thay vì rơi về FAQ hỗ trợ chung.
+- Câu hỏi mức tồn tại như “Có phân bón cho cây sầu riêng không?” trả lời trước ở mức dòng NPK/hữu cơ đã có knowledge; chỉ yêu cầu giai đoạn cây trước khi đi đến công thức/liều lượng. Không tự sinh quy trình hoặc dosage.
+
+### File thay đổi
+
+- `chatbot/server/query_understanding.py`: QueryPlan v2 deterministic/fact-free.
+- `chatbot/server/chat_pipeline.py`: GoalFrame v5, pending secondary, answer reference, ledger-driven source challenge và semantic proposal-only.
+- `chatbot/server/conversation_orchestrator.py`: shadow dùng planner hiện hành; tool result hết hạn không còn được resolve.
+- `chatbot/server/evidence_trace.py`: evaluator claim ledger không retrieval/tool call.
+- Tests mới: `chatbot/server/tests/test_phase2_conversation_intelligence.py`; cập nhật regression orchestrator/router theo contract đang chạy.
+
+### Bằng chứng kiểm thử local
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `py_compile` module Phase 2 | OK |
+| `git diff --check` | OK |
+| Phase 2 + QueryPlan + orchestrator + grounding/source challenge + AMIS/router/n8n regressions | `110/110 OK` ngày 2026-08-29 |
+
+### Điều kiện còn lại trước `DONE`
+
+1. Shadow replay cho paraphrase/multi-intent và đo agreement/timeout/cache-hit, không dùng agreement để nới protected route.
+2. Canary sender bucket xác nhận GoalFrame switch/resume, ordinal/plural reference, answer challenge và không có cross-brand/cross-sender leak.
+3. Đo đầy đủ các exit metrics tại mục 8; hiện chưa có bằng chứng live để tuyên bố các tỷ lệ đó.
 
 ## 1. Mục tiêu
 
@@ -326,14 +371,13 @@ Rollback:
 
 ## 10. Checklist nghiệm thu
 
-- [ ] QueryPlan v2 + validator backward-compatible.
-- [ ] Semantic planners proposal-only.
-- [ ] Arbitration priority được test.
+- [x] QueryPlan v2 + validator backward-compatible.
+- [x] Semantic planners proposal-only.
+- [x] Arbitration priority được test.
 - [ ] Multi-intent không bỏ high-risk intent.
-- [ ] State schema 5 lazy migration, không reset Redis.
-- [ ] GoalFrame switch/resume hoạt động.
-- [ ] Reference cùng sender/brand/freshness.
-- [ ] Source challenge dùng ledger và rút lại claim sai.
+- [x] State schema 5 lazy migration, không reset Redis.
+- [x] GoalFrame switch/resume hoạt động.
+- [x] Reference cùng sender/brand/freshness.
+- [x] Source challenge dùng ledger và rút lại claim sai.
 - [ ] Bốn RAG ranking regressions được sửa.
 - [ ] Toàn bộ exit metrics đạt trước canary.
-
