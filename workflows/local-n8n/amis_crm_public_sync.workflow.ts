@@ -30,6 +30,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
     name: 'AMIS CRM Public Catalog Sync',
     active: false,
     isArchived: false,
+    projectId: 'A5416cGJlo1X0rDa',
     settings: { timezone: 'Asia/Ho_Chi_Minh', executionOrder: 'v1' },
 })
 export class AmisCrmPublicCatalogSyncWorkflow {
@@ -74,6 +75,16 @@ export class AmisCrmPublicCatalogSyncWorkflow {
     RunAmisPublicSync = {
         method: 'POST',
         url: 'http://127.0.0.1:7777/admin/amis/sync',
+        sendHeaders: true,
+        specifyHeaders: 'keypair',
+        headerParameters: {
+            parameters: [
+                {
+                    name: 'X-Internal-Token',
+                    value: '={{ $env.AMIS_SYNC_INTERNAL_TOKEN }}',
+                },
+            ],
+        },
         sendQuery: true,
         specifyQuery: 'keypair',
         queryParameters: {
@@ -84,7 +95,6 @@ export class AmisCrmPublicCatalogSyncWorkflow {
                 },
             ],
         },
-        sendHeaders: false,
         options: {
             timeout: 120000,
         },

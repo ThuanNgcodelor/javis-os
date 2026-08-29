@@ -71,13 +71,13 @@
       "filename": "amis_crm_full_warm.workflow.ts"
     },
     "QLY0cLK5tqcx3KY6": {
-      "lastSyncedHash": "c8f072199ff661b852f327c3e9e38ef97797508a7ca133f2ee7d602b392cd5c6",
-      "lastSyncedAt": "2026-08-29T09:36:23.966Z",
+      "lastSyncedHash": "70a1ebee573632b4a1d7b334e322df1c1b183554e1ce2da4eea9cfccb48c289b",
+      "lastSyncedAt": "2026-08-29T17:19:25.550Z",
       "filename": "amis_crm_full_warm.workflow.ts"
     },
     "zksntDfjt5rhhbOW": {
-      "lastSyncedHash": "12f1c221b27c3f2d99ad4c8ba9114379e5ac95c5b894503fdf516125e072e6c3",
-      "lastSyncedAt": "2026-08-27T01:34:57.338Z",
+      "lastSyncedHash": "d7b37b2b13b29418d54d4693c8e410cff31f0f3c90166190ae06a73fdcea9ea4",
+      "lastSyncedAt": "2026-08-29T17:43:22.573Z",
       "filename": "amis_crm_public_sync.workflow.ts"
     }
   }

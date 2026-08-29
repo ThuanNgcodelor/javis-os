@@ -161,6 +161,22 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(b2b.intent, "cfc_b2b_large_order_request")
         self.assertEqual(dealer.intent, "cfc_dealer_location_request")
 
+    def test_cfc_bulk_quantity_without_purchase_verb_is_purchase_intake(self):
+        plan = self._plan(
+            "Tôi cần 200kg phân NPK",
+            "toi can 200kg phan npk",
+            brand="cfc",
+        )
+        self.assertEqual(plan.intent, "cfc_purchase_request")
+
+    def test_cfc_dealer_application_is_not_nearest_dealer_lookup(self):
+        plan = self._plan(
+            "Tôi muốn làm đại lý Cò Bay",
+            "toi muon lam dai ly co bay",
+            brand="cfc",
+        )
+        self.assertEqual(plan.intent, "cfc_b2b_large_order_request")
+
     def test_cfc_short_clarification_uses_active_goal(self):
         plan = self._plan(
             "Là sao? Chưa hiểu",

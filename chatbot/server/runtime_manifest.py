@@ -21,6 +21,10 @@ _TRACKED_FILES = (
     "chatbot/server/grounding_policy.py",
     "chatbot/server/rag_search.py",
     "chatbot/server/knowledge_sync.py",
+    "chatbot/server/conversation_orchestrator.py",
+    "chatbot/server/nlu_shadow.py",
+    "chatbot/server/conversation_replay_eval.py",
+    "chatbot/server/evaluation_ops.py",
 )
 _SECRET_MARKERS = ("secret", "token", "password", "api_key", "apikey", "authorization")
 

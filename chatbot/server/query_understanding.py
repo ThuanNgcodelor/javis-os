@@ -359,9 +359,11 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         text,
     ):
         return "product_category_query", 0.95
-    if brand == "cfc" and re.search(
-        r"\b(hop tac xa|htx|30 tan|20 tan|50 tan|100 tan|don hang lon|so luong lon|giam doc kinh doanh|gdkd|thuong luong hop dong|hop dong lon|mua si so luong)\b",
-        text,
+    if brand == "cfc" and (
+        re.search(
+            r"\b(hop tac xa|htx|30 tan|20 tan|50 tan|100 tan|don hang lon|so luong lon|giam doc kinh doanh|gdkd|thuong luong hop dong|hop dong lon|mua si so luong|muon lam dai ly|dang ky dai ly|phan phoi)\b",
+            text,
+        )
     ):
         return "cfc_b2b_large_order_request", 0.98
     if brand == "cfc" and (
@@ -411,7 +413,7 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
     ):
         return "cfc_dealer_location_request", 0.95
     if brand == "cfc" and (
-        re.search(r"\b(muon mua|can mua|dat mua|dat hang|lay hang|mua)\b", text)
+        re.search(r"\b(muon mua|can mua|can|dat mua|dat hang|lay hang|mua|nhap)\b", text)
         and re.search(r"\b\d+(?:[.,]\d+)?\s*(kg|tan|bao|thung)\b", text)
     ):
         return "cfc_purchase_request", 0.97

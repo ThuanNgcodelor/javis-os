@@ -1,9 +1,17 @@
 # Phase 4 — Tri thức nông học được duyệt và có thể kiểm chứng
 
-Trạng thái: `PLANNED / BLOCKED BY EXPERT APPROVAL`  
+Trạng thái: `IN PROGRESS — LOCAL FACT GATE DONE / TECHNICAL APPROVAL BLOCKED`
 Ưu tiên: P1 đối với CFC customer-facing agronomy  
 Ước lượng: 5–10 ngày kỹ thuật, cộng thời gian kỹ sư/phòng kỹ thuật duyệt  
 Phụ thuộc: Phase 0 đã chặn free generation; Phase 1 có fact/evidence/claim contract
+
+## Kết quả triển khai local — 2026-08-29
+
+- Thêm `domains/agronomy/approved_facts.json` và validator: fact phải có source ID, locator, trạng thái approved, ngày duyệt, crop; fact `product_fit`/`protocol` bắt buộc có người duyệt kỹ thuật.
+- Fact eligibility không được chứa số/liều; fact draft, expired, duplicate hoặc thiếu approver không thể được resolve customer-facing.
+- Seed duy nhất là fact mức tồn tại cho sầu riêng, có locator tới dòng FAQ customer-active. Nó chỉ nói CFC có nhóm NPK/hữu cơ và hỏi giai đoạn cây; không phải protocol, không chứa công thức/liều lượng hay cam kết.
+- Câu eligibility đã có fact được route thẳng, bỏ qua CFC semantic planner/Ollama; smoke test local giảm từ khoảng 9,4 giây xuống 57 ms.
+- Câu công thức/liều lượng/giai đoạn/trị bệnh vẫn đi expert intake cho đến khi kỹ sư thêm protocol đã duyệt. Không coi FAQ active là kỹ sư duyệt technical protocol.
 
 ## 1. Mục tiêu
 
@@ -303,3 +311,10 @@ Rollback:
 - [ ] Kỹ sư duyệt sample answer.
 - [ ] Canary và rollback snapshot đã thử.
 
+### Checklist local bổ sung
+
+- [x] Fact/source/approval validator và aggregate diagnostics có test.
+- [x] Product eligibility tách khỏi dosage/protocol consultation.
+- [x] Composer chỉ dùng fact approved, không gọi model để thêm kiến thức.
+- [x] Draft/expired/no-approver/dosage-smuggling cases bị chặn bằng regression test.
+- [ ] Kỹ sư chỉ định approver và duyệt protocol/liều lượng cho pilot sầu riêng/lúa.

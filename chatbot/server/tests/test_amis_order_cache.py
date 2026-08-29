@@ -89,6 +89,9 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sale_order_date"], "2026-08-28")
         self.assertEqual(result["deadline_date"], "2026-08-30")
         self.assertEqual(result["source_id"], "amis:internal:order-warm")
+        self.assertEqual(result["data_mode"], "protected_warm_cache")
+        self.assertEqual(result["ownership_check"], "order_code_and_phone_hmac_match")
+        self.assertTrue(result["freshness_checked"])
 
     async def test_schema_v2_index_uses_exact_order_key_without_loading_full_snapshot(self):
         index = build_order_lookup_index(self.snapshot)

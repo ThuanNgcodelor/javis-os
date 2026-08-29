@@ -1,6 +1,6 @@
 # Phase 5 — Evaluation, shadow, canary và vận hành
 
-Trạng thái: `PLANNED`  
+Trạng thái: `IN PROGRESS — LOCAL FOUNDATION DONE / NO LIVE CANARY OR N8N OPERATIONS ACTIVATED`
 Ưu tiên: bắt đầu dựng baseline song song Phase 0; rollout production thực hiện sau các phase liên quan  
 Ước lượng: 4–5 ngày dựng nền + 3–7 ngày lịch để đủ shadow/canary traffic  
 Phụ thuộc rollout: Phase 1 trace; phase/capability cần thử đã qua local/replay gate
@@ -10,6 +10,22 @@ Phụ thuộc rollout: Phase 1 trace; phase/capability cần thử đã qua loca
 Chứng minh thay đổi làm chatbot đúng hơn trên real pipeline, không bịa, không lộ dữ liệu và không phá flow cũ; sau đó rollout theo capability và stable canary với điều kiện dừng/rollback tự động rõ ràng.
 
 Không dùng một điểm semantic similarity hoặc vài câu exact-match để tuyên bố “đạt”.
+
+## Kết quả triển khai local — 2026-08-29
+
+- Thêm `evaluation_ops.py`: report replay được đóng dấu `runtime_manifest`, hash/ID của đúng file JSONL dataset và `report_id`. Vì vậy một kết quả eval luôn biết chính xác code/policy/dataset nào đã tạo ra nó.
+- Replay scorer đã chấm thêm `source_family`, trạng thái claim, `fallback_reason`, QueryPlan ID và runtime manifest ID. Case mới có thể yêu cầu/không cho phép từng claim status, thay vì chỉ so text answer.
+- Hai shadow collector NLU và Conversation nay ghi về một schema/key chung `*:shadow:v2:events`. Event chỉ có hash, route, source family, answer/claim metadata, provider/model và timing; **không lưu raw query, normalized query, raw sender hay raw model reason**.
+- NLU shadow dùng đúng `shadow_timeout_seconds` cấu hình (trước đây có timeout hard-code khác cấu hình). Conversation shadow cũng đọc outcome sau xử lý nếu session đã được persist.
+- Sửa trace: bật Conversation shadow không còn ghi đè `pipeline_trace_extra` đã có từ QueryPlan/route khác.
+- Thêm primitive canary ổn định HMAC theo brand+sender. Mặc định luôn `control/off`; chỉ nhận nấc 0/5/25/100; cần salt + capability allowlist rõ. Các capability high-risk (đơn, tồn, giá, loyalty, protocol nông học) bị chặn trừ khi có cờ phê duyệt riêng. Primitive này **chưa được nối vào customer traffic**.
+- Nhóm hồi quy CFC/Phase 2 xanh 35/35. Toàn bộ suite hiện có 195 test: 189 pass, 4 lỗi assertion và 2 lỗi metrics ở AMIS projection/workflow contract cũ; các lỗi này không do catalog CFC mới. Không sửa/push workflow n8n, không bật canary, không gọi AMIS realtime trong triển khai này.
+- Bổ sung hai bộ manual real-world test: `chatbot/server/manual_tests/TEST_CFC_REAL_WORLD_PHASE_0_5.md` (56 case, ưu tiên CFC) và `chatbot/server/manual_tests/TEST_ZEO_REAL_WORLD_PHASE_0_5.md` (38 case). Các case chấm theo hành vi/source/privacy/fallback, không chấm exact wording.
+- CFC catalog runtime hiện đọc `amis:public:products:active` qua projection allowlist; công thức NPK phải khớp chính xác và chỉ hiển thị tối đa 3–5 sản phẩm. Không có giá, tồn kho hay trường CRM trong projection.
+- Bổ sung hai bộ manual real-world test: `chatbot/server/manual_tests/TEST_CFC_REAL_WORLD_PHASE_0_5.md` (56 case, ưu tiên CFC) và `chatbot/server/manual_tests/TEST_ZEO_REAL_WORLD_PHASE_0_5.md` (38 case). Các case chấm theo hành vi/source/privacy/fallback, không chấm exact wording.
+- CFC catalog runtime hiện đọc `amis:public:products:active` qua projection allowlist; công thức NPK phải khớp chính xác và chỉ hiển thị tối đa 3–5 sản phẩm. Không có giá, tồn kho hay trường CRM trong projection.
+
+Chưa thể tuyên bố Phase 5 hoàn tất vì chưa có baseline workbook được nghiệp vụ duyệt, chưa có shadow traffic đủ mẫu, chưa có approval canary và P5-WP4/P5-WP5 n8n operations chưa được reconcile với live.
 
 ## 2. Bằng chứng hiện trạng
 
@@ -286,4 +302,3 @@ Deterministic p95 không tăng quá 15% hoặc 250 ms, lấy ngưỡng lớn hơ
 - [ ] 5%/25%/100% gates có report.
 - [ ] Rollback drill dưới 5 phút.
 - [ ] Production ổn định 7 ngày trước `DONE`.
-

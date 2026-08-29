@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from ai_engine import plan_chat_intent_with_ai
+from evaluation_ops import append_shadow_event, build_shadow_event
 from rag_search import get_redis
 
 
@@ -118,20 +119,23 @@ def _intent_family(intent: str) -> str:
     return aliases.get(value, value)
 
 
-async def _load_actual_intent(redis_client: Any, session_key: str, expected_query: str) -> tuple[str, str]:
+async def _load_actual_outcome(
+    redis_client: Any, session_key: str, expected_query: str,
+) -> tuple[str, str, dict[str, Any]]:
     try:
         raw_session = await redis_client.get(session_key)
         if isinstance(raw_session, bytes):
             raw_session = raw_session.decode("utf-8")
         session = json.loads(raw_session) if raw_session else {}
         if not isinstance(session, dict):
-            return "", "invalid_session"
+            return "", "invalid_session", {}
         if str(session.get("last_user_message", "")).strip() != expected_query.strip():
-            return "", "superseded_or_not_saved"
-        return str(session.get("last_intent", "")).strip(), "captured"
+            return "", "superseded_or_not_saved", {}
+        trace = session.get("last_trace") if isinstance(session.get("last_trace"), dict) else {}
+        return str(session.get("last_intent", "")).strip(), "captured", trace
     except Exception as exc:
         logger.debug("Could not load actual intent for NLU shadow: %s", exc)
-        return "", "session_read_failed"
+        return "", "session_read_failed", {}
 
 
 async def collect_nlu_shadow_observation(
@@ -149,48 +153,44 @@ async def collect_nlu_shadow_observation(
     retention_seconds: int,
 ) -> dict[str, Any]:
     started = time.perf_counter()
+    bounded_timeout = max(2.0, min(float(timeout or 20.0), 40.0))
     prediction = await asyncio.wait_for(
-        plan_chat_intent_with_ai(raw_text, brand=brand, conversation_summary=conversation_summary, timeout=12.0),
-        timeout=15.0
+        plan_chat_intent_with_ai(
+            raw_text, brand=brand, conversation_summary=conversation_summary, timeout=bounded_timeout,
+        ),
+        timeout=bounded_timeout + 1.0,
     )
     latency_ms = round((time.perf_counter() - started) * 1000, 2)
 
     redis_client = await get_redis()
     session_key = f"{brand}:session:messenger:{sender_id}"
-    actual_intent, actual_status = await _load_actual_intent(redis_client, session_key, raw_text)
+    actual_intent, actual_status, trace = await _load_actual_outcome(redis_client, session_key, raw_text)
     predicted_intent = str((prediction or {}).get("intent", "")).strip()
     predicted_confidence = _safe_float((prediction or {}).get("confidence"), 0.0)
     actual_family = _intent_family(actual_intent)
     predicted_family = _intent_family(predicted_intent)
 
-    observation = {
-        "schema_version": 1,
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
-        "brand": brand,
-        "sender_hash": _stable_hash(f"{brand}:{sender_id}"),
-        "message_hash": _stable_hash(message_id or f"{sender_id}:{raw_text}"),
-        "query": _redact_text(raw_text),
-        "normalized_query": _redact_text(normalized_text),
-        "deterministic_plan": {
-            "intent": deterministic_plan.get("intent", ""),
-            "intent_confidence": deterministic_plan.get("intent_confidence", 0.0),
-            "attributes": deterministic_plan.get("attributes", []),
-            "needs_context": bool(deterministic_plan.get("needs_context")),
-            "needs_product_tool": bool(deterministic_plan.get("needs_product_tool")),
-        },
-        "actual_intent": actual_intent,
-        "actual_status": actual_status,
-        "llm_nlu": _redact_payload(prediction or {}),
-        "meets_threshold": predicted_confidence >= confidence_threshold,
+    observation = build_shadow_event(
+        event_type="nlu",
+        brand=brand,
+        sender_id=sender_id,
+        message_id=message_id or f"{sender_id}:{raw_text}",
+        deterministic_proposal=deterministic_plan,
+        semantic_proposal=prediction or {},
+        actual_route=actual_intent,
+        actual_status=actual_status,
+        trace=trace,
+        timing_ms=latency_ms,
+        status="predicted" if prediction else "no_prediction",
+    )
+    observation.update({
         "agreement": bool(actual_family and predicted_family and actual_family == predicted_family),
-        "latency_ms": latency_ms,
-        "status": "predicted" if prediction else "no_prediction",
-    }
-
-    observation_key = f"{brand}:nlu:shadow:observations"
-    await redis_client.rpush(observation_key, json.dumps(observation, ensure_ascii=False))
-    await redis_client.ltrim(observation_key, -max_observations, -1)
-    await redis_client.expire(observation_key, retention_seconds)
+        "meets_threshold": predicted_confidence >= confidence_threshold,
+    })
+    await append_shadow_event(
+        redis_client, brand=brand, event=observation,
+        max_observations=max_observations, retention_seconds=retention_seconds,
+    )
     return observation
 
 

@@ -12,6 +12,7 @@ from typing import Any, Iterable
 import uuid
 
 from chat_pipeline import ChatPipelineRequest, _local_customer_cache, _local_session_cache, process_chat_pipeline
+from evaluation_ops import evaluation_report_envelope
 from rag_search import get_redis
 
 
@@ -26,6 +27,11 @@ class TurnResult:
     intent: str
     answer: str
     source_id: str
+    source_family: str
+    claim_statuses: list[str]
+    fallback_reason: str
+    query_plan_id: str
+    runtime_manifest_id: str
     grounding_status: str
     knowledge_class: str
     expected_behavior: str
@@ -79,6 +85,22 @@ def score_turn(
     source_id = str(trace.get("source_id") or "")
     if turn.get("require_source") and not source_id:
         failures.append("source_id_missing")
+    answer_trace = trace.get("answer_trace") if isinstance(trace.get("answer_trace"), dict) else {}
+    evidence = answer_trace.get("evidence") if isinstance(answer_trace.get("evidence"), list) else []
+    source_types = {str(item.get("source_type") or "") for item in evidence if isinstance(item, dict)}
+    expected_source_family = turn.get("source_family")
+    if expected_source_family and str(expected_source_family) not in source_types:
+        failures.append(f"source_family={sorted(source_types)!r}, expected={expected_source_family!r}")
+    claim_statuses = {
+        str(item.get("status") or "")
+        for item in (answer_trace.get("claims") or []) if isinstance(item, dict)
+    }
+    for status in turn.get("required_claim_statuses", []) or []:
+        if str(status) not in claim_statuses:
+            failures.append(f"claim_status_missing={status!r}")
+    for status in turn.get("forbidden_claim_statuses", []) or []:
+        if str(status) in claim_statuses:
+            failures.append(f"claim_status_forbidden={status!r}")
     if "suppress_send" in turn and bool(turn["suppress_send"]) != suppress_send:
         failures.append(f"suppress_send={suppress_send!r}, expected={bool(turn['suppress_send'])!r}")
 
@@ -251,6 +273,19 @@ async def run_replays(cases: Iterable[dict[str, Any]]) -> dict[str, Any]:
                 intent=response.intent,
                 answer=response.answer,
                 source_id=str(trace.get("source_id") or ""),
+                source_family="+".join(sorted({
+                    str(item.get("source_type") or "")
+                    for item in ((trace.get("answer_trace") or {}).get("evidence") or [])
+                    if isinstance(item, dict) and item.get("source_type")
+                })),
+                claim_statuses=sorted({
+                    str(item.get("status") or "")
+                    for item in ((trace.get("answer_trace") or {}).get("claims") or [])
+                    if isinstance(item, dict) and item.get("status")
+                }),
+                fallback_reason=str(trace.get("fallback_reason") or response.fallback_reason or ""),
+                query_plan_id=str((trace.get("answer_trace") or {}).get("query_plan_id") or ""),
+                runtime_manifest_id=str(trace.get("runtime_manifest_id") or ""),
                 grounding_status=str((trace.get("grounding") or {}).get("status") or ""),
                 knowledge_class=knowledge_class,
                 expected_behavior=expected_behavior,
@@ -264,7 +299,7 @@ async def run_replays(cases: Iterable[dict[str, Any]]) -> dict[str, Any]:
     result_dicts = [asdict(item) for item in results]
     total_turns = len(result_dicts)
     passed_turns = sum(1 for item in result_dicts if item["passed"])
-    return {
+    report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "validation_mode": "live_pipeline_replay" if redis_available else "degraded_local_pipeline_replay",
         "dependencies": {
@@ -298,6 +333,9 @@ async def run_replays(cases: Iterable[dict[str, Any]]) -> dict[str, Any]:
         },
         "results": result_dicts,
     }
+    return evaluation_report_envelope(
+        report, dataset_paths=[DEFAULT_CASES], validation_mode=report["validation_mode"],
+    )
 
 
 async def _main() -> int:

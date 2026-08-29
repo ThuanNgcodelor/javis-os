@@ -1,9 +1,17 @@
 # Phase 3 — AMIS realtime, phân quyền và bảo mật
 
-Trạng thái: `PLANNED / BLOCKED BY BUSINESS DECISIONS`  
+Trạng thái: `IN PROGRESS — LOCAL FOUNDATION DONE / LIVE DECISIONS BLOCKED`
 Ưu tiên: P1 đối với bảo mật public sync; P2 đối với realtime capabilities  
 Ước lượng: 5–10 ngày kỹ thuật, chưa tính phê duyệt API/nghiệp vụ  
 Phụ thuộc: Phase 0 containment; Phase 1 evidence/tool trace tối thiểu
+
+## Kết quả triển khai local — 2026-08-29
+
+- Order lookup customer-facing được xác định đúng là `protected_warm_cache`, không gọi là realtime: bắt buộc mã đơn chính xác + SĐT khớp HMAC và kiểm freshness trước khi trả lời.
+- Chỉ field allowlist được trả: trạng thái đơn, tình trạng giao, ngày đặt/hạn giao và `Cập nhật gần nhất` từ `modified_date`; không trả thời điểm đồng bộ cache, PII, tiền, công nợ, địa chỉ hay dòng hàng.
+- `live_crm.py` không còn báo `LIVE_AMIS_API` chỉ vì có credential/file cache. Status trả `PROTECTED_WARM_CACHE`, khai báo rõ inventory/loyalty/giá/chiết khấu/công nợ chưa có realtime customer-facing.
+- Trace order chỉ lưu outcome/freshness/method ownership đã redaction, không lưu SĐT hay raw order.
+- Test local: order access/freshness + formatter + status contract xanh. Không có AMIS API realtime nào được gọi hay được bật trong thay đổi này.
 
 ## 1. Mục tiêu
 
@@ -276,3 +284,9 @@ Rollback:
 - [ ] Live canary dùng test identity được phép.
 - [ ] Runbook incident/rollback được thử.
 
+### Checklist local bổ sung
+
+- [x] Warm order cache dùng exact code + phone HMAC, freshness gate và minimal response allowlist.
+- [x] Business `updated_at` được hiển thị theo giờ Việt Nam; `synced_at` không customer-facing.
+- [x] Legacy status không còn gắn nhãn realtime sai.
+- [ ] Privileged realtime adapter có endpoint AMIS, ownership link/OTP và business approval.

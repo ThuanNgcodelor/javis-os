@@ -291,4 +291,10 @@ async def lookup_cached_order_status(
         "order_updated_at": str(matched.get("updated_at") or ""),
         "synced_at": synced_at_raw,
         "source_id": "amis:internal:order-warm",
+        # Do not call this "realtime": it is a protected warm-cache result.
+        # The code + phone HMAC match is the minimum ownership check until an
+        # approved sender-link/OTP realtime adapter exists.
+        "data_mode": "protected_warm_cache",
+        "ownership_check": "order_code_and_phone_hmac_match",
+        "freshness_checked": True,
     }

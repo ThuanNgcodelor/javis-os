@@ -340,6 +340,47 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotRegex(result.answer, r"\b\d{1,2}-\d{1,2}-\d{1,2}\b")
         self.assertNotIn("giá xuất xưởng", result.answer.lower())
         self.assertNotIn("miễn phí vận chuyển", result.answer.lower())
+        trace = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:durian-eligibility"
+        ]["last_trace"]
+        self.assertEqual(trace["agronomy_fact"]["fact_id"], "cfc-product-family-eligibility-durian-v1")
+        self.assertEqual(trace["source_id"], "cfc_reply_docx_v1")
+
+    async def test_approved_agronomy_eligibility_skips_cfc_semantic_planner(self):
+        redis_patch, faq_patch, profile_patch, _ = self._patches()
+        semantic_planner = AsyncMock(return_value=[])
+        with redis_patch, faq_patch, profile_patch, \
+                patch("chat_pipeline._llm_nlu_config", return_value=("assist", 0.3, 0.72)), \
+                patch("cfc_semantic_planner.plan_cfc_intents", new=semantic_planner):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="durian-fast-fact",
+                text="Có phân bón cho cây sầu riêng hay không?",
+            ))
+
+        self.assertIn("CFC có các dòng NPK và phân hữu cơ", result.answer)
+        semantic_planner.assert_not_awaited()
+        trace = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:durian-fast-fact"
+        ]["last_trace"]
+        self.assertEqual(
+            trace["protected_fast_path"]["reason"],
+            "APPROVED_ELIGIBILITY_FACT_SKIPS_AI_PLANNERS",
+        )
+
+    def test_order_reply_shows_business_update_but_not_cache_sync_time(self):
+        answer, reason = chat_pipeline._format_order_lookup_reply({
+            "outcome": "found",
+            "order_code": "00005065",
+            "status": "Đã thực hiện",
+            "sale_order_date": "2026-08-26T00:00:00+07:00",
+            "order_updated_at": "2026-08-28T09:03:40+07:00",
+            "synced_at": "2026-08-29T09:38:23+00:00",
+        })
+
+        self.assertEqual(reason, "ORDER_CACHE_MATCHED")
+        self.assertIn("Cập nhật gần nhất: 09:03 ngày 28/08/2026", answer)
+        self.assertNotIn("đồng bộ", answer.lower())
 
     async def test_cfc_accented_acknowledgement_does_not_fall_back_to_general_support(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()

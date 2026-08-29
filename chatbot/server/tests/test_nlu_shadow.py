@@ -52,7 +52,7 @@ class NluShadowTests(unittest.IsolatedAsyncioTestCase):
             "model": "fake",
         }
 
-        with patch("nlu_shadow.plan_chat_intent_with_ollama", new=AsyncMock(return_value=prediction)), \
+        with patch("nlu_shadow.plan_chat_intent_with_ai", new=AsyncMock(return_value=prediction)) as planner, \
                 patch("nlu_shadow.get_redis", new=AsyncMock(return_value=redis_client)):
             observation = await nlu_shadow.collect_nlu_shadow_observation(
                 brand="zeo",
@@ -74,15 +74,17 @@ class NluShadowTests(unittest.IsolatedAsyncioTestCase):
                 retention_seconds=604800,
             )
 
-        self.assertNotIn("0908776655", observation["query"])
-        self.assertIn("[PHONE]", observation["query"])
-        self.assertNotIn("0908776655", observation["llm_nlu"]["reason"])
+        planner.assert_awaited_once()
+        self.assertNotIn("query", observation)
+        self.assertNotIn("0908776655", str(observation))
         self.assertNotIn("sender-1", observation["sender_hash"])
-        self.assertEqual(observation["actual_intent"], "specific_product_pricing")
+        self.assertEqual(observation["actual_route"], "specific_product_pricing")
+        self.assertEqual(observation["actual_status"], "captured")
+        self.assertEqual(observation["semantic_proposal"]["intent"], "specific_price")
         self.assertTrue(observation["agreement"])
         self.assertTrue(observation["meets_threshold"])
-        self.assertEqual(len(redis_client.lists["zeo:nlu:shadow:observations"]), 1)
-        self.assertEqual(redis_client.expirations["zeo:nlu:shadow:observations"], 604800)
+        self.assertEqual(len(redis_client.lists["zeo:shadow:v2:events"]), 1)
+        self.assertEqual(redis_client.expirations["zeo:shadow:v2:events"], 604800)
 
     async def test_scheduler_is_non_blocking_and_bounded(self):
         gate = AsyncMock()

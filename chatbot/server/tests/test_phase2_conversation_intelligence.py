@@ -122,6 +122,11 @@ class PhaseTwoConversationIntelligenceTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertTrue(chat_pipeline._detect_source_challenge(chat_pipeline._normalize_vn(text)))
 
+    def test_official_website_question_is_not_misclassified_as_source_challenge(self):
+        for text in ("CFC có website chính thức không?", "cho xin link website chính thức"):
+            with self.subTest(text=text):
+                self.assertFalse(chat_pipeline._detect_source_challenge(chat_pipeline._normalize_vn(text)))
+
 
 class PhaseTwoSourceChallengeIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_pipeline_uses_verified_ledger_before_legacy_source_string(self):
@@ -160,6 +165,35 @@ class PhaseTwoSourceChallengeIntegrationTests(unittest.IsolatedAsyncioTestCase):
         trace = chat_pipeline._local_session_cache[key]["last_trace"]
         self.assertEqual(trace["source_challenge"]["previous_answer_id"], "ans:previous")
         self.assertEqual(trace["source_challenge"]["outcome"], "CLAIM_VERIFIED_ACKNOWLEDGED")
+
+    async def test_website_faq_does_not_call_ai_planners(self):
+        sender = "phase2-website-fast"
+
+        class ReadOnlyRedis:
+            async def get(self, _key):
+                return None
+
+        async def faq(brand, intent):
+            return {
+                "intent": intent,
+                "answer": "Dạ website chính thức của CFC Cò Bay là https://cfccobay.com nha bạn.",
+                "source_id": "test:cfc_company_website",
+            }
+
+        with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=ReadOnlyRedis())), \
+             patch("chat_pipeline.get_faq_by_intent", new=AsyncMock(side_effect=faq)), \
+             patch("chat_pipeline._llm_nlu_config", return_value=("assist", 0.3, 0.72)), \
+             patch("cfc_semantic_planner.plan_cfc_intents", new=AsyncMock(side_effect=AssertionError("planner must be skipped"))), \
+             patch("chat_pipeline._async_save_profile_and_notify", new=AsyncMock()):
+            response = await chat_pipeline._process_chat_pipeline_once(
+                chat_pipeline.ChatPipelineRequest(
+                    brand="cfc", sender_id=sender,
+                    text="CFC có website chính thức không?",
+                )
+            )
+
+        self.assertEqual(response.intent, "cfc_company_website")
+        self.assertIn("cfccobay.com", response.answer)
 
 
 if __name__ == "__main__":

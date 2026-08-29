@@ -330,6 +330,16 @@ return chunks;
     StageAmisWarmChunk = {
         method: 'POST',
         url: 'http://127.0.0.1:7777/admin/amis/warm/stage',
+        sendHeaders: true,
+        specifyHeaders: 'keypair',
+        headerParameters: {
+            parameters: [
+                {
+                    name: 'X-Internal-Token',
+                    value: '={{ $env.AMIS_SYNC_INTERNAL_TOKEN }}',
+                },
+            ],
+        },
         sendBody: true,
         specifyBody: 'json',
         jsonBody: '={{ $json }}',
@@ -384,6 +394,16 @@ return [{ json: { run_id: runId } }];
     CommitAmisWarmRun = {
         method: 'POST',
         url: 'http://127.0.0.1:7777/admin/amis/warm/commit',
+        sendHeaders: true,
+        specifyHeaders: 'keypair',
+        headerParameters: {
+            parameters: [
+                {
+                    name: 'X-Internal-Token',
+                    value: '={{ $env.AMIS_SYNC_INTERNAL_TOKEN }}',
+                },
+            ],
+        },
         sendBody: true,
         specifyBody: 'json',
         jsonBody: '={{ $json }}',

@@ -475,6 +475,7 @@ async def _collect_conversation_shadow(
     retention_seconds: int,
 ) -> None:
     from ai_engine import plan_conversation_turn_with_ai
+    from evaluation_ops import append_shadow_event, build_shadow_event
     from rag_search import get_redis
 
     started = datetime.now(timezone.utc)
@@ -485,23 +486,41 @@ async def _collect_conversation_shadow(
         conversation_context=conversation_context,
         timeout=2.5,
     )
-    observation = {
-        "schema_version": 1,
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
-        "brand": brand,
-        "sender_hash": hashlib.sha256(f"{brand}:{sender_id}".encode("utf-8")).hexdigest()[:16],
-        "message_hash": hashlib.sha256((message_id or user_query).encode("utf-8")).hexdigest()[:16],
-        "query": _redact(user_query, 500),
-        "deterministic_intent": str(deterministic_plan.get("intent") or ""),
-        "orchestrator_plan": _redact_value(plan or {}),
-        "latency_ms": round((datetime.now(timezone.utc) - started).total_seconds() * 1000, 2),
-        "status": "predicted" if plan else "no_prediction",
-    }
     redis_client = await get_redis()
-    key = f"{brand}:conversation:shadow:observations"
-    await redis_client.rpush(key, json.dumps(observation, ensure_ascii=False))
-    await redis_client.ltrim(key, -500, -1)
-    await redis_client.expire(key, retention_seconds)
+    session_key = f"{brand}:session:messenger:{sender_id}"
+    actual_route = ""
+    actual_status = "session_read_failed"
+    trace: dict[str, Any] = {}
+    try:
+        raw_session = await redis_client.get(session_key)
+        if isinstance(raw_session, bytes):
+            raw_session = raw_session.decode("utf-8")
+        session = json.loads(raw_session) if raw_session else {}
+        if isinstance(session, dict) and str(session.get("last_user_message") or "").strip() == user_query.strip():
+            actual_route = str(session.get("last_intent") or "")
+            trace = session.get("last_trace") if isinstance(session.get("last_trace"), dict) else {}
+            actual_status = "captured"
+        else:
+            actual_status = "superseded_or_not_saved"
+    except Exception:
+        pass
+    observation = build_shadow_event(
+        event_type="conversation",
+        brand=brand,
+        sender_id=sender_id,
+        message_id=message_id or f"{sender_id}:{user_query}",
+        deterministic_proposal=deterministic_plan,
+        semantic_proposal=plan or {},
+        actual_route=actual_route,
+        actual_status=actual_status,
+        trace=trace,
+        timing_ms=(datetime.now(timezone.utc) - started).total_seconds() * 1000,
+        status="predicted" if plan else "no_prediction",
+    )
+    await append_shadow_event(
+        redis_client, brand=brand, event=observation,
+        max_observations=500, retention_seconds=retention_seconds,
+    )
 
 
 def _shadow_task_finished(task: asyncio.Task) -> None:

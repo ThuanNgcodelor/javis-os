@@ -1,11 +1,9 @@
-"""
-chatbot/server/domains/amis/live_crm.py — Realtime Live CRM & Order Tracker Engine
-Truy vấn dữ liệu thật 100% từ MISA AMIS CRM Open API v2 và CRM Dataset Cache:
-  1. lookup_order_status(order_code, dealer_name) -> Tra cứu đơn hàng thật từ 6,718 đơn CRM
-  2. lookup_loyalty_info(phone) -> Tra cứu đại lý/khách hàng thật từ 4,845 khách CRM
-  3. lookup_inventory_atp(formula, qty_tons, warehouse) -> Tra cứu tồn kho thật từ 932 SKU CRM
-  4. create_cskh_ticket(ticket_type, phone, details) -> Tạo ticket nội bộ cho CSKH/QA
-  5. check_amis_live_status() -> Kiểm tra trạng thái kết nối Live CRM
+"""Legacy AMIS helpers kept for internal migration only.
+
+They are not wired to the Messenger chatbot.  A cached file or configured
+credential is not evidence of a customer-safe realtime capability; the active
+chatbot path uses ``domains.amis.order_cache`` with exact code + phone HMAC and
+freshness checks instead.
 """
 
 from __future__ import annotations
@@ -129,17 +127,17 @@ def _ensure_crm_dataset_loaded() -> None:
 # 1. KIỂM TRA TRẠNG THÁI KẾT NỐI REALTIME
 # ==============================================================================
 def check_amis_live_status() -> dict[str, Any]:
-    """Kiểm tra hệ thống đang kết nối Live CRM API."""
+    """Describe the real capability boundary without loading raw CRM data."""
     config = load_amis_config()
-    _ensure_crm_dataset_loaded()
-    is_live = bool(config.credentials_configured)
     return {
-        "mode": "LIVE_AMIS_API" if is_live else "LOCAL_SIMULATION",
+        "mode": "PROTECTED_WARM_CACHE",
+        "realtime_enabled": False,
+        "order_lookup": "exact_order_code_plus_phone_hmac_fresh_cache",
+        "unavailable_realtime_capabilities": ["inventory", "loyalty", "price", "discount", "debt"],
+        "legacy_raw_cache_present": REAL_CRM_CACHE_FILE.exists(),
         "base_url": config.base_url,
         "has_client_id": bool(config.client_id),
         "has_client_secret": bool(config.client_secret),
-        "synced_dealers_count": len(_CRM_DATASET.get("customers", [])) or 381,
-        "synced_products_count": len(_CRM_DATASET.get("products", [])) or 932,
     }
 
 
