@@ -185,12 +185,17 @@ async def health():
 
 
 @app.post("/sync")
-async def sync_knowledge(brand: str = Query("zeo", description="'zeo' hoặc 'cfc' hoặc 'all'")):
+async def sync_knowledge(
+    brand: str = Query("zeo", description="'zeo' hoặc 'cfc' hoặc 'all'"),
+    snapshot_key: Optional[str] = Query(None, description="Approved active/candidate Redis snapshot key"),
+):
     """
     Đọc FAQ từ Redis snapshot, tạo embeddings, upsert vào Vector Index.
     Chạy khi cập nhật dữ liệu FAQ mới từ Google Sheets.
     """
     if brand.lower() == "all":
+        if snapshot_key:
+            raise HTTPException(status_code=400, detail="snapshot_key không dùng được với brand=all")
         zeo_result = await sync_brand("zeo")
         cfc_result = await sync_brand("cfc")
         return {"zeo": zeo_result, "cfc": cfc_result}
@@ -198,10 +203,7 @@ async def sync_knowledge(brand: str = Query("zeo", description="'zeo' hoặc 'cf
     if brand.lower() not in ("zeo", "cfc"):
         raise HTTPException(status_code=400, detail="brand phải là 'zeo', 'cfc', hoặc 'all'")
     
-    result = await sync_brand(brand.lower())
-    if "error" in result:
-        raise HTTPException(status_code=500, detail=result["error"])
-    return result
+    return await sync_brand(brand.lower(), snapshot_key=snapshot_key)
 
 
 @app.post("/search")

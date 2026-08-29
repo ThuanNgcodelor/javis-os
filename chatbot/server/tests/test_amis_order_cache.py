@@ -1,0 +1,108 @@
+import json
+import sys
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+
+SERVER_DIR = Path(__file__).resolve().parents[1]
+if str(SERVER_DIR) not in sys.path:
+    sys.path.insert(0, str(SERVER_DIR))
+
+from domains.amis.config import AmisConfig  # noqa: E402
+from domains.amis.order_cache import (  # noqa: E402
+    build_order_lookup_snapshot,
+    lookup_cached_order_status,
+)
+
+
+NOW = datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc)
+
+
+class FakeRedis:
+    def __init__(self, values):
+        self.values = values
+
+    async def get(self, key):
+        return self.values.get(key)
+
+
+class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.config = AmisConfig(
+            order_lookup_hmac_secret="unit-test-order-hmac",
+            order_lookup_max_age_seconds=5400,
+        )
+        self.snapshot = build_order_lookup_snapshot(
+            {
+                "customers": [{
+                    "account_number": "KH001",
+                    "account_name": "Khách hàng không được lộ",
+                    "office_tel": "0901 234 567",
+                }],
+                "sale_orders": [{
+                    "account_code": "KH001",
+                    "sale_order_no": "DH-2026-889",
+                    "status": "Đang giao hàng",
+                    "modified_date": "2026-08-29T07:45:00+00:00",
+                }],
+                "products": [],
+            },
+            config=self.config,
+            synced_at=NOW.isoformat(),
+        )
+
+    def test_snapshot_keeps_only_order_minimum_and_hashes_phone(self):
+        encoded = json.dumps(self.snapshot, ensure_ascii=False)
+        self.assertEqual(self.snapshot["record_count"], 1)
+        self.assertIn("DH-2026-889", encoded)
+        self.assertNotIn("0901 234 567", encoded)
+        self.assertNotIn("Khách hàng không được lộ", encoded)
+        self.assertNotIn("account_code", encoded)
+        self.assertIn("phone_hmacs", encoded)
+
+    async def test_exact_order_code_and_matching_phone_returns_status(self):
+        redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})
+        result = await lookup_cached_order_status(
+            redis,
+            config=self.config,
+            order_code="2026 889",
+            phone="+84 901 234 567",
+            now=NOW + timedelta(minutes=10),
+        )
+
+        self.assertEqual(result["outcome"], "found")
+        self.assertEqual(result["order_code"], "DH-2026-889")
+        self.assertEqual(result["status"], "Đang giao hàng")
+        self.assertEqual(result["source_id"], "amis:internal:order-warm")
+
+    async def test_wrong_code_or_phone_does_not_leak_order_information(self):
+        redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})
+        wrong_code = await lookup_cached_order_status(
+            redis, config=self.config, order_code="DH-404", phone="0901234567", now=NOW
+        )
+        wrong_phone = await lookup_cached_order_status(
+            redis, config=self.config, order_code="DH-2026-889", phone="0909999999", now=NOW
+        )
+
+        self.assertEqual(wrong_code["outcome"], "not_found")
+        self.assertNotIn("status", wrong_code)
+        self.assertEqual(wrong_phone["outcome"], "phone_mismatch")
+        self.assertNotIn("status", wrong_phone)
+
+    async def test_stale_snapshot_is_not_used(self):
+        redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})
+        result = await lookup_cached_order_status(
+            redis,
+            config=self.config,
+            order_code="DH-2026-889",
+            phone="0901234567",
+            now=NOW + timedelta(seconds=5401),
+        )
+
+        self.assertEqual(result["outcome"], "unavailable")
+        self.assertEqual(result["reason"], "ORDER_CACHE_STALE")
+
+
+if __name__ == "__main__":
+    unittest.main()

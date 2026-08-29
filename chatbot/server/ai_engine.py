@@ -34,6 +34,12 @@ def _load_settings() -> dict:
     return _settings
 
 
+def _customer_fact_generation_mode() -> str:
+    """Return the fail-closed mode for customer-facing LLM text generation."""
+    policy = _load_settings().get("grounding_policy", {})
+    return str(policy.get("customer_fact_generation_mode") or "direct_only").strip().lower()
+
+
 async def call_gemini(
     prompt: str,
     system_prompt: str = "",
@@ -379,49 +385,9 @@ async def consult_cfc_agronomy_with_ai(
     slots: Optional[dict[str, Any]] = None,
     timeout_seconds: float = 25.0,
 ) -> Optional[str]:
-    """Phân tích nông học động qua Ollama LLM kết hợp dữ liệu danh mục phân bón CFC Cò Bay."""
-    slots = slots or {}
-    crop = slots.get("crop") or ""
-    area = slots.get("area") or slots.get("acreage") or ""
-    district = slots.get("district") or slots.get("ward") or ""
-
-    dynamic_catalog = await get_dynamic_cfc_catalog_context()
-
-    system_prompt = (
-        "Bạn là Chuyên gia Kỹ sư Nông nghiệp của Nhà máy Phân bón CFC - Cò Bay (Cần Thơ).\n"
-        "Nhiệm vụ: Tư vấn kỹ thuật bón phân chuyên sâu, chuẩn xác, giàu tính thực tiễn cho nông dân/nhà vườn, "
-        "dựa trên danh mục sản phẩm chính hãng của Cò Bay được cập nhật trực tiếp từ hệ thống ERP/CRM.\n\n"
-        f"Danh mục phân bón thực tế của Nhà máy Cò Bay (trích xuất thời gian thực):\n{dynamic_catalog}\n\n"
-        "Yêu cầu phản hồi:\n"
-        "- Trả lời bằng tiếng Việt 100%, phong cách kỹ sư nông học tận tâm, dễ hiểu, súc tích (120 - 180 từ).\n"
-        "- Phân tích đúng đặc tính sinh lý của loại cây trồng trong câu hỏi (cây ổi, mít, xoài, bưởi, cà phê, sầu riêng, thanh long, v.v.).\n"
-        "- Chỉ đề xuất các dòng phân bón có trong danh mục thực tế của Cò Bay ở trên cho từng giai đoạn (phát đọt/dưỡng rễ -> ra hoa/đậu trái -> nuôi trái/thu hoạch).\n"
-        "- Nếu có diện tích lớn / trang trại / hợp tác xã (từ 5 ha, 10 ha, 100 ha trở lên): Nêu rõ chính sách giá xuất xưởng, xe tải giao tận vườn và cử kỹ sư Cò Bay đến khảo sát mẫu đất trực tiếp.\n"
-        "- Kết thúc bằng lời mời gửi Số điện thoại để kỹ sư Cò Bay liên hệ hỗ trợ sát vườn."
-    )
-
-    prompt = f"Câu hỏi của nhà vườn: {user_query}\nThông tin đã ghi nhận: Cây trồng: {crop or 'chưa rõ'}, Diện tích: {area or 'chưa rõ'}, Khu vực: {district or 'chưa rõ'}."
-
-    try:
-        cfg = _load_settings()
-        preferred_provider = cfg.get("ai_providers", {}).get("preferred_provider", "groq")
-
-        res = await asyncio.wait_for(
-            generate_ai_text(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                preferred_provider=preferred_provider,
-                temperature=0.2
-            ),
-            timeout=timeout_seconds,
-        )
-        
-        if res and res.get("success"):
-            content = res.get("text", "").strip()
-            if content:
-                return content
-    except Exception as e:
-        logger.warning("Lỗi khi gọi AI tư vấn nông học: %r", e)
+    """Deprecated fail-closed boundary; agronomy drafts are not customer-facing in Phase 0."""
+    _ = (user_query, slots, timeout_seconds)
+    logger.info("CFC agronomy generation is disabled; use approved protocol or expert intake")
     return None
 
 
@@ -855,6 +821,19 @@ async def reason_and_answer_cskh(
     Nhận diện câu hỏi tự nhiên, đối chiếu với Dữ liệu thực tế (Facts & Products từ Google Sheet/Redis)
     và Lịch sử trò chuyện để trả lời trọn vẹn, thuyết phục, chuẩn văn phong 5 sao và TUYỆT ĐỐI không bịa đặt.
     """
+    facts_block = str(retrieved_facts or "").strip()
+    has_catalog_facts = bool(
+        catalog_products
+        and any(isinstance(product, dict) and product for product in catalog_products)
+    )
+    if not facts_block and not has_catalog_facts:
+        logger.info("Skip customer-facing generation: no grounded facts or catalog products")
+        return None
+
+    if _customer_fact_generation_mode() != "grounded_rewrite":
+        logger.info("Skip customer-facing generation: grounding mode is direct_only")
+        return None
+
     brand_upper = brand.upper()
     brand_display = "ZeO Vietnam (Chăm sóc gia đình sinh học: ZeO, PANO, Oplus)" if brand_upper == "ZEO" else "CFC Cò Bay (Phân bón & Dinh dưỡng cây trồng nông nghiệp Cần Thơ)"
 
@@ -887,8 +866,6 @@ QUY TẮC CỐT LÕI (BẮT BUỘC):
    - Nếu khách hỏi chuyên sâu về một sản phẩm, giá cả, hoặc chính sách mà trong 'DỮ LIỆU THỰC TẾ & SẢN PHẨM' KHÔNG CÓ thông tin: Tuyệt đối không tự suy đoán. Hãy khéo léo báo rằng bạn chưa có sẵn thông tin trên tay lúc này và xin số điện thoại để admin/chuyên viên hỗ trợ."""
 
     # Chuẩn bị context.
-    facts_block = retrieved_facts.strip()
-
     products_str = ""
     if catalog_products and isinstance(catalog_products, list):
         prod_lines = []

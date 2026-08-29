@@ -11,6 +11,7 @@ from domains.common.db import get_redis_client
 
 from .client import AmisClient
 from .config import AmisConfig, load_amis_config
+from .order_cache import build_order_lookup_snapshot
 from .projection import (
     assert_public_projection_safe,
     build_public_products,
@@ -42,6 +43,8 @@ async def build_public_bundle(
     client: Optional[AmisClient] = None,
     now: Optional[datetime] = None,
     raw_datasets: Optional[dict[str, list]] = None,
+    order_synced_at: str = "",
+    include_private_order_snapshot: bool = False,
 ) -> dict[str, Any]:
     cfg = config or load_amis_config()
     if raw_datasets is not None:
@@ -71,7 +74,7 @@ async def build_public_bundle(
             f"public locations {len(locations)} < minimum {cfg.min_public_locations}"
         )
 
-    return {
+    bundle = {
         "products": products,
         "locations": locations,
         "metrics": {
@@ -88,6 +91,15 @@ async def build_public_bundle(
             "reasons": gate_reasons,
         },
     }
+    if include_private_order_snapshot:
+        # This is consumed only inside sync_public_snapshots.  The default
+        # public-bundle contract remains products/locations only.
+        bundle["_private_order_snapshot"] = build_order_lookup_snapshot(
+            datasets,
+            config=cfg,
+            synced_at=order_synced_at or (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
+        )
+    return bundle
 
 
 async def _write_bundle_to_redis(
@@ -97,6 +109,7 @@ async def _write_bundle_to_redis(
     products_snapshot: dict[str, Any],
     locations_snapshot: dict[str, Any],
     metadata: dict[str, Any],
+    order_snapshot: Optional[dict[str, Any]] = None,
 ) -> None:
     pipeline = redis_client.pipeline(transaction=True)
     pipeline.set(
@@ -123,6 +136,21 @@ async def _write_bundle_to_redis(
         config.redis_metadata_key,
         json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
     )
+    if order_snapshot is not None:
+        pipeline.set(
+            config.redis_order_lookup_key,
+            json.dumps(order_snapshot, ensure_ascii=False, separators=(",", ":")),
+        )
+        pipeline.set(
+            config.redis_order_lookup_metadata_key,
+            json.dumps({
+                "schema_version": 1,
+                "source": order_snapshot.get("source", "amis_crm_order_warm"),
+                "synced_at": order_snapshot.get("synced_at", ""),
+                "record_count": order_snapshot.get("record_count", 0),
+                "snapshot_hash": order_snapshot.get("snapshot_hash", ""),
+            }, ensure_ascii=False, separators=(",", ":")),
+        )
     await pipeline.execute()
 
 
@@ -136,8 +164,16 @@ async def sync_public_snapshots(
     raw_datasets: Optional[dict[str, list]] = None,
 ) -> dict[str, Any]:
     cfg = config or load_amis_config()
-    bundle = await build_public_bundle(config=cfg, client=client, now=now, raw_datasets=raw_datasets)
     synced_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat()
+    bundle = await build_public_bundle(
+        config=cfg,
+        client=client,
+        now=now,
+        raw_datasets=raw_datasets,
+        order_synced_at=synced_at,
+        include_private_order_snapshot=True,
+    )
+    order_snapshot = bundle.pop("_private_order_snapshot", None)
     products_snapshot = _snapshot(bundle["products"], synced_at=synced_at)
     locations_snapshot = _snapshot(bundle["locations"], synced_at=synced_at)
 
@@ -159,6 +195,12 @@ async def sync_public_snapshots(
                 "geo_key": cfg.redis_locations_geo_key,
                 "record_count": locations_snapshot["record_count"],
                 "snapshot_hash": locations_snapshot["snapshot_hash"],
+            },
+            "order_lookup": {
+                "key": cfg.redis_order_lookup_key,
+                "record_count": int((order_snapshot or {}).get("record_count") or 0),
+                "snapshot_hash": str((order_snapshot or {}).get("snapshot_hash") or ""),
+                "enabled": bool(order_snapshot),
             },
         },
     }
@@ -187,6 +229,7 @@ async def sync_public_snapshots(
             products_snapshot=products_snapshot,
             locations_snapshot=locations_snapshot,
             metadata=metadata,
+            order_snapshot=order_snapshot,
         )
     finally:
         if owns_redis:

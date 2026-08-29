@@ -8,7 +8,7 @@ SERVER_DIR = Path(__file__).resolve().parents[1]
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
-from ai_engine import synthesize_cskh_answer  # noqa: E402
+from ai_engine import consult_cfc_agronomy_with_ai, synthesize_cskh_answer  # noqa: E402
 from chat_pipeline import _sanitized_chat_history  # noqa: E402
 
 
@@ -32,7 +32,9 @@ class AiGroundingContextTests(unittest.IsolatedAsyncioTestCase):
             "success": True,
             "text": "Dạ đây là câu trả lời đã đối chiếu dữ liệu thực tế cho bạn ạ.",
         })
-        with patch("ai_engine.generate_ai_text", generator):
+        with patch("ai_engine._load_settings", return_value={
+            "grounding_policy": {"customer_fact_generation_mode": "grounded_rewrite"},
+        }), patch("ai_engine.generate_ai_text", generator):
             answer = await synthesize_cskh_answer(
                 user_query="Loại đó dùng sao?",
                 brand="zeo",
@@ -52,6 +54,45 @@ class AiGroundingContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[PHONE]", prompt)
         self.assertNotIn("shopee.vn/zeovietnamofficial", prompt)
         self.assertNotIn("Freeship Extra toàn quốc", system_prompt)
+
+    async def test_synthesis_does_not_call_generator_without_grounded_input(self):
+        generator = AsyncMock(return_value={"success": True, "text": "Nội dung tự sinh"})
+        with patch("ai_engine._load_settings", return_value={
+            "grounding_policy": {"customer_fact_generation_mode": "grounded_rewrite"},
+        }), patch("ai_engine.generate_ai_text", generator):
+            answer = await synthesize_cskh_answer(
+                user_query="Phân này có chống mặn tuyệt đối không?",
+                brand="cfc",
+                retrieved_facts="",
+                catalog_products=[],
+            )
+
+        self.assertIsNone(answer)
+        generator.assert_not_awaited()
+
+    async def test_direct_only_mode_skips_even_grounded_rewrite(self):
+        generator = AsyncMock(return_value={"success": True, "text": "Nội dung rewrite"})
+        with patch("ai_engine._load_settings", return_value={
+            "grounding_policy": {"customer_fact_generation_mode": "direct_only"},
+        }), patch("ai_engine.generate_ai_text", generator):
+            answer = await synthesize_cskh_answer(
+                user_query="Dùng sao?",
+                brand="zeo",
+                retrieved_facts="Dùng theo hướng dẫn trên nhãn.",
+            )
+
+        self.assertIsNone(answer)
+        generator.assert_not_awaited()
+
+    async def test_deprecated_agronomy_generator_is_fail_closed(self):
+        generator = AsyncMock(return_value={"success": True, "text": "Phác đồ tự sinh"})
+        with patch("ai_engine.generate_ai_text", generator):
+            answer = await consult_cfc_agronomy_with_ai(
+                "Sầu riêng nên bón gì?",
+                {"crop": "sầu riêng"},
+            )
+        self.assertIsNone(answer)
+        generator.assert_not_awaited()
 
 
 if __name__ == "__main__":

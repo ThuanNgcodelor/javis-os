@@ -12,13 +12,23 @@ import logging
 import re
 import unicodedata
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import redis.asyncio as aioredis
 
 from embedder import embed_text, get_embed_dim, vec_to_bytes
 
 logger = logging.getLogger(__name__)
+
+
+class KnowledgeSyncError(RuntimeError):
+    """Fail-closed sync error with an explicit stage and checkpoint snapshot."""
+
+    def __init__(self, stage: str, reason_code: str, checkpoints: Optional[dict[str, bool]] = None):
+        self.stage = stage
+        self.reason_code = reason_code
+        self.checkpoints = dict(checkpoints or {})
+        super().__init__(f"{stage}: {reason_code}")
 
 
 def _load_settings() -> dict:
@@ -125,12 +135,26 @@ async def ensure_index(r: aioredis.Redis, index_name: str, embed_dim: int) -> No
         logger.info("Tạo index '%s' thành công.", index_name)
 
 
-async def sync_brand(brand: str = "zeo") -> dict:
+async def sync_brand(brand: str = "zeo", snapshot_key: Optional[str] = None) -> dict:
     """
     Đồng bộ dữ liệu FAQ từ Redis snapshot → Vector Index.
     """
+    normalized_brand = str(brand or "").strip().lower()
+    checkpoints = {
+        "snapshot_validated": False,
+        "vector_rebuilt": False,
+        "hot_cache_refreshed": False,
+    }
+    if normalized_brand not in {"zeo", "cfc"}:
+        raise KnowledgeSyncError("validation", "INVALID_BRAND", checkpoints)
+
     cfg = _load_settings()
     redis_cfg = cfg["redis"]
+    active_kb_key = get_kb_key(normalized_brand, cfg)
+    candidate_kb_key = active_kb_key.removesuffix(":active") + ":candidate"
+    requested_kb_key = str(snapshot_key or active_kb_key).strip()
+    if requested_kb_key not in {active_kb_key, candidate_kb_key}:
+        raise KnowledgeSyncError("validation", "INVALID_SNAPSHOT_KEY", checkpoints)
     
     # Dùng kwargs riêng lẻ để tránh lỗi URL-encoding khi password có ký tự đặc biệt
     r = aioredis.Redis(
@@ -142,28 +166,26 @@ async def sync_brand(brand: str = "zeo") -> dict:
     )
 
     try:
-        kb_key = get_kb_key(brand, cfg)
-        index_name = get_index_name(brand, cfg)
+        kb_key = requested_kb_key
+        index_name = get_index_name(normalized_brand, cfg)
         embed_dim = get_embed_dim()
 
         # Đọc snapshot từ Redis
         raw = await r.get(kb_key)
         if not raw:
-            return {"error": f"Key '{kb_key}' không tìm thấy trong Redis", "synced": 0}
+            raise KnowledgeSyncError("snapshot_validation", "SNAPSHOT_KEY_NOT_FOUND", checkpoints)
         
         items = parse_snapshot(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
         if not items:
-            return {"error": "Snapshot rỗng hoặc không parse được", "synced": 0}
+            raise KnowledgeSyncError("snapshot_validation", "SNAPSHOT_EMPTY_OR_INVALID", checkpoints)
 
-        # Tạo index nếu chưa có
-        await ensure_index(r, index_name, embed_dim)
+        checkpoints["snapshot_validated"] = True
 
-        # Upsert từng item
-        synced = 0
+        # Prepare and validate every customer-facing vector before mutating the index.
+        prepared_docs: list[tuple[str, dict[str, Any]]] = []
         skipped = 0
-        errors = 0
-        active_doc_keys = set()
-        
+        active_doc_keys: set[str] = set()
+
         for item in items:
             # Lọc bỏ item không active, không có answer, audience=internal
             active = str(item.get("active", "true")).lower() in ("true", "1", "yes")
@@ -178,20 +200,28 @@ async def sync_brand(brand: str = "zeo") -> dict:
                 continue
 
             doc_key = f"{index_name}:doc:{item.get('source_id', 'faq')}:{item.get('intent', 'unknown')}"
-            active_doc_keys.add(doc_key)
-
             embed_text_str = build_embed_text(item)
-            vec = await embed_text(embed_text_str)
-            
+            try:
+                vec = await embed_text(embed_text_str)
+            except Exception as exc:
+                raise KnowledgeSyncError(
+                    "embedding",
+                    "EMBEDDING_PROVIDER_ERROR",
+                    checkpoints,
+                ) from exc
             if vec is None:
-                logger.warning("Không lấy được embedding cho intent: %s", item.get("intent"))
-                errors += 1
-                continue
+                raise KnowledgeSyncError("embedding", "EMBEDDING_EMPTY", checkpoints)
+            try:
+                vector_length = len(vec)
+            except TypeError as exc:
+                raise KnowledgeSyncError("embedding", "EMBEDDING_INVALID", checkpoints) from exc
+            if vector_length != embed_dim:
+                raise KnowledgeSyncError("embedding", "EMBEDDING_DIMENSION_MISMATCH", checkpoints)
             
             mapping = {
                 "embedding": vec_to_bytes(vec),
                 "intent": str(item.get("intent", "")),
-                "brand": str(item.get("brand", brand)).split("/")[0].strip(),
+                "brand": str(item.get("brand", normalized_brand)).split("/")[0].strip(),
                 "category": str(item.get("category", "faq")),
                 "answer": str(item.get("answer", "")),
                 "answer_mode": str(item.get("answer_mode", "direct")),
@@ -203,11 +233,18 @@ async def sync_brand(brand: str = "zeo") -> dict:
                 "escalation_policy": str(item.get("escalation_policy", "")),
                 "priority": int(item.get("priority", 0)),
             }
-            
+            active_doc_keys.add(doc_key)
+            prepared_docs.append((doc_key, mapping))
+
+        if not prepared_docs:
+            raise KnowledgeSyncError("snapshot_validation", "NO_CUSTOMER_ELIGIBLE_ITEMS", checkpoints)
+
+        # Only now may the live vector index be changed.
+        await ensure_index(r, index_name, embed_dim)
+        for doc_key, mapping in prepared_docs:
             # pyrefly: ignore [not-async]
             await r.hset(doc_key, mapping=mapping)
-            synced += 1
-            logger.info("✓ [%s] %s", brand.upper(), item.get("intent"))
+        synced = len(prepared_docs)
 
         deleted_stale = 0
         async for key in r.scan_iter(match=f"{index_name}:doc:*", count=200):
@@ -216,23 +253,37 @@ async def sync_brand(brand: str = "zeo") -> dict:
                 continue
             await r.delete(key)
             deleted_stale += 1
-            logger.info("✕ [%s] stale doc removed: %s", brand.upper(), key_str)
+            logger.info("✕ [%s] stale doc removed: %s", normalized_brand.upper(), key_str)
+        checkpoints["vector_rebuilt"] = True
 
+        from rag_search import refresh_knowledge_cache
+        refresh_kwargs: dict[str, Any] = {"strict": True}
+        if requested_kb_key != active_kb_key:
+            refresh_kwargs["snapshot_key"] = requested_kb_key
         try:
-            from rag_search import refresh_knowledge_cache
-            await refresh_knowledge_cache(brand)
-            logger.info("✓ [%s] In-memory hot knowledge cache refreshed", brand.upper())
-        except Exception as e:
-            logger.warning("Could not refresh in-memory cache: %s", e)
+            refresh_result = await refresh_knowledge_cache(normalized_brand, **refresh_kwargs)
+        except Exception as exc:
+            raise KnowledgeSyncError(
+                "hot_cache_refresh",
+                "HOT_CACHE_REFRESH_FAILED",
+                checkpoints,
+            ) from exc
+        checkpoints["hot_cache_refreshed"] = True
+        logger.info("✓ [%s] In-memory hot knowledge cache refreshed", normalized_brand.upper())
 
         return {
-            "brand": brand,
+            "status": "ok",
+            "complete": True,
+            "brand": normalized_brand,
             "index": index_name,
+            "snapshot_key": requested_kb_key,
+            **checkpoints,
             "synced": synced,
             "skipped": skipped,
-            "errors": errors,
+            "errors": 0,
             "deleted_stale": deleted_stale,
             "total": len(items),
+            "hot_cache": refresh_result,
         }
     finally:
         await r.aclose()

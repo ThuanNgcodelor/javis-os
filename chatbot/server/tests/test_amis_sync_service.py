@@ -75,6 +75,7 @@ def datasets(approved=True):
                 "chatbot_public": approved,
                 "chatbot_public_address": "Ô Môn, Cần Thơ",
                 "chatbot_public_phone": "0292 000 0000",
+                "number_orders": 1,
                 "shipping_long": "105.6235",
                 "shipping_lat": "10.1092",
                 "inactive": False,
@@ -82,7 +83,8 @@ def datasets(approved=True):
         ],
         "sale_orders": [
             {
-                "account_name": "KH001",
+                "account_code": "KH001",
+                "sale_order_no": "DH-TEST-001",
                 "is_invoiced": True,
                 "invoiced_amount": 500000,
                 "revenue_status": "Đã ghi",
@@ -106,6 +108,7 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
             allowed_revenue_statuses=("Đã ghi",),
             min_public_products=1,
             min_public_locations=1,
+            order_lookup_hmac_secret="unit-test-order-hmac",
         )
 
     async def test_dry_run_returns_aggregate_only_and_does_not_write(self):
@@ -120,6 +123,7 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["written"])
         self.assertEqual(result["snapshots"]["products"]["record_count"], 1)
         self.assertEqual(result["snapshots"]["locations"]["record_count"], 1)
+        self.assertEqual(result["snapshots"]["order_lookup"]["record_count"], 1)
         self.assertNotIn("items", result)
 
     async def test_real_sync_writes_safe_snapshots_and_geo_in_one_transaction(self):
@@ -137,11 +141,19 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(pipeline.transaction)
         self.assertTrue(pipeline.executed)
         self.assertTrue(any(command[0] == "geoadd" for command in pipeline.commands))
+        private_order_payload = None
         for command in pipeline.commands:
             if command[0] != "set":
                 continue
             payload = json.loads(command[2])
+            if command[1] == self.config.redis_order_lookup_key:
+                private_order_payload = payload
+                continue
             assert_public_projection_safe(payload)
+        self.assertIsNotNone(private_order_payload)
+        encoded_private = json.dumps(private_order_payload, ensure_ascii=False)
+        self.assertNotIn("0292 000 0000", encoded_private)
+        self.assertNotIn("account_name", encoded_private)
 
     async def test_failed_location_gate_preserves_existing_snapshot(self):
         redis = FakeRedis()

@@ -6,6 +6,17 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+_GENERATOR_SOURCE_PREFIXES = (
+    "ollama:",
+    "groq:",
+    "openrouter:",
+    "gemini:",
+    "openai:",
+    "llm:",
+    "ai:",
+)
+
+
 @dataclass(frozen=True)
 class GroundingDecision:
     status: str
@@ -28,7 +39,18 @@ def _claim_type(intent: str) -> str:
         return "purchase_link"
     if any(term in value for term in ("return", "refund", "warranty", "policy", "claim")):
         return "policy"
-    if any(term in value for term in ("dosage", "safety", "certification", "technology")):
+    if any(
+        term in value
+        for term in (
+            "dosage",
+            "safety",
+            "certification",
+            "technology",
+            "agronomy",
+            "agriculture",
+            "crop_consultation",
+        )
+    ):
         return "technical_or_safety"
     if any(term in value for term in ("inventory", "availability", "stock")):
         return "inventory"
@@ -43,6 +65,12 @@ def _claim_type(intent: str) -> str:
     return "general"
 
 
+def is_generator_source(source_id: str) -> bool:
+    """Models/providers can generate wording, but they are never business evidence."""
+    source = str(source_id or "").strip().casefold()
+    return source.startswith(_GENERATOR_SOURCE_PREFIXES)
+
+
 def assess_grounding(
     *,
     intent: str,
@@ -52,6 +80,14 @@ def assess_grounding(
     claim_type = _claim_type(intent)
     requires_source = claim_type != "general"
     source = str(source_id or "").strip()
+    if source and is_generator_source(source):
+        return GroundingDecision(
+            "blocked_unsupported_claim",
+            claim_type,
+            requires_source,
+            "",
+            "GENERATOR_IS_NOT_EVIDENCE",
+        )
     if source:
         return GroundingDecision("grounded", claim_type, requires_source, source, "SOURCE_PRESENT")
 

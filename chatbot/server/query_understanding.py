@@ -211,6 +211,10 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
         val_clean = val.strip()
         if len(val_clean) >= 4 and not val_clean.startswith(("nay", "giup", "cho", "nha", "shop")):
             entities["order_id"] = val_clean
+    if "order_id" not in entities:
+        spaced_order = re.search(r"\bdh\s+(\d{2,8})\s+(\d{2,8})\b", text)
+        if spaced_order:
+            entities["order_id"] = f"DH-{spaced_order.group(1)}-{spaced_order.group(2)}"
 
     acreage_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(hecta|ha|cong)\b", text)
     if acreage_match:
@@ -221,7 +225,20 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
         "oi", "cay oi", "buoi", "cam", "quyt", "xoai", "mit", "thanh long", "man", "tao",
         "chanh", "tac", "mang cau", "chom chom", "nhan", "khoai lang", "dua hau"
     ]
-    crop = next((term for term in crop_terms if re.search(rf"\b{term}\b", text)), "")
+    def _matches_crop_term(term: str) -> bool:
+        normalized_term = str(term or "").strip().lower()
+        if not normalized_term:
+            return False
+        # "mặn" is normalized to "man" too. Bare "man" is a crop only when
+        # the message contains an explicit plum/crop context.
+        if normalized_term == "man":
+            return bool(
+                re.search(r"\b(cay|trai|qua|vuon)\s+man\b", text)
+                or re.search(r"\bman\s+(hau|tam|do|xanh|chin)\b", text)
+            )
+        return bool(re.search(rf"\b{re.escape(normalized_term)}\b", text))
+
+    crop = next((term for term in crop_terms if _matches_crop_term(term)), "")
     if not crop:
         crop_match = re.search(r"\bcay\s+([a-z0-9\s]+?)(?:,|\.|\s+dien|\s+hecta|\s+ha|\s+o\b|\s+bi\b|\s+giai\b|$)", text)
         if crop_match:
@@ -318,6 +335,16 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
         text,
     ):
         return "company_contact_information", 0.94
+    if brand == "cfc" and (
+        re.search(r"\b(hotline|tong dai|so lien he|so cham soc|cham soc khach hang)\b", text)
+        or re.search(
+            r"\b(so dien thoai|sdt).{0,25}\b(cong ty|cty|cfc|co bay|shop|admin|ben minh)\b",
+            text,
+        )
+    ):
+        return "cfc_contact_information_request", 0.94
+    if brand == "zeo" and "compatibility" in attrs:
+        return "product_compatibility", 0.94
     if brand == "zeo" and re.search(
         r"\b(nuoc lau san|nuoc lau bep|tay da nang|rua chen|tay bon cau|lau kinh|vien giat|nuoc giat)\b",
         text,

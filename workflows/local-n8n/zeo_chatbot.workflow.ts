@@ -2,14 +2,14 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 
 // <workflow-map>
 // Workflow : Zeo Chatbot
-// Nodes   : 5  |  Connections: 5
+// Nodes   : 5  |  Connections: 4
 //
 // NODE INDEX
 // ──────────────────────────────────────────────────────────────────
 // Property name                    Node type (short)         Flags
 // MessengerTrigger                   facebookTrigger            [creds]
 // LocDauVao                          code
-// GoiFastApiChatPipeline             httpRequest                [onError→out(1)]
+// GoiFastApiChatPipeline             httpRequest
 // PrepareMessengerReply              code
 // NhanKhachAuto                      httpRequest                [creds]
 //
@@ -20,7 +20,6 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 //      → GoiFastApiChatPipeline
 //        → PrepareMessengerReply
 //          → NhanKhachAuto
-//        → PrepareMessengerReply (↩ loop)
 // </workflow-map>
 
 // =====================================================================
@@ -30,7 +29,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 @workflow({
     id: 'd7fctbMhVUmhrNG0',
     name: 'Zeo Chatbot',
-    active: true,
+    active: false,
     description: 'b',
     isArchived: false,
     settings: { executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
@@ -105,7 +104,6 @@ return [{ json: {
         type: 'n8n-nodes-base.httpRequest',
         version: 4.2,
         position: [448, 304],
-        onError: 'continueErrorOutput',
     })
     GoiFastApiChatPipeline = {
         method: 'POST',
@@ -135,11 +133,22 @@ try {
 } catch (e) {
   pipelineRes = {};
 }
-// Không gửi lại MID trùng và không chen lời khi nhân viên đang takeover.
-if (pipelineRes.duplicate === true || pipelineRes.suppress_send === true) {
+// Fail closed: error payload, duplicate/takeover, malformed JSON or empty answer
+// must not be transformed into a customer-facing success message.
+if (
+  !pipelineRes
+  || typeof pipelineRes !== 'object'
+  || pipelineRes.error
+  || pipelineRes.duplicate === true
+  || pipelineRes.suppress_send === true
+  || ['duplicate_in_flight', 'human_handoff_active'].includes(pipelineRes.intent)
+) {
   return [];
 }
-const finalReply = pipelineRes.answer || "Dạ ZeO Vietnam đã nhận được tin nhắn của bạn. Bạn để lại nhu cầu cụ thể hoặc số điện thoại, admin sẽ hỗ trợ giải đáp ngay cho mình nha!";
+const finalReply = typeof pipelineRes.answer === 'string' ? pipelineRes.answer.trim() : '';
+if (!finalReply) {
+  return [];
+}
 
 return [{
   json: {
@@ -178,7 +187,6 @@ return [{
         this.MessengerTrigger.out(0).to(this.LocDauVao.in(0));
         this.LocDauVao.out(0).to(this.GoiFastApiChatPipeline.in(0));
         this.GoiFastApiChatPipeline.out(0).to(this.PrepareMessengerReply.in(0));
-        this.GoiFastApiChatPipeline.error().to(this.PrepareMessengerReply.in(0));
         this.PrepareMessengerReply.out(0).to(this.NhanKhachAuto.in(0));
     }
 }

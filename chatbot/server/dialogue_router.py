@@ -251,9 +251,17 @@ def build_route_decision(
             confidence=plan.intent_confidence,
         )
 
+    if plan.brand == "cfc" and plan.intent == "cfc_order_status_request":
+        return RouteDecision(
+            action="tool",
+            tool="order_status_lookup",
+            intent=plan.intent,
+            reason="AMIS_WARM_ORDER_LOOKUP",
+            confidence=plan.intent_confidence,
+        )
+
     capability_intents = {
         "cfc_inventory_request": "cfc_inventory_unavailable",
-        "cfc_order_status_request": "cfc_order_status_unavailable",
         "cfc_loyalty_lookup_request": "cfc_loyalty_unavailable",
         "cfc_wholesale_policy_request": "cfc_wholesale_policy_unverified",
         "financial_service_unsupported": "financial_service_unsupported",

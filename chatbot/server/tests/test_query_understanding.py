@@ -87,6 +87,28 @@ class QueryUnderstandingTests(unittest.TestCase):
         self.assertEqual(plan.intent, "company_contact_information")
         self.assertFalse(plan.needs_product_tool)
 
+    def test_cfc_hotline_request_is_company_contact(self):
+        plan = self._plan(
+            "Cho mình xin số hotline chăm sóc khách hàng Cò Bay",
+            "cho minh xin so hotline cham soc khach hang co bay",
+            brand="cfc",
+        )
+        self.assertEqual(plan.intent, "cfc_contact_information_request")
+
+    def test_salinity_is_not_misread_as_plum_crop(self):
+        salinity = self._plan(
+            "Phân này có chống chịu mặn tuyệt đối không?",
+            "phan nay co chong chiu man tuyet doi khong",
+            brand="cfc",
+        )
+        plum = self._plan(
+            "Cây mận đang ra trái nên bón sao?",
+            "cay man dang ra trai nen bon sao",
+            brand="cfc",
+        )
+        self.assertNotIn("crop", salinity.entities)
+        self.assertEqual(plum.entities["crop"], "man")
+
     def test_constraints_capture_quantity_budget_channel_and_correction(self):
         plan = self._plan(
             "Không phải Pano, ý mình là ZeO, lấy 2 chai tầm 200k trên Shopee",

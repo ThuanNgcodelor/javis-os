@@ -2,7 +2,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 
 // <workflow-map>
 // Workflow : CFC Co Bay Knowledge
-// Nodes   : 7  |  Connections: 6
+// Nodes   : 9  |  Connections: 8
 //
 // NODE INDEX
 // ──────────────────────────────────────────────────────────────────
@@ -11,18 +11,22 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 // ScheduleTrigger                    scheduleTrigger
 // ReadCfcFaqRows                     googleSheets               [creds]
 // NormalizeCfcKnowledge              code
-// WriteCfcRedisSnapshot              redis                      [creds]
+// WriteCfcRedisCandidate             redis                      [creds]
 // WriteCfcRedisSyncMetadata          redis                      [creds]
-// RebuildCfcVectorIndex              httpRequest                [onError→regular]
+// RebuildCfcVectorIndex              httpRequest
+// ValidateCfcSync                    code
+// PromoteCfcRedisSnapshot            redis                      [creds]
 //
 // ROUTING MAP
 // ──────────────────────────────────────────────────────────────────
 // ManualTrigger
 //    → ReadCfcFaqRows
 //      → NormalizeCfcKnowledge
-//        → WriteCfcRedisSnapshot
-//          → WriteCfcRedisSyncMetadata
-//            → RebuildCfcVectorIndex
+//        → WriteCfcRedisCandidate
+//          → RebuildCfcVectorIndex
+//            → ValidateCfcSync
+//              → PromoteCfcRedisSnapshot
+//                → WriteCfcRedisSyncMetadata
 // ScheduleTrigger
 //    → ReadCfcFaqRows (↩ loop)
 // </workflow-map>
@@ -35,8 +39,9 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
     id: '92I5floRW5MElgu5',
     name: 'CFC Co Bay Knowledge',
     active: false,
+    description: 'a',
     isArchived: false,
-    settings: { timezone: 'Asia/Ho_Chi_Minh', executionOrder: 'v1', binaryMode: 'separate' },
+    settings: { timezone: 'Asia/Ho_Chi_Minh', executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
 })
 export class CfcCoBayKnowledgeWorkflow {
     // =====================================================================
@@ -180,6 +185,7 @@ const excludedInternalCount = normalizedRows.filter(item => item.active && item.
 return [{
   json: {
     snapshot_key: 'cfc:kb:basic:active',
+    candidate_key: 'cfc:kb:basic:candidate',
     brand_scope: 'CFC/Co Bay',
     knowledge_count: knowledgeItems.length,
     updated_at: new Date().toISOString(),
@@ -194,15 +200,15 @@ return [{
 
     @node({
         id: '0ecb9657-0883-4cb7-93bb-060e5680b3cb',
-        name: 'Write CFC Redis Snapshot',
+        name: 'Write CFC Redis Candidate',
         type: 'n8n-nodes-base.redis',
         version: 1,
         position: [768, 256],
         credentials: { redis: { id: 'DW6fQRCZ77RgdCqL', name: 'Zeo Redis (local)' } },
     })
-    WriteCfcRedisSnapshot = {
+    WriteCfcRedisCandidate = {
         operation: 'set',
-        key: 'cfc:kb:basic:active',
+        key: 'cfc:kb:basic:candidate',
         value: '={{ JSON.stringify($json) }}',
     };
 
@@ -211,13 +217,13 @@ return [{
         name: 'Write CFC Redis Sync Metadata',
         type: 'n8n-nodes-base.redis',
         version: 1,
-        position: [1024, 256],
+        position: [1792, 256],
         credentials: { redis: { id: 'DW6fQRCZ77RgdCqL', name: 'Zeo Redis (local)' } },
     })
     WriteCfcRedisSyncMetadata = {
         operation: 'set',
         key: 'cfc:sync:faq:basic:last-success',
-        value: '={{ JSON.stringify({ snapshot_key: $("Normalize CFC Knowledge").first().json.snapshot_key, knowledge_count: $("Normalize CFC Knowledge").first().json.knowledge_count, excluded_internal_count: $("Normalize CFC Knowledge").first().json.excluded_internal_count, updated_at: $("Normalize CFC Knowledge").first().json.updated_at, schema_version: $("Normalize CFC Knowledge").first().json.schema_version, snapshot_hash: $("Normalize CFC Knowledge").first().json.snapshot_hash }) }}',
+        value: '={{ JSON.stringify({ snapshot_key: $("Normalize CFC Knowledge").first().json.snapshot_key, candidate_key: $("Normalize CFC Knowledge").first().json.candidate_key, knowledge_count: $("Normalize CFC Knowledge").first().json.knowledge_count, excluded_internal_count: $("Normalize CFC Knowledge").first().json.excluded_internal_count, updated_at: $("Normalize CFC Knowledge").first().json.updated_at, schema_version: $("Normalize CFC Knowledge").first().json.schema_version, snapshot_hash: $("Normalize CFC Knowledge").first().json.snapshot_hash, snapshot_validated: $("Validate CFC Sync").first().json.snapshot_validated, vector_rebuilt: $("Validate CFC Sync").first().json.vector_rebuilt, hot_cache_refreshed: $("Validate CFC Sync").first().json.hot_cache_refreshed, complete: $("Validate CFC Sync").first().json.complete }) }}',
     };
 
     @node({
@@ -225,8 +231,7 @@ return [{
         name: 'Rebuild CFC Vector Index',
         type: 'n8n-nodes-base.httpRequest',
         version: 4.2,
-        position: [1280, 256],
-        onError: 'continueRegularOutput',
+        position: [1024, 256],
     })
     RebuildCfcVectorIndex = {
         method: 'POST',
@@ -238,11 +243,54 @@ return [{
                     name: 'brand',
                     value: 'cfc',
                 },
+                {
+                    name: 'snapshot_key',
+                    value: 'cfc:kb:basic:candidate',
+                },
             ],
         },
         options: {
             timeout: 120000,
         },
+    };
+
+    @node({
+        id: 'a23ad1aa-bb2e-4b2c-9b30-9017cfc00102',
+        name: 'Validate CFC Sync',
+        type: 'n8n-nodes-base.code',
+        version: 2,
+        position: [1280, 256],
+    })
+    ValidateCfcSync = {
+        jsCode: `
+const result = $input.first().json || {};
+const expectedKey = $('Normalize CFC Knowledge').first().json.candidate_key;
+const missing = [
+  ['complete', result.complete === true],
+  ['snapshot_validated', result.snapshot_validated === true],
+  ['vector_rebuilt', result.vector_rebuilt === true],
+  ['hot_cache_refreshed', result.hot_cache_refreshed === true],
+  ['snapshot_key', result.snapshot_key === expectedKey],
+].filter(([, ok]) => !ok).map(([name]) => name);
+if (missing.length) {
+  throw new Error('KNOWLEDGE_SYNC_INCOMPLETE:' + missing.join(','));
+}
+return [{ json: result }];
+`,
+    };
+
+    @node({
+        id: 'a23ad1aa-bb2e-4b2c-9b30-9017cfc00103',
+        name: 'Promote CFC Redis Snapshot',
+        type: 'n8n-nodes-base.redis',
+        version: 1,
+        position: [1536, 256],
+        credentials: { redis: { id: 'DW6fQRCZ77RgdCqL', name: 'Zeo Redis (local)' } },
+    })
+    PromoteCfcRedisSnapshot = {
+        operation: 'set',
+        key: 'cfc:kb:basic:active',
+        value: '={{ JSON.stringify($("Normalize CFC Knowledge").first().json) }}',
     };
 
     // =====================================================================
@@ -254,8 +302,10 @@ return [{
         this.ManualTrigger.out(0).to(this.ReadCfcFaqRows.in(0));
         this.ScheduleTrigger.out(0).to(this.ReadCfcFaqRows.in(0));
         this.ReadCfcFaqRows.out(0).to(this.NormalizeCfcKnowledge.in(0));
-        this.NormalizeCfcKnowledge.out(0).to(this.WriteCfcRedisSnapshot.in(0));
-        this.WriteCfcRedisSnapshot.out(0).to(this.WriteCfcRedisSyncMetadata.in(0));
-        this.WriteCfcRedisSyncMetadata.out(0).to(this.RebuildCfcVectorIndex.in(0));
+        this.NormalizeCfcKnowledge.out(0).to(this.WriteCfcRedisCandidate.in(0));
+        this.WriteCfcRedisCandidate.out(0).to(this.RebuildCfcVectorIndex.in(0));
+        this.RebuildCfcVectorIndex.out(0).to(this.ValidateCfcSync.in(0));
+        this.ValidateCfcSync.out(0).to(this.PromoteCfcRedisSnapshot.in(0));
+        this.PromoteCfcRedisSnapshot.out(0).to(this.WriteCfcRedisSyncMetadata.in(0));
     }
 }

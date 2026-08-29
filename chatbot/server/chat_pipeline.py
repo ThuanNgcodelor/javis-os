@@ -36,6 +36,8 @@ from conversation_store import (
     sender_lease,
 )
 from dialogue_router import build_route_decision
+from domains.amis.config import load_amis_config
+from domains.amis.order_cache import lookup_cached_order_status
 from grounding_policy import assess_grounding
 from message_idempotency import begin_message, complete_message, release_message
 from rag_search import get_redis, get_faq_by_intent, semantic_search, refresh_knowledge_cache
@@ -67,7 +69,7 @@ from shopee_matcher import (
     is_fabric_softener_inquiry,
     match_fabric_softener_products,
 )
-from ai_engine import synthesize_cskh_answer, reason_and_answer_cskh, plan_chat_intent_with_ai, consult_cfc_agronomy_with_ai
+from ai_engine import synthesize_cskh_answer, reason_and_answer_cskh, plan_chat_intent_with_ai
 from ai_engine import plan_conversation_turn_with_ai
 from conversation_orchestrator import (
     build_conversation_context,
@@ -992,23 +994,45 @@ def _cfc_missing_slots_prompt(missing_slots: list[str], *, expert: bool = False)
 
 
 def _format_b2b_large_order_reply(user_message: str, query_entities: Optional[dict[str, Any]] = None, phone: str = "") -> str:
-    try:
-        from domains.amis.live_crm import create_cskh_ticket
-        create_cskh_ticket("b2b_vip_lead", customer_phone=phone, issue_description=user_message)
-    except Exception:
-        pass
-    lines = [
-        "Dạ CFC - Phân bón Cò Bay xin kính chào Quý Khách hàng / Quý Hợp tác xã!",
-        "",
-        "Với nhu cầu đặt hàng khối lượng lớn (từ 5 tấn - 30 tấn trở lên) phục vụ sản xuất quy mô trang trại và hợp tác xã, Ban Giám Đốc & Phòng Kinh Doanh CFC sẽ trực tiếp làm việc để cung cấp chính sách giá xuất xưởng và hợp đồng thương mại ưu đãi nhất.",
-        "",
-        "📞 **Hotline Trực Tiếp Ban Giám Đốc / Phòng Kinh Doanh:** 0292 3841 815 - 0906 929 292",
-    ]
+    """Thu thập nhu cầu mua số lượng lớn mà không tự suy diễn giá/chính sách."""
+    slots = _extract_cfc_confirmed_slots(user_message, query_entities)
     if phone:
-        lines.append(f"\nBên mình đã ghi nhận số điện thoại liên hệ: **{phone}**. Giám đốc Kinh doanh khu vực sẽ liên hệ lại trực tiếp cho bạn ngay nhé ạ!")
-    else:
-        lines.append("\nBạn vui lòng để lại **Tên người đại diện** và **Số điện thoại**, Giám đốc Kinh doanh khu vực sẽ liên hệ làm việc trực tiếp ngay nhé ạ!")
-    return "\n".join(lines)
+        slots["phone"] = phone
+    context = _cfc_context_summary("purchase_intake", slots)
+    context_line = f" Mình đã ghi nhận: {context}." if context else ""
+    return (
+        "Dạ mình đã ghi nhận đây là nhu cầu mua số lượng lớn."
+        f"{context_line} "
+        "Để báo đúng giá, ưu đãi và phương án giao hàng hiện hành, bộ phận phụ trách cần xác nhận theo sản phẩm, số lượng và khu vực nhận hàng. "
+        "Bạn gửi thêm tên sản phẩm/quy cách, khu vực nhận hàng và số điện thoại; bên mình sẽ kiểm tra rồi phản hồi ạ."
+    )
+
+
+def _format_order_lookup_reply(result: dict[str, Any]) -> tuple[str, str]:
+    """Render only the minimum customer-safe result from the private AMIS cache."""
+    outcome = str(result.get("outcome") or "unavailable")
+    if outcome == "found":
+        order_code = str(result.get("order_code") or "đơn bạn cung cấp")
+        status = str(result.get("status") or "Đang xử lý")
+        synced_at = str(result.get("synced_at") or "")
+        updated_at = str(result.get("order_updated_at") or "")
+        freshness = f" Dữ liệu được đồng bộ lúc {synced_at}." if synced_at else ""
+        detail = f" Trạng thái đơn được cập nhật lúc {updated_at}." if updated_at else ""
+        return (
+            f"Dạ mình đã tìm thấy đơn {order_code}. Trạng thái hiện ghi nhận là: {status}.{detail}{freshness}",
+            "ORDER_CACHE_MATCHED",
+        )
+    if outcome in {"not_found", "phone_mismatch"}:
+        return (
+            "Dạ mình chưa tìm thấy đơn khớp với mã đơn và số điện thoại bạn đã cung cấp. "
+            "Bạn kiểm tra lại giúp mình mã đơn hoặc số điện thoại đặt hàng nhé.",
+            "ORDER_CACHE_NO_MATCH",
+        )
+    return (
+        "Dạ dữ liệu đơn hàng đang được cập nhật nên mình chưa thể đối chiếu ngay lúc này. "
+        "Bạn thử lại sau ít phút giúp mình nhé.",
+        "ORDER_CACHE_UNAVAILABLE",
+    )
 
 
 def _format_cfc_purchase_intake_reply(slots: dict[str, Any]) -> str:
@@ -1047,17 +1071,13 @@ def _format_cfc_clarification_reply(goal: str, slots: dict[str, Any]) -> str:
 
 
 def _format_complaint_sop_reply(user_message: str, phone: str = "") -> str:
-    try:
-        from domains.amis.live_crm import create_cskh_ticket
-        create_cskh_ticket("product_complaint_sop", customer_phone=phone, issue_description=user_message)
-    except Exception:
-        pass
     lines = [
-        "Dạ CFC - Phân bón Cò Bay thành thật xin lỗi bạn vì sự cố phân bón bị vón cục/lỗi bao bì đã làm ảnh hưởng đến công việc canh tác của mình ạ.",
+        "Dạ bên mình thành thật xin lỗi vì sự cố sản phẩm bạn vừa phản ánh.",
         "",
-        "Để bộ phận Đảm bảo Chất lượng (QA/QC) kiểm tra mẫu lưu và tiến hành quy trình đổi trả hàng khẩn cấp theo đúng quy chuẩn SOP, bạn vui lòng hỗ trợ bên mình:",
-        "1. 📸 Gửi ảnh chụp hiện trạng phân bón và vị trí in **Mã Lô sản xuất (Lot No.) / Ngày sản xuất (NSX)** trên vỏ bao.",
-        "2. 📞 Cung cấp Số điện thoại và Địa chỉ điểm giao để chuyên viên CSKH liên hệ xử lý trực tiếp trong vòng 24 giờ làm việc nhé ạ!",
+        "Để admin tiếp nhận đúng hồ sơ, bạn vui lòng gửi:",
+        "1. Ảnh hiện trạng sản phẩm và phần Mã lô/Ngày sản xuất trên bao bì (nếu còn đọc được).",
+        "2. Số điện thoại và khu vực/điểm đã nhận hàng.",
+        "Mình sẽ ghi nhận thông tin để bộ phận phụ trách kiểm tra; kết quả đổi trả và thời hạn xử lý sẽ được xác nhận sau ạ.",
     ]
     return "\n".join(lines)
 
@@ -1067,97 +1087,38 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
     context = _cfc_context_summary(goal, slots)
     context_line = f" Mình đang giữ thông tin: {context}." if context else ""
     missing_prompt = _cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots))
-    norm = _normalize_vn(raw_text)
-
     if intent == "cfc_inventory_unavailable":
-        from domains.amis.live_crm import lookup_inventory_atp
-        prod_info = lookup_inventory_atp(raw_text)
-        if prod_info:
-            p_name = prod_info.get("product_name") or "sản phẩm"
-            p_code = prod_info.get("product_code") or ""
-            p_unit = prod_info.get("unit") or "Bao"
-            wh_loc = prod_info.get("warehouse_location") or "Tổng kho Nhà máy Cần Thơ"
-            variants = prod_info.get("other_variants") or []
-            variant_note = ""
-            if variants:
-                variant_note = f"\n💡 *Hệ thống ghi nhận thêm các quy cách/dòng:* {'; '.join(variants[:3])}."
-
-            answer = (
-                f"Dạ dòng sản phẩm **{p_name}** (Mã: {p_code}, Quy cách: {p_unit}) hiện có sẵn trong danh mục sản xuất chính thức tại {wh_loc}.{variant_note} "
-                "Nhà máy và hệ thống phân phối hoàn toàn có khả năng đáp ứng đơn hàng theo yêu cầu. "
-                "Bạn vui lòng để lại Số điện thoại và Khu vực/Địa chỉ nhận hàng để nhân viên kinh doanh đối chiếu kho gần nhất và báo lịch giao xe nhé ạ!"
-            )
-            return answer, "INVENTORY_ATP_QUALIFIED"
-        else:
-            if re.search(r"\b(xi mang|sat thep|gach|cat da|vat lieu xay dung|xe may|dien thoai|vay tien|tin dung)\b", norm):
-                answer = (
-                    "Dạ CFC Cò Bay là đơn vị chuyên sản xuất và phân phối phân bón nông nghiệp (NPK, Hữu cơ). "
-                    "Công ty hiện không sản xuất hay kinh doanh mặt hàng này ạ!"
-                )
-                return answer, "OUT_OF_SCOPE_PRODUCT"
-            answer = (
-                f"Dạ CFC Cò Bay đã đối chiếu trên danh mục sản phẩm của nhà máy nhưng chưa tìm thấy mã hàng tương ứng với yêu cầu của bạn.{context_line} "
-                "Bạn vui lòng để lại Số điện thoại và quy cách cần tìm để nhân viên kỹ thuật hỗ trợ tra cứu công thức phù hợp nhé ạ!"
-            )
-            return answer, "INVENTORY_PRODUCT_NOT_FOUND"
+        answer = (
+            f"Dạ số lượng còn hàng và lịch giao có thể thay đổi theo thời điểm.{context_line} "
+            f"{missing_prompt}"
+        )
+        return answer, "INVENTORY_REALTIME_NOT_CONNECTED"
 
     if intent == "cfc_order_status_unavailable":
-        from domains.amis.live_crm import lookup_order_status, format_order_status_response
-        order_match = (
-            re.search(r"#([A-Za-z0-9\-_]+)", raw_text)
-            or re.search(r"\b(0000\d{4}|DH[-_ ]?\d{4,8})\b", raw_text, re.IGNORECASE)
-            or re.search(r"(?:đơn hàng|don hang|mã đơn|ma don|đơn số|don so|[đd]ơn)\s*(?:số|so|mã|ma)?\s*[:#]?\s*([A-Za-z0-9\-_]+)", raw_text, re.IGNORECASE)
-            or re.search(r"#?([A-Za-z]{2,5}[-_ ]?\d{2,6}[-_ ]?\d{2,6}|[A-Za-z]{2,5}\d{3,8}|#\d{3,8})", raw_text)
-        )
-        extracted_order_code = ""
-        if order_match:
-            extracted_order_code = order_match.group(1) if order_match.groups() else order_match.group(0)
-            extracted_order_code = extracted_order_code.strip()
-            if extracted_order_code.lower().startswith(("nay", "giup", "cho", "nha", "shop")):
-                extracted_order_code = ""
-
-        dealer_match = re.search(r"(?:dai ly|khach hang)\s+([A-Za-z0-9\s_À-ỹ]+)", raw_text, re.IGNORECASE)
-        extracted_dealer = dealer_match.group(1).strip() if dealer_match else ("vinh thanh" if "vinh thanh" in norm else "")
-
-        order_data = lookup_order_status(order_code=extracted_order_code, dealer_name=extracted_dealer, phone=phone)
-        if order_data:
-            answer = format_order_status_response(order_data, query_order_code=extracted_order_code)
-            return answer, "ORDER_REALTIME_LOOKUP"
-
-        order_disp = f"*{extracted_order_code}*" if extracted_order_code else "này"
         answer = (
-            f"Dạ CFC Cò Bay đã tra cứu trực tiếp trên hệ thống AMIS CRM nhưng không tìm thấy mã đơn hàng {order_disp}. "
-            "Có thể mã đơn vừa được tạo hoặc bạn gõ thiếu ký tự. "
-            "Bạn vui lòng kiểm tra lại mã số trên phiếu xuất kho hoặc gửi kèm Số điện thoại/Tên đại lý để bộ phận Điều phối Kho Vận tra cứu hồ sơ nhé ạ!"
+            f"Dạ để kiểm tra đúng tình trạng đơn, mình cần mã đơn và số điện thoại đã đặt hàng.{context_line} "
+            f"{missing_prompt}"
         )
-        return answer, "ORDER_NOT_FOUND_CRM"
+        return answer, "ORDER_REALTIME_NOT_CONNECTED"
 
     if intent == "cfc_loyalty_unavailable":
-        from domains.amis.live_crm import lookup_loyalty_info, format_loyalty_response
-        phone_raw = slots.get("phone") or ""
-        loyalty_data = lookup_loyalty_info(phone_raw)
-        if loyalty_data:
-            answer = format_loyalty_response(loyalty_data, phone=phone_raw)
-            return answer, "LOYALTY_REALTIME_LOOKUP"
         phone_disp = _mask_phone(slots.get("phone", ""))
         answer = (
-            f"Dạ CFC Cò Bay đã tra cứu trên hệ thống AMIS CRM nhưng *không tìm thấy* thông tin hội viên cho số điện thoại {phone_disp}. "
-            "Có thể số này chưa được đăng ký hoặc đăng ký với SĐT khác. "
-            "Anh/chị vui lòng kiểm tra lại SĐT hoặc liên hệ nhân viên kinh doanh để đăng ký hồ sơ nhé ạ!"
+            f"Dạ để kiểm tra điểm, hạng hoặc ưu đãi của số {phone_disp}, bộ phận phụ trách sẽ đối chiếu và phản hồi cho bạn ạ."
         )
-        return answer, "LOYALTY_NOT_FOUND"
+        return answer, "LOYALTY_REALTIME_NOT_CONNECTED"
 
     if intent == "financial_service_unsupported":
         answer = (
-            "Dạ CFC Cò Bay là đơn vị sản xuất phân bón nông nghiệp, công ty không cung cấp dịch vụ cho vay tiền, vay vốn trực tiếp hay mua hàng trả góp tài chính ạ. "
-            "Các chính sách hỗ trợ công nợ mùa vụ chỉ được áp dụng thông qua hệ thống Đại lý cấp 1 và Nhà phân phối chính thức của Cò Bay trên từng địa bàn nha bạn."
+            "Dạ kênh này chưa hỗ trợ tư vấn vay vốn, công nợ hoặc trả góp. "
+            "Admin sẽ cần đối chiếu yêu cầu qua kênh nội bộ phù hợp ạ."
         )
         return answer, "FINANCIAL_SERVICE_NOT_SUPPORTED"
 
     answer = (
-        f"Dạ mình hiểu bạn cần bảng giá sỉ và chính sách chiết khấu hiện hành.{context_line} "
-        "Chính sách chiết khấu và ưu đãi đại lý cấp 1 được áp dụng theo từng vụ mùa và sản lượng hợp đồng. Để bảo mật chính sách thương mại nội bộ, "
-        "bạn vui lòng để lại Số điện thoại và Khu vực kinh doanh, Trưởng phòng Kinh doanh khu vực sẽ liên hệ gửi bảng chính sách trực tiếp nhé ạ!"
+        f"Dạ mình hiểu bạn cần bảng giá sỉ hoặc chính sách chiết khấu hiện hành.{context_line} "
+        "Mình chưa thể tự báo mức giá, chiết khấu hay cam kết hỗ trợ khi chưa được bộ phận phụ trách xác nhận. "
+        f"{missing_prompt}"
     )
     return answer, "WHOLESALE_POLICY_NOT_VERIFIED"
 
@@ -1178,92 +1139,17 @@ def _build_cfc_agronomy_intake_answer(*args, **kwargs) -> str:
             else:
                 goal = arg
 
+    if goal in {"crop_consultation", "dosage_usage"}:
+        goal = "agronomy_consultation"
+
     context = _cfc_context_summary(goal, slots)
     context_line = f" Mình đang ghi nhận: {context}." if context else ""
     missing_prompt = _cfc_missing_slots_prompt(_cfc_missing_slots(goal, slots), expert=True)
 
-    prod_intro = ""
-    agronomy_tip = ""
-    norm = _normalize_vn(raw_text)
-
-    if raw_text:
-        from domains.amis.live_crm import lookup_inventory_atp
-        prod = lookup_inventory_atp(raw_text)
-        if prod:
-            p_name = prod.get("product_name") or ""
-            prod_intro = f"Dạ CFC Cò Bay hiện có dòng sản phẩm **{p_name}** chính hãng từ nhà máy. "
-
-    # Ma trận tư vấn dinh dưỡng cho toàn bộ các nhóm cây trồng nông nghiệp:
-    if re.search(r"\b(buoi|cam|quyt)\b", norm):
-        agronomy_tip = (
-            "\n💡 *Quy trình dinh dưỡng cây có múi (Bưởi / Cam / Quýt):*\n"
-            "• **Phục hồi cây & Dưỡng rễ:** Bón **Phân Hữu Cơ Đa Dụng 21% (HC21)** kết hợp **NPK 20-20-15 TE** cải tạo đất và phát đọt đồng đều.\n"
-            "• **Nuôi hoa & Nuôi trái:** Bón **NPK 15-15-15 TE** và **NPK 16-8-16-12S TE** giúp mọng nước, tép mọng, ngọt đậm và vỏ bóng đẹp."
-        )
-    elif re.search(r"\b(sau rieng|sau)\b", norm):
-        if re.search(r"\b(rung|trai non|hat chuoi)\b", norm):
-            agronomy_tip = (
-                "\n💡 *Lưu ý kỹ thuật sầu riêng rụng trái non/hạt chuỗi:* Giai đoạn này cần đặc biệt chú ý cân đối đạm - kali với **NPK 15-15-15 TE**, "
-                "bổ sung vi lượng Canxi - Bo để dai cuống, chống rụng sinh lý và hạn chế đi đọt non cạnh tranh dinh dưỡng."
-            )
-        else:
-            agronomy_tip = (
-                "\n💡 *Quy trình dinh dưỡng chuyên sâu cho sầu riêng:*\n"
-                "• **Làm đọt & Dưỡng rễ:** Bón **Phân Hữu Cơ Đa Dụng 21% (HC21)** + **NPK Cò Bay 20-20-15 TE** đọt ra đều và dầy lá.\n"
-                "• **Nuôi trái & Lên cơm:** Bón **NPK 16-6-18 TE** hoặc **16-8-16-12S** giúp cơm vàng ngọt đậm, nở hộc đều."
-            )
-    elif re.search(r"\b(oi|cay oi|qua oi|trai oi)\b", norm):
-        agronomy_tip = (
-            "\n💡 *Quy trình dinh dưỡng khuyến nghị cho cây ổi:*\n"
-            "• **Giai đoạn phát đọt & tạo tán:** Bón kết hợp **Phân Hữu Cơ Đa Dụng 21% (HC21)** với **Phân NPK Cò Bay 20-20-15 TE** hoặc **16-16-8 TE** giúp bộ rễ phát triển mạnh, bật chồi mập mạp và đẻ nhánh khỏe.\n"
-            "• **Giai đoạn nuôi hoa & đậu trái:** Bổ sung vi lượng Canxi - Bo giúp tăng tỷ lệ đậu trái, cuống dai và hạn chế rụng trái non.\n"
-            "• **Giai đoạn nuôi trái & thu hoạch:** Sử dụng **Phân NPK Cò Bay 15-15-15 TE** hoặc **16-8-16-12S TE** giúp quả lớn nhanh, giòn ngọt, vỏ bóng đẹp và đạt năng suất cao."
-        )
-    elif re.search(r"\b(mit|xoai|man|tao|thanh long|mang cau|chom chom|nhan|chanh|tac)\b", norm):
-        agronomy_tip = (
-            "\n💡 *Quy trình dinh dưỡng cho cây ăn trái:*\n"
-            "• **Giai đoạn phát đọt & tạo tán:** Bón kết hợp **Phân Hữu Cơ Đa Dụng 21% (HC21)** với **Phân NPK Cò Bay 20-20-15 TE** hoặc **16-16-8 TE** giúp bung rễ khỏe, chồi mập.\n"
-            "• **Giai đoạn nuôi hoa & nuôi trái:** Bón **Phân NPK Cò Bay 15-15-15 TE** hoặc **16-8-16-12S TE** giúp trái lớn nhanh, tăng độ ngọt và màu sắc tươi đẹp."
-        )
-    elif re.search(r"\b(ca phe|tieu|dieu|cao su)\b", norm):
-        agronomy_tip = (
-            "\n💡 *Quy trình dinh dưỡng cho cây công nghiệp (Cà phê / Tiêu / Điều):*\n"
-            "• **Đầu mùa mưa / Phục hồi:** Bón **Phân Hữu Cơ Đa Dụng 21%** kết hợp **NPK 20-20-15 TE** bung chồi cành dự trữ.\n"
-            "• **Mùa khô & Nuôi quả:** Bón **NPK 16-8-16-12S TE** hoặc **16-16-8** chắc hạt, chống rụng quả sinh lý."
-        )
-    elif "lua" in norm:
-        if "dot 2" in norm or "de nhanh" in norm or "don dong" in norm:
-            agronomy_tip = (
-                "\n💡 *Lưu ý kỹ thuật lúa đợt 2 (đẻ nhánh rộ / đón đòng):* Cần bón công thức NPK cân đối lân và kali (như NPK 22-15-5 Lúa Xanh, NPK 20-20-15) giúp lúa cứng cây, "
-                "nở bụi đẫy chồi và nuôi đòng to chắc hạt."
-            )
-        elif "xuong giong" in norm or "dot 1" in norm:
-            agronomy_tip = (
-                "\n💡 *Lưu ý kỹ thuật lúa đợt 1 (ra rễ / đẻ nhánh):* Cần ưu tiên công thức giàu lân và đạm như NPK Cò Bay 22-15-5 giúp bộ rễ phát triển mạnh, nở bụi sớm."
-            )
-        else:
-            agronomy_tip = (
-                "\n💡 *Tư vấn kỹ thuật lúa:* Cò Bay cung cấp trọn bộ giải pháp NPK chuyên lúa (Đợt 1 Lúa Xanh, Đợt 2 Đón Đòng, Đợt 3 Lúa Vàng) giúp lúa trúng mùa trúng giá."
-            )
-    else:
-        agronomy_tip = (
-            "\n💡 *Quy trình dinh dưỡng tiêu chuẩn Cò Bay:*\n"
-            "• **Bón lót & Ra rễ:** Sử dụng **Phân Hữu Cơ Đa Dụng 21% (HC21)** kết hợp **NPK 20-20-15 TE** giúp cây bung rễ khỏe và đâm chồi nhanh.\n"
-            "• **Bón thúc nuôi củ/hoa/trái:** Sử dụng **NPK 15-15-15 TE** hoặc **16-8-16-12S TE** giúp củ quả lớn nhanh, đạt năng suất cao."
-        )
-
-    # Nhận diện quy mô trang trại lớn / hợp tác xã
-    scale_note = ""
-    if any(k in norm for k in ["100", "50", "30", "20", "10", "hecta", "ha", "trang trai", "hop tac xa"]):
-        loc_display = slots.get("area") or slots.get("district") or "Cần Thơ"
-        scale_note = (
-            f"\n🚜 *Chính sách dành riêng cho trang trại quy mô lớn:* CFC Cò Bay áp dụng mức giá xuất xưởng trực tiếp từ nhà máy, "
-            f"hỗ trợ xe tải giao hàng tận vườn và cử kỹ sư nông nghiệp phụ trách địa bàn ({loc_display}) đến tận nơi lấy mẫu đất, "
-            "khảo sát hiện trạng để lên phác đồ bón phân chi tiết."
-        )
-
     return (
-        f"{prod_intro}Về kỹ thuật canh tác: Công thức NPK và liều lượng bón tối ưu cần được kỹ sư đối chiếu chuẩn xác theo cây trồng, giai đoạn sinh trưởng, chất đất và khu vực.{agronomy_tip}{scale_note}{context_line}\n\n"
+        "Dạ mình đã ghi nhận yêu cầu tư vấn kỹ thuật cây trồng của bạn."
+        f"{context_line} "
+        "Để tư vấn đúng cho vườn của bạn, kỹ sư cần đối chiếu theo giai đoạn cây và điều kiện canh tác trước khi hướng dẫn công thức hoặc liều lượng. "
         f"{missing_prompt}"
     )
 
@@ -2227,6 +2113,29 @@ def _detect_customer_correction(norm_text: str) -> bool:
     ])
 
 
+def _detect_source_challenge(norm_text: str) -> bool:
+    """Detect a compact family of follow-ups that challenge previous evidence."""
+    return _has_any(norm_text, [
+        r"\b(nguon|bang chung|can cu|dua vao dau|lay thong tin o dau)\b",
+        r"\b(co that|dung that|thuc khong|chac khong|xac minh duoc khong)\b",
+        r"\b(thong tin|du lieu|cau tra loi).{0,35}\b(dung|that|chac|nguon|xac minh)\b",
+    ])
+
+
+def _safe_source_type(source_id: str) -> str:
+    """Return a customer-safe category without exposing an internal source ID."""
+    source = str(source_id or "").strip().casefold()
+    if "shopee" in source or "catalog" in source:
+        return "danh mục sản phẩm đã ghi nguồn"
+    if source.startswith("amis:internal:"):
+        return "dữ liệu đơn hàng đã đồng bộ gần nhất"
+    if source.startswith("amis:public:"):
+        return "dữ liệu công khai đã chiếu lọc từ hệ thống nghiệp vụ"
+    if any(token in source for token in ("faq", "knowledge", "handbook", "reply_docx")):
+        return "mục kiến thức/FAQ đã ghi nguồn"
+    return "nguồn dữ liệu đã được hệ thống ghi nhận"
+
+
 def _detect_language_request(norm_text: str) -> bool:
     return _has_any(norm_text, [
         r"(noi|tra loi|tu van).{0,20}(tieng trung|tieng anh|english|chinese|mandarin)",
@@ -2463,8 +2372,8 @@ async def _sheet_fast_response(
         return _fast_response(answer, intent, brand, start_time, lead_stage=lead_stage)
 
     fallback = unavailable_answer or (
-        "Dạ hiện mục thông tin này chưa tải được từ hệ thống kiến thức. "
-        "Admin sẽ kiểm tra lại dữ liệu và phản hồi bạn chính xác hơn nha."
+        "Dạ hiện mình chưa tìm được thông tin phù hợp để trả lời chính xác mục này. "
+        "Admin sẽ kiểm tra và phản hồi bạn chính xác hơn nha."
     )
     return _fast_response(fallback, unavailable_intent or f"{intent}_unavailable", brand, start_time, lead_stage=lead_stage)
 
@@ -3004,22 +2913,11 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             answer = item.get("answer", "").strip()
             response_intent = intent
             source_id = item.get("source_id", "")
-            if brand.lower() == "cfc" and intent in {"cfc_npk_product_info", "cfc_price_unverified"}:
-                from domains.amis.live_crm import lookup_inventory_atp
-                prod = lookup_inventory_atp(raw_text)
-                if prod:
-                    p_name = prod.get("product_name") or ""
-                    p_unit = prod.get("unit") or "Bao"
-                    answer = (
-                        f"Dạ sản phẩm **{p_name}** (Quy cách: {p_unit}) là dòng sản phẩm chính thức của Cò Bay. "
-                        "Bảng giá niêm yết và chính sách chiết khấu phụ thuộc vào quy cách đóng bao và khu vực phân phối của từng đại lý. "
-                        "Bạn gửi giúp mình Số điện thoại và Khu vực canh tác để kỹ sư Cò Bay gửi bảng giá chính xác nhất nhé ạ!"
-                    )
             if not answer:
                 response_intent = unavailable_intent or f"{intent}_unavailable"
                 answer = unavailable_answer or (
-                    "Dạ hiện mục thông tin này chưa tải được từ hệ thống kiến thức. "
-                    "Admin sẽ kiểm tra lại dữ liệu và phản hồi bạn chính xác hơn nha."
+                    "Dạ hiện mình chưa tìm được thông tin phù hợp để trả lời chính xác mục này. "
+                    "Admin sẽ kiểm tra và phản hồi bạn chính xác hơn nha."
                 )
             _remember_response(answer, response_intent, stage, source_id=source_id)
             return _fast_response(answer, response_intent, brand, start_time, lead_stage=stage)
@@ -3048,6 +2946,52 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 lead_stage=stage,
                 fallback_reason=fallback_reason,
                 latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+            )
+
+        if _detect_source_challenge(norm_text) and existing_session.get("last_bot_reply"):
+            previous_trace = existing_session.get("last_trace") or {}
+            previous_source = str(previous_trace.get("source_id") or "").strip()
+            previous_fallback = str(previous_trace.get("fallback_reason") or "").strip()
+            previous_grounding = assess_grounding(
+                intent=previous_intent or "previous_answer",
+                source_id=previous_source,
+                fallback_reason=previous_fallback,
+            )
+            source_is_trusted = previous_grounding.status == "grounded"
+            if source_is_trusted:
+                answer = (
+                    f"Dạ thông tin trước được đối chiếu từ {_safe_source_type(previous_source)}. "
+                    "Bạn cho mình biết phần nào cần kiểm tra lại, mình sẽ đối chiếu đúng thông tin đó cho bạn ạ."
+                )
+                response_source = previous_source
+                challenge_outcome = "SOURCE_TYPE_ACKNOWLEDGED"
+            else:
+                answer = (
+                    "Dạ bạn hỏi đúng. Phần thông tin trước chưa có căn cứ rõ để mình kiểm tra lại, "
+                    "nên mình xin không khẳng định thêm chi tiết đó. Bạn cho mình biết phần nào cần xác minh để mình đối chiếu lại nhé ạ."
+                )
+                response_source = ""
+                challenge_outcome = "UNVERIFIED_DETAILS_RETRACTED"
+            _remember_response(
+                answer,
+                "source_challenge_safe_fallback",
+                "collecting_contact",
+                source_id=response_source,
+                fallback_reason="SOURCE_CHALLENGE_SAFE_FALLBACK",
+                trace_extra={
+                    "source_challenge": {
+                        "previous_grounding_status": previous_grounding.status,
+                        "outcome": challenge_outcome,
+                    }
+                },
+            )
+            return _fast_response(
+                answer,
+                "source_challenge_safe_fallback",
+                brand,
+                start_time,
+                lead_stage="collecting_contact",
+                fallback_reason="SOURCE_CHALLENGE_SAFE_FALLBACK",
             )
 
         contact_capture_queued = False
@@ -3324,7 +3268,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                     if policy_answer:
                         answer = (
                             "Dạ việc đại lý có giao tận nhà hay không còn tùy khu vực và chính sách của từng điểm bán. "
-                            "Thông tin giao hàng chung hiện có trong Knowledge CFC:\n\n"
+                            "Thông tin giao hàng chung hiện có:\n\n"
                             f"{policy_answer}\n\n"
                             "Bạn liên hệ trực tiếp đại lý phù hợp trong danh sách để xác nhận phí và phạm vi giao hàng cụ thể nhé ạ."
                         )
@@ -3402,9 +3346,9 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 item = await get_faq_by_intent(brand, "cfc_company_website")
                 official_channel = item.get("answer", "").strip()
                 answer = (
-                    "Dạ Knowledge CFC hiện chưa có số hotline/tổng đài đã được xác minh nên mình không tự cung cấp số. "
+                    "Dạ hiện mình chưa có số hotline/tổng đài để cung cấp chính xác. "
                     + (
-                        f"Kênh chính thức đang có trong Knowledge: {official_channel}"
+                        f"Kênh chính thức hiện có: {official_channel}"
                         if official_channel
                         else "Admin cần bổ sung nguồn liên hệ chính thức trước khi bot có thể trả lời ạ."
                     )
@@ -3475,7 +3419,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
 
                 missing = _cfc_missing_slots("dealer_lookup", cfc_slots)
                 answer = (
-                    "Dạ Cò Bay đã nhận vị trí bạn gửi. Hệ thống chat hiện chưa kết nối bản đồ/danh sách đại lý theo tọa độ, "
+                    "Dạ Cò Bay đã nhận vị trí bạn gửi. Hiện mình chưa có đủ dữ liệu đại lý theo tọa độ, "
                     "nên mình chưa thể chỉ đích danh điểm bán gần nhất. "
                     f"{_cfc_missing_slots_prompt(missing)}"
                 )
@@ -3504,13 +3448,13 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
 
             if route_decision.tool == "b2b_intake":
                 answer = _format_b2b_large_order_reply(raw_text, query_plan.entities, incoming_phone)
-                _queue_incoming_contact("Khách hàng B2B / Hợp tác xã số lượng lớn (VIP)")
+                _queue_incoming_contact("Đơn mua số lượng lớn / hợp tác xã")
                 _remember_response(
                     answer,
                     route_decision.intent,
                     "collecting_contact",
-                    fallback_reason="B2B_VIP_LEAD_FORWARDED",
-                    trace_extra={"b2b_vip": True},
+                    fallback_reason="LARGE_ORDER_INTAKE_RECORDED",
+                    trace_extra={"large_order_intake": True},
                 )
                 return ChatPipelineResponse(
                     answer=_prettify_answer(answer),
@@ -3570,6 +3514,49 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                     phone=incoming_phone,
                     area=area,
                     lead_stage="collecting_contact",
+                    latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
+                )
+
+            if route_decision.tool == "order_status_lookup":
+                lookup = await lookup_cached_order_status(
+                    r,
+                    config=load_amis_config(),
+                    order_code=str(cfc_slots.get("order_id") or ""),
+                    phone=str(cfc_slots.get("phone") or ""),
+                )
+                answer, lookup_reason = _format_order_lookup_reply(lookup)
+                if lookup.get("outcome") == "missing_input":
+                    answer, lookup_reason = _build_cfc_capability_boundary(
+                        "cfc_order_status_unavailable",
+                        cfc_slots,
+                        raw_text,
+                        phone=phone,
+                    )
+                source_id = str(lookup.get("source_id") or "")
+                _remember_response(
+                    answer,
+                    "cfc_order_status_request" if source_id else "cfc_order_status_unavailable",
+                    "browsing_catalog" if source_id else "collecting_contact",
+                    source_id=source_id,
+                    fallback_reason=lookup_reason,
+                    trace_extra={
+                        "order_lookup": {
+                            "outcome": lookup.get("outcome", ""),
+                            "synced_at": lookup.get("synced_at", ""),
+                        },
+                    },
+                )
+                return ChatPipelineResponse(
+                    answer=_prettify_answer(answer),
+                    intent="cfc_order_status_request" if source_id else "cfc_order_status_unavailable",
+                    confidence="high",
+                    score=route_decision.confidence,
+                    brand=brand.upper(),
+                    has_phone=has_phone,
+                    phone=phone,
+                    area=area,
+                    lead_stage="browsing_catalog" if source_id else "collecting_contact",
+                    fallback_reason=lookup_reason,
                     latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
                 )
 
@@ -3682,16 +3669,19 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
 
             if route_decision.tool == "faq_by_intent" and route_decision.intent == "cfc_dosage_usage_review":
                 item = await get_faq_by_intent(brand, route_decision.intent)
-                ollama_answer = await consult_cfc_agronomy_with_ai(raw_text, cfc_slots, timeout_seconds=20.0)
-                answer = ollama_answer if ollama_answer else _build_cfc_agronomy_intake_answer(raw_text, "crop_consultation", cfc_slots)
+                answer = _build_cfc_agronomy_intake_answer(raw_text, "crop_consultation", cfc_slots)
                 _queue_incoming_contact("Tư vấn kỹ thuật nông nghiệp CFC")
                 _remember_response(
                     answer,
                     route_decision.intent,
                     "collecting_contact",
-                    source_id="ollama:cfc_agronomy" if ollama_answer else item.get("source_id", "cfc_faq_split_v1:cfc_dosage_usage_review"),
+                    source_id=item.get("source_id", ""),
                     fallback_reason="AGRONOMY_REQUIRES_EXPERT_REVIEW",
-                    trace_extra={"source_intent": route_decision.intent, "expert_intake": True, "ollama_powered": bool(ollama_answer)},
+                    trace_extra={
+                        "source_intent": route_decision.intent,
+                        "expert_intake": True,
+                        "customer_fact_generation_mode": "direct_only",
+                    },
                 )
                 return _cfc_grounded_response(
                     answer,
@@ -3703,18 +3693,13 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             if route_decision.tool == "faq_by_intent" and route_decision.intent == "cfc_price_unverified":
                 item = await get_faq_by_intent(brand, route_decision.intent)
                 base_faq_answer = (item.get("answer") or "").strip()
-                from domains.amis.live_crm import lookup_inventory_atp
-                prod = lookup_inventory_atp(raw_text)
-                if prod:
-                    p_name = prod.get("product_name") or ""
-                    p_unit = prod.get("unit") or "Bao"
-                    prod_prefix = f"Dạ bảng giá dòng sản phẩm **{p_name}** (Quy cách: {p_unit}) phụ thuộc vào số lượng và khu vực phân phối của từng đại lý.\n\n"
-                    answer = f"{prod_prefix}{base_faq_answer or 'Bạn gửi giúp mình Số điện thoại và Khu vực canh tác để kỹ sư Cò Bay gửi bảng giá niêm yết chính xác nhất nhé ạ!'}"
-                else:
-                    context = _cfc_context_summary("price_quote", cfc_slots)
-                    context_line = f" Mình đang giữ thông tin: {context}." if context else ""
-                    missing_line = _cfc_missing_slots_prompt(_cfc_missing_slots('price_quote', cfc_slots))
-                    answer = f"{base_faq_answer or 'Dạ bảng giá phân bón Cò Bay phụ thuộc dòng sản phẩm, quy cách và khu vực phân phối.'}{context_line}\n\n{missing_line}"
+                context = _cfc_context_summary("price_quote", cfc_slots)
+                context_line = f" Mình đang giữ thông tin: {context}." if context else ""
+                missing_line = _cfc_missing_slots_prompt(_cfc_missing_slots('price_quote', cfc_slots))
+                answer = (
+                    f"{base_faq_answer or 'Dạ hệ thống chưa có giá bán đã xác minh để mình tự báo.'}"
+                    f"{context_line}\n\n{missing_line}"
+                )
                 _queue_incoming_contact("Yêu cầu báo giá phân bón CFC")
                 _remember_response(
                     answer,
@@ -3768,13 +3753,13 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
 
             if query_plan.intent == "cfc_b2b_large_order_request" or route_decision.tool == "b2b_intake":
                 answer = _format_b2b_large_order_reply(raw_text, query_plan.entities, incoming_phone)
-                _queue_incoming_contact("Khách hàng B2B / Hợp tác xã số lượng lớn (VIP)")
+                _queue_incoming_contact("Đơn mua số lượng lớn / hợp tác xã")
                 _remember_response(
                     answer,
                     "cfc_b2b_large_order_request",
                     "collecting_contact",
-                    fallback_reason="B2B_VIP_LEAD_FORWARDED",
-                    trace_extra={"b2b_vip": True},
+                    fallback_reason="LARGE_ORDER_INTAKE_RECORDED",
+                    trace_extra={"large_order_intake": True},
                 )
                 return ChatPipelineResponse(
                     answer=_prettify_answer(answer),
@@ -3846,8 +3831,8 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             return _fast_response(answer, "cleaning_fragrance_safety", brand, start_time, lead_stage="browsing_catalog")
 
         if brand == "cfc" and not has_phone and query_plan.intent in {"agriculture_advisory_query", "cfc_agronomy_review_request", "cfc_crop_consultation_request", "cfc_dosage_usage_review"}:
-            ollama_answer = await consult_cfc_agronomy_with_ai(raw_text, cfc_slots, timeout_seconds=20.0)
-            answer = ollama_answer if ollama_answer else _build_cfc_agronomy_intake_answer(raw_text, "crop_consultation", cfc_slots)
+            item = await get_faq_by_intent(brand, "cfc_dosage_usage_review")
+            answer = _build_cfc_agronomy_intake_answer(raw_text, "crop_consultation", cfc_slots)
             _queue_incoming_contact("Tư vấn kỹ thuật nông nghiệp & quy trình bón phân")
             _remember_response(
                 answer,
@@ -3855,9 +3840,13 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 "collecting_contact",
                 confidence="high",
                 score=query_plan.intent_confidence,
-                source_id="ollama:cfc_agronomy" if ollama_answer else "cfc_faq_split_v1:cfc_crop_consultation_request",
+                source_id=item.get("source_id", ""),
                 fallback_reason="AGRONOMY_REQUIRES_EXPERT_REVIEW",
-                trace_extra={"source_intent": "cfc_crop_consultation_request", "ollama_powered": bool(ollama_answer)},
+                trace_extra={
+                    "source_intent": "cfc_dosage_usage_review",
+                    "expert_intake": True,
+                    "customer_fact_generation_mode": "direct_only",
+                },
             )
             return _fast_response(
                 answer,
@@ -3925,7 +3914,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         if cfc_phone_only and active_cfc_goal:
             resume_intents = {
                 "inventory_check": "cfc_inventory_unavailable",
-                "order_tracking": "cfc_order_status_unavailable",
+                "order_tracking": "cfc_order_status_request",
                 "loyalty_lookup": "cfc_loyalty_unavailable",
                 "wholesale_policy": "cfc_wholesale_policy_unverified",
                 "dealer_lookup": "cfc_dealer_location_request",
@@ -3936,11 +3925,19 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             source_id = ""
             if resumed_intent in {
                 "cfc_inventory_unavailable",
-                "cfc_order_status_unavailable",
                 "cfc_loyalty_unavailable",
                 "cfc_wholesale_policy_unverified",
             }:
                 final_reply, fallback_reason = _build_cfc_capability_boundary(resumed_intent, cfc_slots)
+            elif resumed_intent == "cfc_order_status_request":
+                lookup = await lookup_cached_order_status(
+                    r,
+                    config=load_amis_config(),
+                    order_code=str(cfc_slots.get("order_id") or ""),
+                    phone=str(cfc_slots.get("phone") or ""),
+                )
+                final_reply, fallback_reason = _format_order_lookup_reply(lookup)
+                source_id = str(lookup.get("source_id") or "")
             elif resumed_intent == "cfc_dosage_usage_review":
                 item = await get_faq_by_intent(brand, resumed_intent)
                 source_id = item.get("source_id", "")
@@ -3967,11 +3964,12 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 )
                 fallback_reason = "PRICE_NOT_VERIFIED"
 
-            _queue_incoming_contact(f"Tiếp tục yêu cầu CFC: {active_cfc_goal}")
+            if active_cfc_goal != "order_tracking":
+                _queue_incoming_contact(f"Tiếp tục yêu cầu CFC: {active_cfc_goal}")
             _remember_response(
                 final_reply,
                 resumed_intent,
-                "collecting_contact",
+                "browsing_catalog" if source_id else "collecting_contact",
                 source_id=source_id,
                 fallback_reason=fallback_reason,
                 trace_extra={"resumed_active_goal": active_cfc_goal},
@@ -3985,7 +3983,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 has_phone=True,
                 phone=phone,
                 area=area,
-                lead_stage="collecting_contact",
+                lead_stage="browsing_catalog" if source_id else "collecting_contact",
                 fallback_reason=fallback_reason,
                 latency_ms=round((time.perf_counter() - start_time) * 1000, 2),
             )
@@ -4371,7 +4369,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
 
         if _detect_new_product_request(norm_text):
             msg = (
-                f"Dạ hiện hệ thống kiến thức của {brand_display} chưa có mục xác nhận sản phẩm mới nhất/mới ra mắt. "
+                f"Dạ hiện mình chưa có thông tin đã được cập nhật để xác nhận sản phẩm mới nhất/mới ra mắt của {brand_display}. "
                 "Để tránh báo sai, bạn cho mình biết nhóm sản phẩm đang quan tâm hoặc để lại số điện thoại, admin sẽ kiểm tra thông tin mới nhất giúp mình nha."
             )
             return _fast_response(msg, "new_product_unverified", brand, start_time, lead_stage="browsing_catalog")
@@ -4995,7 +4993,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
         official_channel_intent = _detect_official_channel_request(norm_text)
         if official_channel_intent and not _is_internal_content_request(norm_text):
             msg = (
-                f"Dạ hiện hệ thống kiến thức của {brand_display} chưa có link chính thức cho kênh bạn vừa hỏi. "
+                f"Dạ hiện mình chưa có link chính thức cho kênh bạn vừa hỏi của {brand_display}. "
                 "Để tránh gửi nhầm link giả, bạn có thể dùng website chính thức hoặc để lại nhu cầu, admin sẽ kiểm tra và gửi đúng kênh chính thức nha."
             )
             return _fast_response(msg, official_channel_intent, brand, start_time, lead_stage="browsing_catalog")
@@ -5159,7 +5157,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 return _fast_response(catalog_reply, catalog_intent, brand, start_time, lead_stage="browsing_catalog")
 
             fallback_msg = (
-                "Dạ hiện danh mục sản phẩm chưa tải được từ hệ thống kiến thức. "
+                "Dạ hiện mình chưa tìm được danh mục sản phẩm phù hợp. "
                 "Bạn nhắn rõ nhóm sản phẩm muốn xem, hoặc admin sẽ kiểm tra lại dữ liệu giúp mình nha."
             )
             return _fast_response_remember(fallback_msg, "catalog_overview_unavailable", stage="browsing_catalog", fallback_reason="NO_KNOWLEDGE")
@@ -5320,8 +5318,25 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 )
                 lead_stage = "collecting_contact"
                 fallback_reason = "MISSING_SLOT"
+            elif brand == "cfc":
+                final_answer = (
+                    "Dạ mình chưa tìm được thông tin phù hợp để trả lời chính xác câu này. "
+                    "Bạn cho mình tên hoặc mã sản phẩm, cây trồng và nhu cầu cụ thể để mình kiểm tra đúng thông tin nhé ạ."
+                )
+                intent = "cfc_grounded_fallback"
+                confidence = "medium"
+                lead_stage = "collecting_contact"
+                fallback_reason = "NO_GROUNDED_KNOWLEDGE"
+                asyncio.create_task(
+                    notify_admin_unanswered(
+                        brand=brand,
+                        query=raw_text,
+                        sender_id=sender_id,
+                        score=best_score,
+                    )
+                )
             else:
-                # Thử cho Agent CSKH suy luận dựa trên câu hỏi và facts từ hệ thống (Bật cho cả ZeO và CFC)
+                # ZeO may rewrite a grounded answer when the fail-closed feature flag allows it.
                 ai_attempt = await reason_and_answer_cskh(
                     user_query=raw_text,
                     brand=brand,
@@ -5421,6 +5436,73 @@ def _response_to_dict(response: ChatPipelineResponse) -> dict[str, Any]:
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return response.dict()
+
+
+def _enforce_customer_grounding(
+    req: ChatPipelineRequest,
+    response: ChatPipelineResponse,
+) -> ChatPipelineResponse:
+    """Replace unsupported sourced claims before any customer response is persisted."""
+    brand = req.brand.lower()
+    session_key = f"{brand}:session:messenger:{req.sender_id.strip()}"
+    snapshot = _local_session_cache.get(session_key) or {}
+    trace = snapshot.get("last_trace") or {}
+    source_id = str(trace.get("source_id") or "") if isinstance(trace, dict) else ""
+    fallback_reason = str(response.fallback_reason or "")
+    if not fallback_reason and isinstance(trace, dict):
+        fallback_reason = str(trace.get("fallback_reason") or "")
+    decision = assess_grounding(
+        intent=response.intent,
+        source_id=source_id,
+        fallback_reason=fallback_reason,
+    )
+    if decision.status not in {"blocked_unsupported_claim", "missing_source"}:
+        return response
+
+    reason_code = (
+        "UNSUPPORTED_GENERATOR_SOURCE"
+        if decision.status == "blocked_unsupported_claim"
+        else "SOURCE_REQUIRED"
+    )
+    safe_answer = _prettify_answer(
+        "Dạ mình chưa có đủ thông tin để trả lời chắc chắn phần này, nên mình xin không gửi chi tiết chưa được kiểm tra. "
+        "Bạn nói rõ nhu cầu hoặc để lại thông tin liên hệ; admin/chuyên viên sẽ kiểm tra lại và phản hồi ạ."
+    )
+    safe_intent = f"{brand}_grounded_fallback"
+    response.answer = safe_answer
+    response.intent = safe_intent
+    response.confidence = "high"
+    response.score = 0.0
+    response.lead_stage = "collecting_contact"
+    response.fallback_reason = reason_code
+
+    if snapshot:
+        snapshot["last_bot_reply"] = safe_answer
+        snapshot["last_intent"] = safe_intent
+        snapshot["lead_stage"] = "collecting_contact"
+        if isinstance(trace, dict):
+            trace["source_id"] = ""
+            trace["final_intent"] = safe_intent
+            trace["fallback_reason"] = reason_code
+            trace["grounding_enforced"] = True
+            trace["blocked_grounding"] = decision.to_dict()
+            trace["grounding"] = assess_grounding(
+                intent=safe_intent,
+                fallback_reason=reason_code,
+            ).to_dict()
+        state = snapshot.get("conversation_state") or {}
+        if isinstance(state, dict):
+            state["current_intent"] = safe_intent
+            state["conversation_summary"] = (
+                f"Intent gần nhất: {safe_intent}; lead_stage: collecting_contact; "
+                "grounding: unsupported answer blocked."
+            )
+            recent_turns = state.get("recent_turns") or []
+            if recent_turns and isinstance(recent_turns[-1], dict):
+                recent_turns[-1]["bot"] = safe_answer[:600]
+                recent_turns[-1]["intent"] = safe_intent
+        _local_session_cache[session_key] = snapshot
+    return response
 
 
 async def _finalize_pipeline_response(req: ChatPipelineRequest, response: ChatPipelineResponse) -> None:
@@ -5572,9 +5654,11 @@ async def process_chat_pipeline(req: ChatPipelineRequest) -> ChatPipelineRespons
                 config=_conversation_store_config,
             ):
                 response = await _process_chat_pipeline_once(req)
+                response = _enforce_customer_grounding(req, response)
                 await _finalize_pipeline_response(req, response)
         else:
             response = await _process_chat_pipeline_once(req)
+            response = _enforce_customer_grounding(req, response)
             await _finalize_pipeline_response(req, response)
         response.message_id = message_id
         response.idempotency_status = "processed" if decision.status == "acquired" else decision.status

@@ -2,14 +2,14 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 
 // <workflow-map>
 // Workflow : CFC Co Bay Chatbot
-// Nodes   : 5  |  Connections: 5
+// Nodes   : 5  |  Connections: 4
 //
 // NODE INDEX
 // ──────────────────────────────────────────────────────────────────
 // Property name                    Node type (short)         Flags
 // MessengerTrigger                   facebookTrigger            [creds]
 // LocDauVao                          code
-// GoiFastApiChatPipeline             httpRequest                [onError→out(1)]
+// GoiFastApiChatPipeline             httpRequest
 // PrepareMessengerReply              code
 // NhanKhachAuto                      httpRequest                [creds]
 //
@@ -20,7 +20,6 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 //      → GoiFastApiChatPipeline
 //        → PrepareMessengerReply
 //          → NhanKhachAuto
-//        → PrepareMessengerReply (↩ loop)
 // </workflow-map>
 
 // =====================================================================
@@ -30,7 +29,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 @workflow({
     id: 'uJOo6NQO2mJZhUAr',
     name: 'CFC Co Bay Chatbot',
-    active: true,
+    active: false,
     description: 'a',
     isArchived: false,
     settings: { executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
@@ -71,6 +70,9 @@ let senderId = '';
 let messageId = '';
 let hasAttachment = false;
 let isEcho = false;
+let attachmentType = '';
+let latitude = null;
+let longitude = null;
 
 const messaging = data?.messaging?.[0]
   || (data?.message && data?.sender ? data : null)
@@ -82,18 +84,46 @@ if (messaging) {
   text = messaging?.message?.text || messaging?.message?.quick_reply?.payload || '';
   senderId = messaging?.sender?.id || '';
   messageId = messaging?.message?.mid || '';
-  hasAttachment = Boolean(messaging?.message?.attachments?.length);
+  const attachments = messaging?.message?.attachments || [];
+  hasAttachment = Boolean(attachments.length);
   isEcho = Boolean(messaging?.message?.is_echo);
+  const locationAttachment = attachments.find((item) => (
+    item?.type === 'location' || item?.payload?.coordinates
+  ));
+  const payload = locationAttachment?.payload || {};
+  const coordinates = payload?.coordinates || payload?.location || {};
+  const rawLatitude = coordinates?.lat ?? coordinates?.latitude;
+  const rawLongitude = coordinates?.long ?? coordinates?.lng ?? coordinates?.longitude;
+  if (rawLatitude !== undefined && rawLongitude !== undefined) {
+    const parsedLatitude = Number(rawLatitude);
+    const parsedLongitude = Number(rawLongitude);
+    if (Number.isFinite(parsedLatitude) && Number.isFinite(parsedLongitude)) {
+      latitude = parsedLatitude;
+      longitude = parsedLongitude;
+      attachmentType = 'location';
+    }
+  }
 }
 
 const emptyInput = !text || !text.trim();
+const inputKind = attachmentType === 'location'
+  ? 'location'
+  : (emptyInput ? (hasAttachment ? 'attachment' : 'empty') : 'text');
+
+// Echo, malformed sender and truly empty events must never reach the chatbot.
+if (isEcho || !senderId || (emptyInput && !hasAttachment)) {
+  return [];
+}
 
 return [{ json: {
   text: text.trim(),
   senderId,
   messageId,
   emptyInput,
-  inputKind: emptyInput ? (hasAttachment ? 'attachment' : 'empty') : 'text',
+  inputKind,
+  attachmentType,
+  latitude,
+  longitude,
   isEcho,
 } }];
 `,
@@ -105,7 +135,6 @@ return [{ json: {
         type: 'n8n-nodes-base.httpRequest',
         version: 4.2,
         position: [448, 304],
-        onError: 'continueErrorOutput',
     })
     GoiFastApiChatPipeline = {
         method: 'POST',
@@ -113,7 +142,7 @@ return [{ json: {
         sendBody: true,
         specifyBody: 'json',
         jsonBody:
-            '={{ { brand: "cfc", sender_id: $json.senderId, text: $json.text, fb_name: $json.fb_name || "", message_id: $json.messageId || "" } }}',
+            '={{ { brand: "cfc", sender_id: $json.senderId, text: $json.text, fb_name: $json.fb_name || "", message_id: $json.messageId || "", input_kind: $json.inputKind, attachment_type: $json.attachmentType || "", latitude: $json.latitude, longitude: $json.longitude } }}',
         options: {
             timeout: 30000,
         },
@@ -135,7 +164,22 @@ try {
 } catch (e) {
   pipelineRes = {};
 }
-const finalReply = pipelineRes.answer || "Dạ CFC Cò Bay đã nhận được tin nhắn của bạn. Bạn để lại nhu cầu bón phân hoặc số điện thoại, kỹ sư Cò Bay sẽ hỗ trợ tư vấn ngay cho mình nha!";
+// Fail closed: error payload, duplicate/takeover, malformed JSON or empty answer
+// must not be transformed into a customer-facing success message.
+if (
+  !pipelineRes
+  || typeof pipelineRes !== 'object'
+  || pipelineRes.error
+  || pipelineRes.duplicate === true
+  || pipelineRes.suppress_send === true
+  || ['duplicate_in_flight', 'human_handoff_active'].includes(pipelineRes.intent)
+) {
+  return [];
+}
+const finalReply = typeof pipelineRes.answer === 'string' ? pipelineRes.answer.trim() : '';
+if (!finalReply) {
+  return [];
+}
 
 return [{
   json: {
@@ -174,7 +218,6 @@ return [{
         this.MessengerTrigger.out(0).to(this.LocDauVao.in(0));
         this.LocDauVao.out(0).to(this.GoiFastApiChatPipeline.in(0));
         this.GoiFastApiChatPipeline.out(0).to(this.PrepareMessengerReply.in(0));
-        this.GoiFastApiChatPipeline.error().to(this.PrepareMessengerReply.in(0));
         this.PrepareMessengerReply.out(0).to(this.NhanKhachAuto.in(0));
     }
 }

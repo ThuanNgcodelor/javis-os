@@ -2,7 +2,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 
 // <workflow-map>
 // Workflow : Zeo Knowledge
-// Nodes   : 15  |  Connections: 16
+// Nodes   : 17  |  Connections: 18
 //
 // NODE INDEX
 // ──────────────────────────────────────────────────────────────────
@@ -11,9 +11,11 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 // ScheduleTrigger                    scheduleTrigger
 // ReadFaqRows                        googleSheets               [creds]
 // NormalizeKnowledge                 code
-// WriteRedisSnapshot                 redis                      [creds]
+// WriteRedisCandidate                redis                      [creds]
 // WriteRedisSyncMetadata             redis                      [creds]
-// RebuildZeoVectorIndex              httpRequest                [onError→regular]
+// RebuildZeoVectorIndex              httpRequest
+// ValidateZeoSync                    code
+// PromoteRedisSnapshot               redis                      [creds]
 // ReadShopeeRows                     googleSheets               [creds]
 // NormalizeShopeeCatalog             code
 // WriteShopeeRedisSnapshot           redis                      [creds]
@@ -28,9 +30,11 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 // ManualTrigger
 //    → ReadFaqRows
 //      → NormalizeKnowledge
-//        → WriteRedisSnapshot
-//          → WriteRedisSyncMetadata
-//            → RebuildZeoVectorIndex
+//        → WriteRedisCandidate
+//          → RebuildZeoVectorIndex
+//            → ValidateZeoSync
+//              → PromoteRedisSnapshot
+//                → WriteRedisSyncMetadata
 //    → ReadShopeeRows
 //      → NormalizeShopeeCatalog
 //        → WriteShopeeRedisSnapshot
@@ -52,7 +56,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 @workflow({
     id: 'DhrLUsDsldhxtTdX',
     name: 'Zeo Knowledge',
-    active: true,
+    active: false,
     description: 'b',
     isArchived: false,
     settings: { timezone: 'Asia/Ho_Chi_Minh', executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
@@ -243,6 +247,7 @@ const excludedInternalCount = normalizedRows.filter(item => item.active && item.
 return [{
   json: {
     snapshot_key: 'zeo:kb:basic:active',
+    candidate_key: 'zeo:kb:basic:candidate',
     brand_scope: 'ZeO/PANO/Oplus',
     knowledge_count: knowledgeItems.length,
     updated_at: new Date().toISOString(),
@@ -257,15 +262,15 @@ return [{
 
     @node({
         id: 'c325b9d5-28fc-4871-af86-d289c0cdbeac',
-        name: 'Write Redis Snapshot',
+        name: 'Write Redis Candidate',
         type: 'n8n-nodes-base.redis',
         version: 1,
         position: [768, 256],
         credentials: { redis: { id: 'DW6fQRCZ77RgdCqL', name: 'Zeo Redis (local)' } },
     })
-    WriteRedisSnapshot = {
+    WriteRedisCandidate = {
         operation: 'set',
-        key: 'zeo:kb:basic:active',
+        key: 'zeo:kb:basic:candidate',
         value: '={{ JSON.stringify($json) }}',
     };
 
@@ -274,13 +279,13 @@ return [{
         name: 'Write Redis Sync Metadata',
         type: 'n8n-nodes-base.redis',
         version: 1,
-        position: [1008, 256],
+        position: [1792, 256],
         credentials: { redis: { id: 'DW6fQRCZ77RgdCqL', name: 'Zeo Redis (local)' } },
     })
     WriteRedisSyncMetadata = {
         operation: 'set',
         key: 'zeo:sync:faq:basic:last-success',
-        value: '={{ JSON.stringify({ snapshot_key: $("Normalize Knowledge").first().json.snapshot_key, knowledge_count: $("Normalize Knowledge").first().json.knowledge_count, excluded_internal_count: $("Normalize Knowledge").first().json.excluded_internal_count, updated_at: $("Normalize Knowledge").first().json.updated_at, schema_version: $("Normalize Knowledge").first().json.schema_version, snapshot_hash: $("Normalize Knowledge").first().json.snapshot_hash }) }}',
+        value: '={{ JSON.stringify({ snapshot_key: $("Normalize Knowledge").first().json.snapshot_key, candidate_key: $("Normalize Knowledge").first().json.candidate_key, knowledge_count: $("Normalize Knowledge").first().json.knowledge_count, excluded_internal_count: $("Normalize Knowledge").first().json.excluded_internal_count, updated_at: $("Normalize Knowledge").first().json.updated_at, schema_version: $("Normalize Knowledge").first().json.schema_version, snapshot_hash: $("Normalize Knowledge").first().json.snapshot_hash, snapshot_validated: $("Validate ZeO Sync").first().json.snapshot_validated, vector_rebuilt: $("Validate ZeO Sync").first().json.vector_rebuilt, hot_cache_refreshed: $("Validate ZeO Sync").first().json.hot_cache_refreshed, complete: $("Validate ZeO Sync").first().json.complete }) }}',
     };
 
     @node({
@@ -288,8 +293,7 @@ return [{
         name: 'Rebuild ZeO Vector Index',
         type: 'n8n-nodes-base.httpRequest',
         version: 4.2,
-        position: [1264, 256],
-        onError: 'continueRegularOutput',
+        position: [1024, 256],
     })
     RebuildZeoVectorIndex = {
         method: 'POST',
@@ -301,11 +305,54 @@ return [{
                     name: 'brand',
                     value: 'zeo',
                 },
+                {
+                    name: 'snapshot_key',
+                    value: 'zeo:kb:basic:candidate',
+                },
             ],
         },
         options: {
             timeout: 120000,
         },
+    };
+
+    @node({
+        id: 'a23ad1aa-bb2e-4b2c-9b30-9017e0010102',
+        name: 'Validate ZeO Sync',
+        type: 'n8n-nodes-base.code',
+        version: 2,
+        position: [1280, 256],
+    })
+    ValidateZeoSync = {
+        jsCode: `
+const result = $input.first().json || {};
+const expectedKey = $('Normalize Knowledge').first().json.candidate_key;
+const missing = [
+  ['complete', result.complete === true],
+  ['snapshot_validated', result.snapshot_validated === true],
+  ['vector_rebuilt', result.vector_rebuilt === true],
+  ['hot_cache_refreshed', result.hot_cache_refreshed === true],
+  ['snapshot_key', result.snapshot_key === expectedKey],
+].filter(([, ok]) => !ok).map(([name]) => name);
+if (missing.length) {
+  throw new Error('KNOWLEDGE_SYNC_INCOMPLETE:' + missing.join(','));
+}
+return [{ json: result }];
+`,
+    };
+
+    @node({
+        id: 'a23ad1aa-bb2e-4b2c-9b30-9017e0010103',
+        name: 'Promote Redis Snapshot',
+        type: 'n8n-nodes-base.redis',
+        version: 1,
+        position: [1536, 256],
+        credentials: { redis: { id: 'DW6fQRCZ77RgdCqL', name: 'Zeo Redis (local)' } },
+    })
+    PromoteRedisSnapshot = {
+        operation: 'set',
+        key: 'zeo:kb:basic:active',
+        value: '={{ JSON.stringify($("Normalize Knowledge").first().json) }}',
     };
 
     @node({
@@ -425,13 +472,16 @@ return [{ json: { snapshot_key: 'zeo:shopee:catalog:active', product_count: prod
     ReadWebRows = {
         documentId: {
             __rl: true,
-            value: 'https://docs.google.com/spreadsheets/d/1o4vk2YwTVHbuvJxPedTAELCDeQa7iAszZ1kfDKQx0nk/edit?gid=0#gid=0',
+            value: 'https://docs.google.com/spreadsheets/d/1SkxtMEydeOgzUefNMUxQrTu9D9aYIsSvHW3xLHtxNmQ/edit?gid=170432919#gid=170432919',
             mode: 'url',
         },
         sheetName: {
             __rl: true,
-            value: 'Web',
-            mode: 'name',
+            value: 170432919,
+            mode: 'list',
+            cachedResultName: 'Web',
+            cachedResultUrl:
+                'https://docs.google.com/spreadsheets/d/1SkxtMEydeOgzUefNMUxQrTu9D9aYIsSvHW3xLHtxNmQ/edit#gid=170432919',
         },
         options: {},
     };
@@ -528,9 +578,11 @@ return [{ json: { snapshot_key: 'zeo:web:catalog:active', product_count: product
         this.ScheduleTrigger.out(0).to(this.ReadShopeeRows.in(0));
         this.ScheduleTrigger.out(0).to(this.ReadWebRows.in(0));
         this.ReadFaqRows.out(0).to(this.NormalizeKnowledge.in(0));
-        this.NormalizeKnowledge.out(0).to(this.WriteRedisSnapshot.in(0));
-        this.WriteRedisSnapshot.out(0).to(this.WriteRedisSyncMetadata.in(0));
-        this.WriteRedisSyncMetadata.out(0).to(this.RebuildZeoVectorIndex.in(0));
+        this.NormalizeKnowledge.out(0).to(this.WriteRedisCandidate.in(0));
+        this.WriteRedisCandidate.out(0).to(this.RebuildZeoVectorIndex.in(0));
+        this.RebuildZeoVectorIndex.out(0).to(this.ValidateZeoSync.in(0));
+        this.ValidateZeoSync.out(0).to(this.PromoteRedisSnapshot.in(0));
+        this.PromoteRedisSnapshot.out(0).to(this.WriteRedisSyncMetadata.in(0));
         this.ReadShopeeRows.out(0).to(this.NormalizeShopeeCatalog.in(0));
         this.NormalizeShopeeCatalog.out(0).to(this.WriteShopeeRedisSnapshot.in(0));
         this.WriteShopeeRedisSnapshot.out(0).to(this.NotifyFastapiShopeeCache.in(0));

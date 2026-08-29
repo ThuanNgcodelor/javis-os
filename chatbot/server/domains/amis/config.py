@@ -73,6 +73,13 @@ class AmisConfig:
     redis_locations_key: str = "amis:public:sales-locations:active"
     redis_locations_geo_key: str = "amis:public:sales-locations:geo"
     redis_metadata_key: str = "amis:public:sync:last-success"
+    # Private, server-only cache for a customer to check a specific order using
+    # both its code and the phone number on the order. This is deliberately
+    # separate from the public product/location snapshots above.
+    redis_order_lookup_key: str = "amis:internal:orders:active"
+    redis_order_lookup_metadata_key: str = "amis:internal:orders:last-success"
+    order_lookup_max_age_seconds: int = 5400
+    order_lookup_hmac_secret: str = field(default="", repr=False)
     internal_token: str = field(default="", repr=False)
     warehouse_location: str = "Tổng kho Nhà máy Cần Thơ (KCN Trà Nóc)"
 
@@ -98,6 +105,8 @@ class AmisConfig:
             "require_coordinates": self.require_coordinates,
             "geo_radius_km": self.geo_radius_km,
             "internal_token_configured": bool(self.internal_token),
+            "order_lookup_enabled": bool(self.order_lookup_hmac_secret),
+            "order_lookup_max_age_seconds": self.order_lookup_max_age_seconds,
             "warehouse_location": self.warehouse_location,
         }
 
@@ -119,6 +128,10 @@ def load_amis_config() -> AmisConfig:
     # The client secret and internal token intentionally never fall back to settings.json.
     client_secret = os.getenv("AMIS_CLIENT_SECRET", "").strip()
     internal_token = os.getenv("AMIS_SYNC_INTERNAL_TOKEN", "").strip()
+    # Prefer a dedicated secret. Falling back to the existing AMIS credential
+    # keeps the private cache usable during migration without storing a phone
+    # number in Redis; the value is never exposed through status responses.
+    order_lookup_hmac_secret = os.getenv("AMIS_ORDER_LOOKUP_HMAC_SECRET", "").strip() or client_secret
 
     return AmisConfig(
         base_url=str(value("AMIS_BASE_URL", "base_url", AmisConfig.base_url)).rstrip("/"),
@@ -192,6 +205,22 @@ def load_amis_config() -> AmisConfig:
         redis_metadata_key=str(
             value("AMIS_REDIS_METADATA_KEY", "redis_metadata_key", AmisConfig.redis_metadata_key)
         ).strip(),
+        redis_order_lookup_key=str(
+            value("AMIS_REDIS_ORDER_LOOKUP_KEY", "redis_order_lookup_key", AmisConfig.redis_order_lookup_key)
+        ).strip(),
+        redis_order_lookup_metadata_key=str(
+            value(
+                "AMIS_REDIS_ORDER_LOOKUP_METADATA_KEY",
+                "redis_order_lookup_metadata_key",
+                AmisConfig.redis_order_lookup_metadata_key,
+            )
+        ).strip(),
+        order_lookup_max_age_seconds=_as_int(
+            value("AMIS_ORDER_LOOKUP_MAX_AGE_SECONDS", "order_lookup_max_age_seconds", 5400),
+            5400,
+            60,
+        ),
+        order_lookup_hmac_secret=order_lookup_hmac_secret,
         internal_token=internal_token,
         warehouse_location=str(
             value("AMIS_WAREHOUSE_DEFAULT", "warehouse_location", AmisConfig.warehouse_location)

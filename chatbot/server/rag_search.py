@@ -174,15 +174,30 @@ def _load_csv_fallback(brand: str) -> list[dict]:
     return items
 
 
-async def refresh_knowledge_cache(brand: Optional[str] = None):
-    """Nạp toàn bộ FAQ từ Redis snapshot hoặc CSV vào RAM."""
+async def refresh_knowledge_cache(
+    brand: Optional[str] = None,
+    *,
+    strict: bool = False,
+    snapshot_key: Optional[str] = None,
+) -> dict[str, Any]:
+    """Load customer-eligible FAQ atomically; strict sync never falls back to CSV."""
     brands = ["zeo", "cfc"] if not brand else [brand.lower()]
+    if any(b not in {"zeo", "cfc"} for b in brands):
+        raise ValueError("brand must be 'zeo' or 'cfc'")
+    if snapshot_key and len(brands) != 1:
+        raise ValueError("snapshot_key requires exactly one brand")
     r = await get_redis()
     cfg = _load_settings()
+    refresh_meta: dict[str, Any] = {"status": "ok", "brands": {}}
 
     for b in brands:
-        kb_key = cfg["rag"]["cfc_kb_key"] if b == "cfc" else cfg["rag"]["zeo_kb_key"]
+        active_kb_key = cfg["rag"]["cfc_kb_key"] if b == "cfc" else cfg["rag"]["zeo_kb_key"]
+        candidate_kb_key = active_kb_key.removesuffix(":active") + ":candidate"
+        kb_key = str(snapshot_key or active_kb_key).strip()
+        if kb_key not in {active_kb_key, candidate_kb_key}:
+            raise ValueError("snapshot_key is outside the approved active/candidate keys")
         items: list[dict] = []
+        source = "redis"
 
         try:
             raw_snap = await r.get(kb_key)
@@ -198,20 +213,30 @@ async def refresh_knowledge_cache(brand: Optional[str] = None):
                     elif isinstance(snap, list):
                         items = snap
         except Exception as e:
+            if strict:
+                raise RuntimeError(f"REDIS_SNAPSHOT_READ_FAILED:{b}") from e
             logger.warning("Could not load snapshot from Redis for %s: %s", b, e)
 
         if not items:
+            if strict:
+                raise RuntimeError(f"REDIS_SNAPSHOT_EMPTY_OR_INVALID:{b}")
             items = _load_csv_fallback(b)
+            source = "csv_fallback"
 
-        _knowledge_items[b] = items
-        _intent_map[b] = {}
-        _phrase_map[b] = {}
-
+        eligible_items: list[dict] = []
+        next_intent_map: dict[str, dict] = {}
+        next_phrase_map: dict[str, str] = {}
         for item in items:
-            intent = item.get("intent", "").strip()
-            if not intent:
+            if not isinstance(item, dict):
                 continue
-            _intent_map[b][intent] = item
+            active = str(item.get("active", "true")).strip().lower() in {"true", "1", "yes", ""}
+            audience = str(item.get("audience", "customer")).strip().lower()
+            intent = item.get("intent", "").strip()
+            answer = str(item.get("answer", "")).strip()
+            if not active or audience == "internal" or not intent or not answer:
+                continue
+            eligible_items.append(item)
+            next_intent_map[intent] = item
 
             # Index tất cả câu hỏi mẫu và bí danh
             raw_examples = item.get("question_examples", "")
@@ -219,10 +244,26 @@ async def refresh_knowledge_cache(brand: Optional[str] = None):
             for ex in examples:
                 norm_ex = _normalize_vi_query(ex)
                 if norm_ex:
-                    _phrase_map[b][norm_ex] = intent
+                    next_phrase_map[norm_ex] = intent
 
+        if not eligible_items:
+            if strict:
+                raise RuntimeError(f"NO_CUSTOMER_ELIGIBLE_ITEMS:{b}")
+            logger.warning("No customer-eligible knowledge items loaded for %s", b)
+
+        # Atomic in-process swap: a failed parse/build leaves the previous cache intact.
+        _knowledge_items[b] = eligible_items
+        _intent_map[b] = next_intent_map
+        _phrase_map[b] = next_phrase_map
         _cache_loaded[b] = True
-        logger.info("In-memory knowledge cache loaded for %s: %d items, %d indexed phrases", b.upper(), len(items), len(_phrase_map[b]))
+        refresh_meta["brands"][b] = {
+            "source": source,
+            "snapshot_key": kb_key,
+            "item_count": len(eligible_items),
+            "phrase_count": len(next_phrase_map),
+        }
+        logger.info("In-memory knowledge cache loaded for %s: %d items, %d indexed phrases", b.upper(), len(eligible_items), len(next_phrase_map))
+    return refresh_meta
 
 
 async def _ensure_cache_loaded(brand: str):

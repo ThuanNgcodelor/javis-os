@@ -1,9 +1,45 @@
 # Phase 0 — Containment, grounding và chặn rủi ro production
 
-Trạng thái: `READY FOR REVIEW — CHƯA CODE`  
+Trạng thái: `BLOCKED — LOCAL IMPLEMENTATION COMPLETE; chờ quyết định AMIS/live canary`
 Ưu tiên: P0, blocking mọi phase customer-facing khác  
 Ước lượng: 1–2 ngày kỹ thuật; thao tác live cần phê duyệt riêng  
 Phụ thuộc: không có
+
+> Cập nhật 2026-08-29, local HEAD `2b47fa34f0d321f6f668f83b9a608171dc07e54e`. Code và workflow local đã được harden; không có thao tác push, deploy, activate/deactivate, đổi credential, flush Redis hoặc chạy AMIS live. Phase không được đánh dấu `DONE` vì cần canary live có owner phê duyệt.
+
+## 0. Kết quả triển khai local
+
+| Work package | Trạng thái local | Bằng chứng / giới hạn còn lại |
+|---|---|---|
+| WP1 free generation | Hoàn thành | Customer fact generation mặc định `direct_only`; thiếu fact/catalog thì không gọi generator. |
+| WP2 agronomy | Hoàn thành | Không còn gửi AI/hard-code protocol cho khách; chỉ ghi nhận ngữ cảnh để kỹ sư đối chiếu trước khi tư vấn. |
+| WP3 grounding | Hoàn thành | Provider như Ollama/Groq không còn được xem là source; chặn trước khi send. |
+| WP4 source challenge | Hoàn thành | Có rút lại claim không evidence; source an toàn chỉ được mô tả ở mức loại nguồn. |
+| WP5 chatbot n8n | Sẵn sàng canary | HTTP error/malformed/empty/duplicate/takeover không tới Send Messenger; chưa bổ sung workflow alert riêng. |
+| WP6 knowledge sync | Sẵn sàng canary | Candidate -> rebuild strict -> validate 3 checkpoint -> promote -> last-success. Chưa có xác nhận execution live. |
+| WP7 AMIS warm order lookup | Sẵn sàng canary | Full Warm local tạo snapshot đơn hàng private: chỉ mã đơn, trạng thái, thời điểm và HMAC số điện thoại; tra cứu buộc mã đơn + SĐT khớp, tối đa 90 phút. Chưa chạy trên live. |
+
+### Thay đổi thực tế
+
+- `ai_engine.py`, `grounding_policy.py`, `chat_pipeline.py`, `query_understanding.py`: fail-closed cho fact customer-facing, nông học, source challenge và capability boundary.
+- `knowledge_sync.py`, `rag_search.py`, `main.py`, `domains/n8n/routes.py`: sync chỉ success sau snapshot hợp lệ, vector rebuild và strict hot-cache refresh; snapshot candidate được allowlist.
+- `cfc_cobay_chatbot.workflow.ts`, `zeo_chatbot.workflow.ts`: FastAPI failure không được biến thành Messenger reply; CFC nhận location payload và suppress response không an toàn.
+- `cfc_knowledge_sync_basic.workflow.ts`, `zeo_knowledge_sync_basic.workflow.ts`: không promote/ghi last-success trước checkpoint đầy đủ.
+- Ngôn ngữ khách hàng đã đổi: nói rõ việc cần bộ phận phụ trách xác nhận, không nói lộ chi tiết kỹ thuật như “B2B”, “dữ liệu thương mại” hay “chưa kết nối CRM”.
+- `domains/amis/order_cache.py`, `domains/amis/service.py`, `dialogue_router.py`, `chat_pipeline.py`: dùng AMIS warm cache để tra cứu đúng một đơn khi mã đơn và số điện thoại cùng khớp; sai mã/số chỉ báo không tìm thấy, snapshot cũ quá 90 phút thì không trả trạng thái. Public Redis vẫn chỉ chứa sản phẩm/điểm bán.
+- `settings.example.json`, `.env.example`: bổ sung cấu hình cache đơn; bỏ giá trị secret khỏi file ví dụ để không biến ví dụ cấu hình thành credential.
+
+### Bằng chứng kiểm thử
+
+| Kiểm tra | Kết quả |
+|---|---|
+| 8 module regression Phase 0 (bao gồm AMIS order cache/sync) | `68/68 OK` ngày 2026-08-29 |
+| Cú pháp JavaScript nhúng của 4 workflow | `10` code block hợp lệ |
+| `n8nac skills validate` 4 workflow | Đã pass trong lượt xác minh trước; lần chạy lại cuối bị chặn do DNS `registry.npmjs.org` không truy cập được, không phải lỗi workflow |
+| Full unittest discover | Lần baseline trước có `132/149` pass; chưa chạy lại toàn bộ sau thay đổi AMIS này. Không dùng kết quả đó để tuyên bố full suite xanh. |
+| Replay pipeline với Redis local, sender `eval-replay:*`, notification mock | `29/35` turn pass; source coverage `1.0`, memory `10/10`, routing `9.14/10`, grounding `8.85/10`. Sáu expectation còn lại cần xử lý Phase 1/data-live trước canary. |
+
+Không có khách thật hay notification ra ngoài trong replay. Lần replay không có Redis chỉ đạt `14/35`, nên không được xem là bằng chứng runtime.
 
 ## 1. Mục tiêu
 
@@ -170,7 +206,9 @@ File dự kiến:
 
 ### P0-WP7 — AMIS containment cần phê duyệt live
 
-Code/local analysis có thể làm trước, nhưng các action sau cần chủ hệ thống đồng ý:
+Đã triển khai local cache đọc đơn từ payload Full Warm: snapshot private không có số điện thoại thô, chỉ dùng HMAC để so khớp chính xác mã đơn + số điện thoại. Cache quá `AMIS_ORDER_LOOKUP_MAX_AGE_SECONDS` (mặc định 5.400 giây) không được dùng. Đây là dữ liệu warm, không phải realtime.
+
+Các action sau vẫn cần chủ hệ thống đồng ý:
 
 1. Deactivate/cô lập `AMIS CRM Full Warm`.
 2. Giữ một public writer được chọn.
@@ -178,7 +216,7 @@ Code/local analysis có thể làm trước, nhưng các action sau cần chủ 
 4. Tạm tắt `pilot_approve_all` hoặc đóng public locations cho tới khi có allowlist.
 5. Kiểm tra execution retention/raw payload theo quy trình bảo mật.
 
-P0 không triển khai realtime AMIS. Nếu AMIS audit timeout, chatbot phải trả capability boundary.
+P0 không triển khai realtime AMIS. Nếu cache chưa có/chưa hợp lệ/quá cũ, chatbot chỉ báo dữ liệu đang cập nhật và không tự đoán trạng thái đơn.
 
 ## 5. Test matrix bắt buộc
 
@@ -259,15 +297,14 @@ Rollback:
 
 ## 9. Checklist nghiệm thu
 
-- [ ] Guard empty-facts được khôi phục.
-- [ ] CFC no-grounded route fail-safe.
-- [ ] AI agronomy không customer-facing.
-- [ ] Provider source bị grounding reject.
-- [ ] Source challenge safe fallback có regression.
-- [ ] Câu sầu riêng không còn claim incident.
-- [ ] Protected flow suite xanh.
-- [ ] N8n error route test xanh.
-- [ ] Sync checkpoint contract test xanh.
+- [x] Guard empty-facts được khôi phục.
+- [x] CFC no-grounded route fail-safe.
+- [x] AI agronomy không customer-facing.
+- [x] Provider source bị grounding reject.
+- [x] Source challenge safe fallback có regression.
+- [x] Câu sầu riêng không còn claim incident.
+- [ ] Protected flow full suite xanh — còn 17 failure/error cũ ngoài phạm vi P0, đã ghi ở mục 0.
+- [x] N8n error route contract test xanh.
+- [x] Sync checkpoint contract test xanh.
 - [ ] AMIS action live có quyết định/owner.
 - [ ] Rollback đã được diễn tập local.
-

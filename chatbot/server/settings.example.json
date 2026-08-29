@@ -35,7 +35,8 @@
     "orchestrator_timeout_seconds": 6.0
   },
   "grounding_policy": {
-    "mode": "audit"
+    "mode": "enforce",
+    "customer_fact_generation_mode": "direct_only"
   },
   "rag": {
     "top_k": 5,
@@ -95,6 +96,9 @@
     "allow_billing_address_fallback": false,
     "allow_office_phone_fallback": false,
     "min_public_products": 1,
-    "min_public_locations": 1
+    "min_public_locations": 1,
+    "redis_order_lookup_key": "amis:internal:orders:active",
+    "redis_order_lookup_metadata_key": "amis:internal:orders:last-success",
+    "order_lookup_max_age_seconds": 5400
   }
 }

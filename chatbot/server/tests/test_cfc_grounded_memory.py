@@ -76,6 +76,23 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         ):
             self.assertIn(expected, workflow)
 
+    def test_customer_boundaries_do_not_expose_internal_integration_terms(self):
+        large_order = chat_pipeline._format_b2b_large_order_reply(
+            "Tôi cần mua 30 tấn NPK cho hợp tác xã",
+        )
+        order_status, _ = chat_pipeline._build_cfc_capability_boundary(
+            "cfc_order_status_unavailable",
+            {"order_id": "DH-2026-889"},
+        )
+
+        self.assertNotIn("B2B", large_order)
+        self.assertNotIn("chatbot", large_order.lower())
+        self.assertNotIn("dữ liệu thương mại", large_order.lower())
+        self.assertIn("bộ phận phụ trách", large_order.lower())
+        self.assertNotIn("chưa kết nối", order_status.lower())
+        self.assertIn("mã đơn", order_status.lower())
+        self.assertNotIn("cuộc chat này", order_status.lower())
+
     async def test_inventory_goal_resumes_after_phone_only_turn(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
         with redis_patch, faq_patch, profile_patch, nlu_patch:
@@ -91,7 +108,7 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             ))
 
         self.assertEqual(first.intent, "cfc_inventory_unavailable")
-        self.assertIn("chưa kết nối tồn kho realtime", first.answer)
+        self.assertIn("số lượng còn hàng và lịch giao", first.answer)
         self.assertEqual(second.intent, "cfc_inventory_unavailable")
         state = chat_pipeline._local_session_cache[
             "cfc:session:messenger:inventory-resume"
@@ -157,13 +174,62 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.intent, "cfc_loyalty_unavailable")
         self.assertNotEqual(result.intent, "contact_phone_provided")
-        self.assertIn("chưa kết nối dữ liệu khách hàng", result.answer)
+        self.assertIn("để kiểm tra điểm", result.answer.lower())
         self.assertNotIn("đã có điểm", result.answer.lower())
         state = chat_pipeline._local_session_cache[
             "cfc:session:messenger:loyalty-intent"
         ]["conversation_state"]
         self.assertEqual(state["active_goal"]["name"], "loyalty_lookup")
         self.assertEqual(state["confirmed_slots"]["phone"], "0979176415")
+
+    async def test_order_status_uses_warm_cache_when_code_and_phone_match(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        cached_lookup = AsyncMock(return_value={
+            "outcome": "found",
+            "order_code": "DH-2026-889",
+            "status": "Đang giao hàng",
+            "order_updated_at": "2026-08-29T07:45:00+00:00",
+            "synced_at": "2026-08-29T08:00:00+00:00",
+            "source_id": "amis:internal:order-warm",
+        })
+        with redis_patch, faq_patch, profile_patch, nlu_patch, \
+                patch("chat_pipeline.lookup_cached_order_status", new=cached_lookup):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="order-warm-match",
+                text="Tra cứu đơn DH-2026-889, số điện thoại đặt hàng 0901234567",
+            ))
+
+        cached_lookup.assert_awaited_once()
+        self.assertEqual(result.intent, "cfc_order_status_request")
+        self.assertIn("DH-2026-889", result.answer)
+        self.assertIn("Đang giao hàng", result.answer)
+        self.assertNotIn("chưa kết nối", result.answer.lower())
+        self.assertNotIn("CRM", result.answer)
+        trace = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:order-warm-match"
+        ]["last_trace"]
+        self.assertEqual(trace["source_id"], "amis:internal:order-warm")
+
+    async def test_order_status_reports_no_match_without_disclosing_any_order(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        cached_lookup = AsyncMock(return_value={
+            "outcome": "not_found",
+            "synced_at": "2026-08-29T08:00:00+00:00",
+            "source_id": "amis:internal:order-warm",
+        })
+        with redis_patch, faq_patch, profile_patch, nlu_patch, \
+                patch("chat_pipeline.lookup_cached_order_status", new=cached_lookup):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="order-warm-no-match",
+                text="Tra cứu đơn DH-404, số điện thoại đặt hàng 0901234567",
+            ))
+
+        self.assertEqual(result.intent, "cfc_order_status_request")
+        self.assertIn("chưa tìm thấy đơn khớp", result.answer.lower())
+        self.assertNotIn("trạng thái hiện ghi nhận", result.answer.lower())
+        self.assertNotIn("CRM", result.answer)
 
     async def test_agronomy_reply_is_expert_intake_without_formula_or_dose(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
@@ -175,13 +241,116 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             ))
 
         self.assertEqual(result.intent, "cfc_dosage_usage_review")
-        for expected in ("sầu riêng", "nuôi trái non", "rụng hạt chuỗi", "không tự đưa công thức"):
+        for expected in ("sầu riêng", "nuôi trái non", "rụng hạt chuỗi", "kỹ sư cần đối chiếu"):
             self.assertIn(expected, result.answer)
+        self.assertNotIn("quy trình nông học", result.answer.lower())
+        self.assertNotIn("chatbot", result.answer.lower())
         self.assertNotRegex(result.answer, r"\b\d{1,2}-\d{1,2}-\d{1,2}\b")
         trace = chat_pipeline._local_session_cache[
             "cfc:session:messenger:agronomy-intake"
         ]["last_trace"]
         self.assertEqual(trace["source_id"], "test:cfc_dosage_usage_review")
+
+    async def test_durian_eligibility_does_not_expand_into_protocol_or_policy(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        with redis_patch, faq_patch, profile_patch, nlu_patch:
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="durian-eligibility",
+                text="Có phân bón cho cây sầu riêng hay không?",
+            ))
+
+        self.assertIn(result.intent, {"cfc_crop_consultation_request", "cfc_dosage_usage_review"})
+        self.assertIn("sầu riêng", result.answer)
+        self.assertIn("kỹ sư cần đối chiếu", result.answer)
+        self.assertNotRegex(result.answer, r"\b\d{1,3}\s*kg/ha\b")
+        self.assertNotRegex(result.answer, r"\b\d{1,2}-\d{1,2}-\d{1,2}\b")
+        self.assertNotIn("giá xuất xưởng", result.answer.lower())
+        self.assertNotIn("miễn phí vận chuyển", result.answer.lower())
+
+    async def test_source_challenge_retracts_previous_ungrounded_details(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        with redis_patch, faq_patch, profile_patch, nlu_patch, \
+                patch("chat_pipeline.semantic_search", new=AsyncMock(return_value={
+                    "answer": "", "intent": "", "score": 0.0, "source_id": "",
+                })), \
+                patch("chat_pipeline.notify_admin_unanswered", new=AsyncMock()):
+            await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="source-challenge",
+                text="Phân này có chống chịu mặn tuyệt đối không?",
+            ))
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="source-challenge",
+                text="Dữ liệu đó có thật không, nguồn đâu?",
+            ))
+
+        self.assertEqual(result.intent, "source_challenge_safe_fallback")
+        self.assertEqual(result.fallback_reason, "SOURCE_CHALLENGE_SAFE_FALLBACK")
+        self.assertIn("không khẳng định thêm", result.answer.lower())
+        self.assertNotIn("model", result.answer.lower())
+        self.assertNotIn("nguồn nghiệp vụ", result.answer.lower())
+        trace = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:source-challenge"
+        ]["last_trace"]
+        self.assertEqual(trace["source_challenge"]["outcome"], "UNVERIFIED_DETAILS_RETRACTED")
+
+    async def test_source_challenge_only_acknowledges_safe_source_type(self):
+        sender_id = "source-challenge-grounded"
+        session_key = f"cfc:session:messenger:{sender_id}"
+        chat_pipeline._local_session_cache[session_key] = {
+            "last_user_message": "Website nào chính thức?",
+            "last_bot_reply": "Website đã được ghi trong Knowledge.",
+            "last_intent": "cfc_company_website",
+            "lead_stage": "browsing_catalog",
+            "conversation_state": chat_pipeline._default_conversation_state("cfc"),
+            "last_trace": {
+                "source_id": "cfc_faq_split_v1",
+                "fallback_reason": "",
+            },
+        }
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        with redis_patch, faq_patch, profile_patch, nlu_patch:
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id=sender_id,
+                text="Nguồn đâu, thông tin đó có thật không?",
+            ))
+
+        self.assertEqual(result.intent, "source_challenge_safe_fallback")
+        self.assertIn("mục kiến thức/FAQ", result.answer)
+        self.assertNotIn("cfc_faq_split_v1", result.answer)
+        self.assertNotIn("phase 0", result.answer.lower())
+        trace = chat_pipeline._local_session_cache[session_key]["last_trace"]
+        self.assertEqual(trace["source_challenge"]["outcome"], "SOURCE_TYPE_ACKNOWLEDGED")
+
+    def test_generator_source_is_blocked_before_customer_send(self):
+        sender_id = "provider-source-block"
+        session_key = f"cfc:session:messenger:{sender_id}"
+        chat_pipeline._local_session_cache[session_key] = {
+            "last_trace": {
+                "source_id": "ollama:cfc_agronomy",
+                "fallback_reason": "",
+            },
+            "conversation_state": {"recent_turns": []},
+        }
+        response = chat_pipeline.ChatPipelineResponse(
+            answer="NPK 20-20-15, bón 200kg/ha.",
+            intent="cfc_dosage_usage_review",
+            confidence="high",
+            score=1.0,
+            brand="CFC",
+        )
+
+        enforced = chat_pipeline._enforce_customer_grounding(
+            ChatPipelineRequest(brand="cfc", sender_id=sender_id, text="Bón sao?"),
+            response,
+        )
+
+        self.assertEqual(enforced.intent, "cfc_grounded_fallback")
+        self.assertEqual(enforced.fallback_reason, "UNSUPPORTED_GENERATOR_SOURCE")
+        self.assertNotIn("200kg/ha", enforced.answer)
 
     async def test_location_attachment_is_acknowledged_without_fake_nearest_dealer(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
@@ -198,7 +367,7 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.intent, "cfc_dealer_location_received")
         self.assertIn("đã nhận vị trí", result.answer)
-        self.assertIn("chưa kết nối", result.answer)
+        self.assertIn("chưa có đủ dữ liệu", result.answer)
         self.assertNotIn("đại lý gần nhất là", result.answer.lower())
         state = chat_pipeline._local_session_cache[
             "cfc:session:messenger:live-location"
@@ -237,7 +406,9 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
 
         ai_answer.assert_not_awaited()
         self.assertEqual(result.intent, "cfc_grounded_fallback")
-        self.assertIn("không tự suy đoán", result.answer)
+        self.assertIn("chưa tìm được thông tin phù hợp", result.answer)
+        self.assertNotIn("knowledge cfc", result.answer.lower())
+        self.assertNotIn("tự suy đoán", result.answer.lower())
         self.assertEqual(result.fallback_reason, "NO_GROUNDED_KNOWLEDGE")
 
     async def test_sourced_cfc_rag_answer_is_not_rewritten_by_llm(self):

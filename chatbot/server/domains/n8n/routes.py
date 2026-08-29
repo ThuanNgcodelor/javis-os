@@ -2,6 +2,8 @@
 domains.n8n.routes — FastAPI Router cho n8n Automation và Workflows.
 """
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query, WebSocket
 from .schemas import DeployRequest
 from .service import (
@@ -41,14 +43,19 @@ async def list_executions_endpoint(limit: int = Query(20, le=50)):
 
 
 @router.post("/sync-knowledge")
-async def sync_knowledge_endpoint(brand: str = Query("all")):
+async def sync_knowledge_endpoint(
+    brand: str = Query("all"),
+    snapshot_key: Optional[str] = Query(None),
+):
     """Trigger đồng bộ Knowledge từ Google Sheets lên Redis + Vector Index."""
     from knowledge_sync import sync_brand
     if brand == "all":
+        if snapshot_key:
+            raise HTTPException(status_code=400, detail="snapshot_key is not supported with brand=all")
         zeo = await sync_brand("zeo")
         cfc = await sync_brand("cfc")
         return {"zeo": zeo, "cfc": cfc}
-    return await sync_brand(brand)
+    return await sync_brand(brand, snapshot_key=snapshot_key)
 
 
 @router.get("/workflows/{workflow_id}/executions")
