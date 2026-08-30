@@ -130,6 +130,12 @@ Hệ thống hỗ trợ chuyển đổi tức thì thông qua file `chatbot/serv
    - Bổ sung Guardrail: Cho phép AI trò chuyện tự nhiên (Chit-chat) nhưng nếu khách hỏi giá/sản phẩm chưa có trong CSDL thì AI khéo léo xin SĐT chứ không tự bịa giá.
 5. **Cơ chế Switch Mode Local / Cloud tức thì:**
    - Cập nhật `ai_engine.py` nhận diện `execution_mode: "cloud" | "local" | "auto"`.
+6. **TC01/TC12 — Catalog-grounded price intake & dynamic agronomy retrieval:**
+   - Câu hỏi giá CFC có sản phẩm/công thức rõ ràng đi thẳng danh mục AMIS public, hiển thị tối đa các tên/quy cách khớp rồi chỉ hỏi một lần các dữ kiện còn thiếu; không hiển thị mã nội bộ, giá hoặc tồn kho.
+   - Câu nông học có crop + stage/symptom rõ ràng bỏ qua semantic planner/orchestrator, nhưng truy xuất động các FAQ `category=agronomy` theo nguyên câu hỏi và ngữ cảnh đã nhớ; không còn ánh xạ riêng TC12/sầu riêng sang intent hoặc công thức cố định trong code.
+   - `QueryPlan` là nguồn nhận diện crop/stage/symptom duy nhất cho conversation memory. Danh sách cây warm từ Redis và mẫu `cây <tên>` giúp ổi, nhãn và cây mới đi cùng một tuyến; không duy trì danh sách cây thứ hai trong `chat_pipeline.py`.
+   - `domains/agronomy/guidance.py` chỉ dùng row có nguồn/audience hợp lệ, không áp câu trả lời riêng của cây khác, bỏ CTA lặp, giới hạn vài câu trọng tâm. Thiếu liều, nguồn mơ hồ hoặc ca rủi ro cao thì chuyển Khuyến nông Lê Thanh Đạm/Cao Văn Được.
+   - Hai tuyến giá/nông học rõ được đánh dấu `protected_fast_path` để giảm độ trễ; Ollama chat planner chỉ còn cần cho câu mơ hồ, còn RAG có thể gọi embedding khi lexical chưa đủ chắc.
 
 ---
 

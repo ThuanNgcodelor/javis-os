@@ -118,7 +118,12 @@ class PhaseTwoConversationIntelligenceTests(unittest.TestCase):
         self.assertEqual(stale["status"], "stale")
 
     def test_source_challenge_recognizes_customer_wording_not_only_formal_phrase(self):
-        for text in ("thật ko, lấy từ đâu ra?", "thực không, nguồn gì vậy?"):
+        for text in (
+            "thật ko, lấy từ đâu ra?",
+            "thực không, nguồn gì vậy?",
+            "Thông tin này lấy từ đâu?",
+            "Nội dung ở trên tham khảo từ đâu?",
+        ):
             with self.subTest(text=text):
                 self.assertTrue(chat_pipeline._detect_source_challenge(chat_pipeline._normalize_vn(text)))
 

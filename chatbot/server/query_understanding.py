@@ -24,6 +24,11 @@ _DYNAMIC_CROP_TERMS: list[str] = []
 _DYNAMIC_PROVINCES: list[str] = []
 _DYNAMIC_DISTRICTS: list[str] = []
 _LAST_SYNC_TIME: float = 0.0
+_DEFAULT_CROP_TERMS = (
+    "sau rieng", "lua", "cay an trai", "rau mau", "ca phe", "tieu", "cao su", "dieu",
+    "oi", "cay oi", "buoi", "cam", "quyt", "xoai", "mit", "thanh long", "man", "tao",
+    "chanh", "tac", "mang cau", "chom chom", "nhan", "khoai lang", "dua hau",
+)
 
 def _get_redis_sync() -> redis.Redis:
     global _redis_sync_client
@@ -160,7 +165,12 @@ def _detect_attributes(text: str) -> list[str]:
         attrs.append("link")
     if re.search(r"\b(con hang|co san|ton kho|trong kho|het hang|con khong|con ko|con nhieu|co lien|kho con|con loai|con ma|co xuat kho|xuat kho khong|giao lien|giao duoc lien|giao ngay|lay lien)\b", text):
         attrs.append("availability")
-    if re.search(r"\b(cach dung|huong dan|su dung|dung sao|dung nhu the nao|lieu luong|cach bon|nen bon|cong thuc nao)\b", text):
+    if re.search(
+        r"\b(cach dung|huong dan|su dung|dung sao|dung nhu the nao|lieu(?: luong)?(?: bao nhieu| sao)?|"
+        r"cach bon|nen bon|cong thuc nao|bon bao nhieu|bon may (?:kg|ky)|"
+        r"(?:moi|mot) goc(?: bao nhieu| may (?:kg|ky))?|bao nhieu(?: kg| ky)? (?:moi|mot) goc)\b",
+        text,
+    ):
         attrs.append("usage")
     if re.search(r"\b(thom|mui|huong|luu huong)\b", text):
         attrs.append("fragrance")
@@ -229,11 +239,7 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
     if acreage_match:
         entities["acreage"] = f"{acreage_match.group(1)} {acreage_match.group(2)}"
 
-    crop_terms = _DYNAMIC_CROP_TERMS if _DYNAMIC_CROP_TERMS else [
-        "sau rieng", "lua", "cay an trai", "rau mau", "ca phe", "tieu", "cao su", "dieu",
-        "oi", "cay oi", "buoi", "cam", "quyt", "xoai", "mit", "thanh long", "man", "tao",
-        "chanh", "tac", "mang cau", "chom chom", "nhan", "khoai lang", "dua hau"
-    ]
+    crop_terms = _DYNAMIC_CROP_TERMS if _DYNAMIC_CROP_TERMS else _DEFAULT_CROP_TERMS
     def _matches_crop_term(term: str) -> bool:
         normalized_term = str(term or "").strip().lower()
         if not normalized_term:
@@ -274,6 +280,26 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
         entities["dealer_level"] = f"cap {dealer_level.group(1)}"
 
     return entities
+
+
+def extract_understanding_entities(
+    text: str,
+    query_entities: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Expose the shared fact-free extractor to deterministic routes.
+
+    Conversation memory must not keep a second crop/stage/symptom dictionary:
+    a crop recognized by QueryPlan, including crop terms warmed from Redis,
+    must be the same crop persisted by the chat pipeline.
+    """
+    _sync_dynamic_lists()
+    return _detect_entities(text, query_entities)
+
+
+def get_known_crop_terms() -> tuple[str, ...]:
+    """Return the current Redis-backed crop vocabulary used by QueryPlan."""
+    _sync_dynamic_lists()
+    return tuple(_DYNAMIC_CROP_TERMS or _DEFAULT_CROP_TERMS)
 
 
 def _detect_constraints(text: str) -> dict[str, Any]:

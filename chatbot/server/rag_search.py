@@ -315,6 +315,7 @@ def fast_lexical_search(
     brand: str,
     top_k: int = 5,
     exclude_fact_ids: Optional[list[str]] = None,
+    category_filter: Optional[str] = None,
 ) -> list[dict]:
     """
     Tìm kiếm nhanh trong bộ nhớ RAM bằng Normalized Exact Match + Token Overlap / BM25-like heuristic.
@@ -329,7 +330,11 @@ def fast_lexical_search(
     if norm_q in _phrase_map.get(b, {}):
         matched_intent = _phrase_map[b][norm_q]
         item = _intent_map[b].get(matched_intent)
-        if item and item.get("intent") not in exclude_set:
+        if (
+            item
+            and item.get("intent") not in exclude_set
+            and (not category_filter or str(item.get("category") or "") == category_filter)
+        ):
             return [{
                 "intent": item["intent"],
                 "answer": item["answer"],
@@ -358,6 +363,8 @@ def fast_lexical_search(
         tags = item.get("learning_tags", "")
         category = item.get("category", "")
         audience = item.get("audience", "customer")
+        if category_filter and str(category) != category_filter:
+            continue
 
         # Kiểm tra token overlap với các question examples
         best_example_overlap = 0.0
@@ -643,14 +650,24 @@ async def semantic_search(
     b = brand.lower()
 
     # 1. Fast Lexical Matching trong RAM
-    lexical_candidates = fast_lexical_search(query, b, top_k=top_k, exclude_fact_ids=exclude_fact_ids)
+    lexical_candidates = fast_lexical_search(
+        query,
+        b,
+        top_k=top_k,
+        exclude_fact_ids=exclude_fact_ids,
+        category_filter=category_filter,
+    )
     if lexical_candidates:
         best_lex = lexical_candidates[0]
         second_lex_score = lexical_candidates[1]["score"] if len(lexical_candidates) > 1 else 0.0
         margin = best_lex["score"] - second_lex_score
 
-        # Nếu lexical score cao (>= 0.75) hoặc exact match -> Return ngay lập tức!
-        if best_lex["score"] >= 0.75:
+        # Agronomy answers pass through an additional evidence/category/crop
+        # validator before customer send. A moderate lexical match is enough
+        # to avoid a multi-second embedding call there; other domains retain
+        # the stricter generic threshold.
+        lexical_direct_threshold = 0.46 if category_filter == "agronomy" else 0.75
+        if best_lex["score"] >= lexical_direct_threshold:
             return {
                 "query": query,
                 "brand": b,

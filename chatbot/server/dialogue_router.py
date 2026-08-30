@@ -99,7 +99,6 @@ def _semantic_route_decision(
     capability_routes = {
         "inventory_lookup": ("cfc_inventory_request", "cfc_inventory_unavailable"),
         "order_status_lookup": ("cfc_order_status_request", "cfc_order_status_unavailable"),
-        "loyalty_lookup": ("cfc_loyalty_lookup_request", "cfc_loyalty_unavailable"),
         "wholesale_intake": ("cfc_wholesale_policy_request", "cfc_wholesale_policy_unverified"),
     }
     if plan.brand == "cfc" and next_action in capability_routes and tool == next_action:
@@ -108,6 +107,19 @@ def _semantic_route_decision(
             action="capability_boundary",
             intent=boundary_intent,
             reason="OLLAMA_SEMANTIC_OPERATIONAL_INTENT",
+            confidence=confidence,
+        )
+
+    if (
+        plan.brand == "cfc"
+        and next_action == "loyalty_lookup"
+        and tool == "loyalty_lookup"
+    ):
+        return RouteDecision(
+            action="tool",
+            tool="loyalty_lookup",
+            intent="cfc_loyalty_lookup_request",
+            reason="OLLAMA_SEMANTIC_LOYALTY_LOOKUP",
             confidence=confidence,
         )
 
@@ -262,7 +274,6 @@ def build_route_decision(
 
     capability_intents = {
         "cfc_inventory_request": "cfc_inventory_unavailable",
-        "cfc_loyalty_lookup_request": "cfc_loyalty_unavailable",
         "cfc_wholesale_policy_request": "cfc_wholesale_policy_unverified",
         "financial_service_unsupported": "financial_service_unsupported",
     }
@@ -271,6 +282,15 @@ def build_route_decision(
             action="capability_boundary",
             intent=capability_intents[plan.intent],
             reason="OPERATIONAL_TOOL_NOT_CONNECTED",
+            confidence=plan.intent_confidence,
+        )
+
+    if plan.brand == "cfc" and plan.intent == "cfc_loyalty_lookup_request":
+        return RouteDecision(
+            action="tool",
+            tool="loyalty_lookup",
+            intent=plan.intent,
+            reason="AMIS_WARM_LOYALTY_LOOKUP",
             confidence=plan.intent_confidence,
         )
 

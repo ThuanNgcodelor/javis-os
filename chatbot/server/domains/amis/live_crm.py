@@ -1,9 +1,8 @@
-"""Legacy AMIS helpers kept for internal migration only.
+"""AMIS compatibility helpers for server-side, allowlisted lookups.
 
-They are not wired to the Messenger chatbot.  A cached file or configured
-credential is not evidence of a customer-safe realtime capability; the active
-chatbot path uses ``domains.amis.order_cache`` with exact code + phone HMAC and
-freshness checks instead.
+These helpers read the local CRM snapshot and must not be treated as realtime.
+Customer-facing code may use only the sanitized values returned by a helper;
+raw CRM records and synthetic values stay internal.
 """
 
 from __future__ import annotations
@@ -233,7 +232,11 @@ def lookup_order_status(order_code: str = "", dealer_name: str = "", phone: str 
 # 3. TRUY VẤN HỘI VIÊN / LOYALTY TỪ CRM THỰC TẾ
 # ==============================================================================
 def lookup_loyalty_info(phone: str) -> Optional[dict[str, Any]]:
-    """Tra cứu thông tin đại lý/khách hàng thật trong 4,845 hồ sơ AMIS CRM."""
+    """Tra cứu các trường hội viên đã có thật trong snapshot AMIS.
+
+    Không suy ra điểm/hạng từ doanh số hoặc số đơn.  Những giá trị suy ra
+    trước đây làm chatbot có thể báo điểm mặc định dù CRM không lưu điểm đó.
+    """
     _ensure_crm_dataset_loaded()
     clean_phone = re.sub(r"[^\d+]", "", str(phone or "")).strip()
     if not clean_phone or len(clean_phone) < 8:
@@ -248,31 +251,25 @@ def lookup_loyalty_info(phone: str) -> Optional[dict[str, Any]]:
         cust = customers_by_phone.get("0" + clean_phone[2:]) or customers_by_phone.get(clean_phone[2:])
 
     if cust:
-        acc_name = cust.get("account_name") or "Quý Khách Hàng"
-        sales = float(cust.get("order_sales") or 0)
-        num_orders = int(cust.get("number_orders") or 0)
-
-        if sales >= 100_000_000 or num_orders >= 10:
-            tier = "Hội viên Kim Cương (Diamond Member)"
-            vol = round(sales / 20_000_000, 1) or 80.0
-        elif sales >= 30_000_000 or num_orders >= 3:
-            tier = "Hội viên Vàng (Gold Member)"
-            vol = round(sales / 20_000_000, 1) or 45.5
-        else:
-            tier = "Hội viên Thân Thiết"
-            vol = 15.0
-
-        return {
+        result: dict[str, Any] = {
             "phone": clean_phone,
-            "account_name": acc_name,
+            "account_name": cust.get("account_name", ""),
             "account_number": cust.get("account_number", ""),
-            "address": cust.get("billing_address", ""),
-            "tier": tier,
-            "points": int(sales / 1000) or 12500,
-            "accumulated_volume_tons": vol,
-            "discount_policy": "Chiết khấu thương mại theo quý (Nhân viên kinh doanh phụ trách liên hệ)",
             "source": "amis_real_crm_customer",
         }
+        # Chỉ đọc các trường được CRM lưu trực tiếp. Tên trường tier có thể
+        # khác giữa các tenant AMIS nên kiểm tra một allowlist nhỏ.
+        for field in ("total_score", "points", "loyalty_points", "membership_tier", "tier"):
+            value = cust.get(field)
+            if value not in (None, ""):
+                if field in {"total_score", "points", "loyalty_points"}:
+                    try:
+                        result["points"] = int(float(value))
+                    except (TypeError, ValueError):
+                        pass
+                else:
+                    result["tier"] = str(value).strip()
+        return result
 
     # Không tìm thấy số điện thoại trong hệ thống CRM → trả None thay vì bịa data
     return None
@@ -473,16 +470,17 @@ def format_order_status_response(order: dict[str, Any], query_order_code: str = 
 
 
 def format_loyalty_response(loyalty: dict[str, Any], phone: str = "") -> str:
-    """Tạo câu trả lời động dựa trên hồ sơ hội viên CRM."""
+    """Định dạng dữ liệu hội viên đã được CRM lưu trực tiếp."""
     phone_clean = phone.replace(" ", "").replace(".", "").strip()
     phone_mask = phone_clean[-4:] if len(phone_clean) >= 4 else phone_clean
     masked = f"***{phone_mask}" if phone_mask else "của bạn"
-    tier = loyalty.get("tier", "Hội viên Thân Thiết")
-    vol = loyalty.get("accumulated_volume_tons")
-    vol_str = f" với sản lượng tích lũy đạt **{vol} tấn**" if vol else ""
-
-    return (
-        f"Dạ CFC Cò Bay đã tra cứu hồ sơ hội viên cho số điện thoại **{masked}**: "
-        f"Bạn hiện là **{tier}**{vol_str} trên hệ thống AMIS CRM. "
-        "Chính sách chiết khấu quý của bạn đã được ghi nhận an toàn, nhân viên kinh doanh phụ trách khu vực sẽ mở hồ sơ đối chiếu và liên hệ phản hồi chi tiết cho bạn nhé ạ!"
-    )
+    details: list[str] = []
+    if loyalty.get("points") is not None:
+        details.append(f"điểm tích lũy **{int(loyalty['points']):,}**".replace(",", "."))
+    if loyalty.get("tier"):
+        details.append(f"hạng **{loyalty['tier']}**")
+    if not details:
+        return (
+            f"Dạ số điện thoại **{masked}** đã khớp hồ sơ khách hàng, nhưng nguồn hiện chưa có trường điểm/hạng đã xác minh để mình báo chính xác ạ."
+        )
+    return f"Dạ số điện thoại **{masked}** hiện có " + " và ".join(details) + "."

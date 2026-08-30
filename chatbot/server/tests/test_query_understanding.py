@@ -186,6 +186,22 @@ class QueryUnderstandingTests(unittest.TestCase):
         )
         self.assertEqual(plan.intent, "cfc_clarification_request")
 
+    def test_cfc_dosage_followup_is_agronomy_without_repeating_crop(self):
+        for raw, normalized in (
+            ("Liều bao nhiêu một gốc?", "lieu bao nhieu mot goc"),
+            ("Mỗi gốc bón mấy ký?", "moi goc bon may ky"),
+            ("Bón bao nhiêu mỗi gốc?", "bon bao nhieu moi goc"),
+        ):
+            with self.subTest(raw=raw):
+                plan = self._plan(
+                    raw,
+                    normalized,
+                    brand="cfc",
+                    conversation_state={"active_goal": {"name": "agronomy_consultation"}},
+                )
+                self.assertEqual(plan.intent, "cfc_agronomy_review_request")
+                self.assertIn("usage", plan.attributes)
+
     def test_cfc_operational_intents_and_entities(self):
         cases = [
             (

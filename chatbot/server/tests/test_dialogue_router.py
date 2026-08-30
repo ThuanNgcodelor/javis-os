@@ -77,8 +77,8 @@ class DialogueRouterTests(unittest.TestCase):
             (
                 "Số tôi có tích điểm chưa",
                 "so toi co tich diem chua",
-                "capability_boundary",
-                "cfc_loyalty_unavailable",
+                "tool",
+                "cfc_loyalty_lookup_request",
             ),
         ]
         for raw, normalized, expected_action, expected_intent in cases:

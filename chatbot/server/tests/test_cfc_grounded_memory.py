@@ -9,12 +9,21 @@ if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
 import chat_pipeline  # noqa: E402
-from chat_pipeline import ChatPipelineRequest, _extract_phone_and_area, _normalize_vn, process_chat_pipeline  # noqa: E402
+from chat_pipeline import (
+    ChatPipelineRequest,
+    _extract_cfc_confirmed_slots,
+    _extract_phone_and_area,
+    _normalize_vn,
+    process_chat_pipeline,
+)  # noqa: E402
 
 
 class FakeRedis:
+    def __init__(self, values=None):
+        self.values = values or {}
+
     async def get(self, key):
-        return None
+        return self.values.get(key)
 
 
 FAQS = {
@@ -28,6 +37,13 @@ FAQS = {
     ),
     "cfc_price_unverified": (
         "Dạ bảng giá phụ thuộc dòng sản phẩm, quy cách và khu vực phân phối."
+    ),
+    "cfc_agronomy_young_fruit_sizing": (
+        "Dạ khi trái non đã định hình, dùng NPK Cò Bay 20-20-15 TE hoặc "
+        "15-15-15/16-16-16 TE, kết hợp Canxi, Magie và chia nhỏ 10-12 ngày/lần."
+    ),
+    "cfc_agronomy_flowering_fruit_retention": (
+        "Dạ giai đoạn hoa cần lưu ý Canxi, Bo, Kẽm và hạn chế Đạm cao."
     ),
     "cfc_company_website": "Dạ website chính thức của CFC Cò Bay là https://cfccobay.com nha bạn.",
 }
@@ -43,9 +59,9 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         chat_pipeline._local_session_cache.clear()
         chat_pipeline._local_customer_cache.clear()
 
-    def _patches(self):
+    def _patches(self, redis_client=None):
         return (
-            patch("chat_pipeline.get_redis", new=AsyncMock(return_value=FakeRedis())),
+            patch("chat_pipeline.get_redis", new=AsyncMock(return_value=redis_client or FakeRedis())),
             patch("chat_pipeline.get_faq_by_intent", side_effect=fake_faq),
             patch("chat_pipeline._async_save_profile_and_notify", new=AsyncMock()),
             patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)),
@@ -60,6 +76,15 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(text=text):
                 _, area = _extract_phone_and_area(text, _normalize_vn(text))
                 self.assertEqual(area, expected)
+
+    def test_agronomy_sentence_does_not_become_area(self):
+        slots = _extract_cfc_confirmed_slots(
+            "Sầu riêng ở giai đoạn nuôi trái non bị rụng hạt chuỗi thì nên bón công thức NPK nào?"
+        )
+        self.assertEqual(slots.get("crop"), "sầu riêng")
+        self.assertEqual(slots.get("crop_stage"), "nuôi trái non")
+        self.assertEqual(slots.get("symptom"), "rụng hạt chuỗi")
+        self.assertNotIn("area", slots)
 
     def test_cfc_workflow_forwards_messenger_location_contract(self):
         workflow = (
@@ -163,18 +188,19 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["active_goal"]["name"], "purchase_intake")
         self.assertEqual(state["confirmed_slots"]["quantity"], "200kg")
 
-    async def test_phone_with_loyalty_question_is_not_swallowed_by_contact_fast_path(self):
+    async def test_phone_with_loyalty_question_looks_up_exact_phone(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
-        with redis_patch, faq_patch, profile_patch, nlu_patch:
+        with redis_patch, faq_patch, profile_patch, nlu_patch, \
+                patch("chat_pipeline.lookup_loyalty_info", return_value=None):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
                 sender_id="loyalty-intent",
                 text="Số điện thoại của mình là 0979176415, kiểm tra xem mình có tích điểm hay chiết khấu gì chưa?",
             ))
 
-        self.assertEqual(result.intent, "cfc_loyalty_unavailable")
+        self.assertEqual(result.intent, "cfc_loyalty_lookup_request")
         self.assertNotEqual(result.intent, "contact_phone_provided")
-        self.assertIn("để kiểm tra điểm", result.answer.lower())
+        self.assertIn("chưa tìm thấy hồ sơ", result.answer.lower())
         self.assertNotIn("đã có điểm", result.answer.lower())
         state = chat_pipeline._local_session_cache[
             "cfc:session:messenger:loyalty-intent"
@@ -303,9 +329,36 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("trạng thái hiện ghi nhận", result.answer.lower())
         self.assertNotIn("CRM", result.answer)
 
-    async def test_agronomy_reply_is_expert_intake_without_formula_or_dose(self):
+    async def test_agronomy_reply_uses_grounded_handbook_direction_without_inventing_kg_dose(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
-        with redis_patch, faq_patch, profile_patch, nlu_patch:
+        agronomy_search = AsyncMock(return_value={
+            "confidence": "high",
+            "score": 0.91,
+            "results": [
+                {
+                    "intent": "cfc_agronomy_young_fruit_sizing",
+                    "answer": FAQS["cfc_agronomy_young_fruit_sizing"],
+                    "category": "agronomy",
+                    "audience": "customer",
+                    "risk_level": "medium",
+                    "source_id": "test:cfc_agronomy_young_fruit_sizing",
+                    "score": 0.91,
+                },
+                {
+                    "intent": "cfc_agronomy_flowering_fruit_retention",
+                    "answer": FAQS["cfc_agronomy_flowering_fruit_retention"],
+                    "category": "agronomy",
+                    "audience": "customer",
+                    "risk_level": "medium",
+                    "source_id": "test:cfc_agronomy_flowering_fruit_retention",
+                    "question_examples": "bón gì chống rụng hoa sinh lý; chống rụng trái non",
+                    "learning_tags": "flowering|fruit_drop_prevention",
+                    "score": 0.84,
+                },
+            ],
+        })
+        with redis_patch, faq_patch, profile_patch, nlu_patch, \
+                patch("chat_pipeline.semantic_search", new=agronomy_search):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
                 sender_id="agronomy-intake",
@@ -313,15 +366,129 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             ))
 
         self.assertEqual(result.intent, "cfc_dosage_usage_review")
-        for expected in ("sầu riêng", "nuôi trái non", "rụng hạt chuỗi", "kỹ sư cần đối chiếu"):
+        for expected in (
+            "sầu riêng",
+            "nuôi trái non",
+            "rụng hạt chuỗi",
+            "20-20-15 TE",
+            "Canxi, Bo, Kẽm",
+            "10-12 ngày/lần",
+            "chưa có mức kg/gốc",
+        ):
             self.assertIn(expected, result.answer)
-        self.assertNotIn("quy trình nông học", result.answer.lower())
         self.assertNotIn("chatbot", result.answer.lower())
-        self.assertNotRegex(result.answer, r"\b\d{1,2}-\d{1,2}-\d{1,2}\b")
+        self.assertNotRegex(result.answer, r"\b\d+(?:[.,]\d+)?\s*kg/gốc\b")
+        self.assertLess(result.latency_ms, 500)
         trace = chat_pipeline._local_session_cache[
             "cfc:session:messenger:agronomy-intake"
         ]["last_trace"]
-        self.assertEqual(trace["source_id"], "test:cfc_dosage_usage_review")
+        self.assertEqual(trace["source_id"], "test:cfc_agronomy_young_fruit_sizing")
+        self.assertEqual(trace["customer_fact_generation_mode"], "grounded_faq_composition")
+        self.assertEqual(trace["agronomy_evidence_count"], 2)
+        agronomy_search.assert_awaited_once()
+
+    async def test_tc01_price_family_shows_catalog_then_asks_missing_slots_once(self):
+        product_snapshot = {
+            "items": [
+                {
+                    "product_name": "NPK Cò bay 20-20-15 bao 25kg",
+                    "product_code": "01.INTERNAL-25",
+                    "product_category": "PHÂN NPK",
+                },
+                {
+                    "product_name": "NPK Cò bay 20-20-15 bao 50kg",
+                    "product_code": "01.INTERNAL-50",
+                    "product_category": "PHÂN NPK",
+                },
+                {
+                    "product_name": "NPK Cò bay 16-16-8 bao 50kg",
+                    "product_code": "01.OTHER",
+                    "product_category": "PHÂN NPK",
+                },
+            ]
+        }
+        import json
+
+        redis_client = FakeRedis({
+            chat_pipeline.PRODUCT_SNAPSHOT_KEY: json.dumps(product_snapshot, ensure_ascii=False),
+        })
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches(redis_client)
+        with redis_patch, faq_patch, profile_patch, nlu_patch:
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="tc01-price-family",
+                text="Chào em, mình muốn tìm hiểu giá phân NPK 20-20-15 để chuẩn bị bón cho vụ tới.",
+            ))
+
+        self.assertEqual(result.intent, "cfc_price_unverified")
+        self.assertIn("NPK Cò bay 20-20-15 bao 25kg", result.answer)
+        self.assertIn("NPK Cò bay 20-20-15 bao 50kg", result.answer)
+        self.assertIn("số điện thoại", result.answer)
+        self.assertIn("khu vực nhận hàng", result.answer)
+        self.assertIn("loại cây trồng", result.answer)
+        self.assertEqual(result.answer.count("Bạn cho mình xin"), 1)
+        self.assertNotIn("01.INTERNAL", result.answer)
+        self.assertNotIn("Mình đang giữ thông tin", result.answer)
+        self.assertLess(result.latency_ms, 500)
+
+    async def test_clear_tc01_and_tc12_skip_semantic_planner(self):
+        product_snapshot = {
+            "items": [{
+                "product_name": "NPK Cò bay 20-20-15 bao 25kg",
+                "product_code": "01.INTERNAL",
+                "product_category": "PHÂN NPK",
+            }]
+        }
+        import json
+
+        redis_client = FakeRedis({
+            chat_pipeline.PRODUCT_SNAPSHOT_KEY: json.dumps(product_snapshot, ensure_ascii=False),
+        })
+        redis_patch, faq_patch, profile_patch, _ = self._patches(redis_client)
+        semantic_planner = AsyncMock(return_value=[])
+        agronomy_search = AsyncMock(return_value={
+            "confidence": "high",
+            "score": 0.9,
+            "results": [{
+                "intent": "cfc_agronomy_young_fruit_sizing",
+                "answer": FAQS["cfc_agronomy_young_fruit_sizing"],
+                "category": "agronomy",
+                "audience": "customer",
+                "risk_level": "medium",
+                "source_id": "test:cfc_agronomy_young_fruit_sizing",
+                "score": 0.9,
+            }],
+        })
+        with redis_patch, faq_patch, profile_patch, \
+                patch("chat_pipeline._llm_nlu_config", return_value=("assist", 0.3, 0.72)), \
+                patch("cfc_semantic_planner.plan_cfc_intents", new=semantic_planner), \
+                patch("chat_pipeline.semantic_search", new=agronomy_search):
+            await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="tc01-fast-route",
+                text="Báo giá NPK 20-20-15 giúp mình",
+            ))
+            await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="tc12-fast-route",
+                text="Sầu riêng nuôi trái non bị rụng hạt chuỗi, bón công thức nào?",
+            ))
+
+        semantic_planner.assert_not_awaited()
+        price_trace = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:tc01-fast-route"
+        ]["last_trace"]
+        agronomy_trace = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:tc12-fast-route"
+        ]["last_trace"]
+        self.assertEqual(
+            price_trace["protected_fast_path"]["reason"],
+            "GROUNDED_PRICE_ROUTE_SKIPS_AI_PLANNERS",
+        )
+        self.assertEqual(
+            agronomy_trace["protected_fast_path"]["reason"],
+            "CLEAR_AGRONOMY_ROUTE_SKIPS_AI_PLANNERS",
+        )
 
     async def test_durian_eligibility_does_not_expand_into_protocol_or_policy(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
@@ -453,6 +620,61 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("phase 0", result.answer.lower())
         trace = chat_pipeline._local_session_cache[session_key]["last_trace"]
         self.assertEqual(trace["source_challenge"]["outcome"], "SOURCE_TYPE_ACKNOWLEDGED")
+
+    async def test_agronomy_dosage_and_source_followups_keep_previous_context(self):
+        sender_id = "agronomy-followup-chain"
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        agronomy_search = AsyncMock(return_value={
+            "confidence": "high",
+            "score": 0.9,
+            "results": [{
+                "intent": "cfc_agronomy_young_fruit_sizing",
+                "answer": (
+                    "Dạ với sầu riêng giai đoạn nuôi trái non, cần kiểm tra bộ rễ, "
+                    "ẩm độ, thoát nước và tránh dư đạm; cân đối Kali và Canxi-Bo. "
+                    "Liều lượng phải căn cứ tuổi cây, mật độ và hiện trạng vườn."
+                ),
+                "category": "agronomy",
+                "audience": "customer",
+                "risk_level": "medium",
+                "source_id": "cfc_handbook_50_nha_nong_v1:young_fruit",
+                "score": 0.9,
+            }],
+        })
+        with redis_patch, faq_patch, profile_patch, nlu_patch, \
+                patch("chat_pipeline.semantic_search", new=agronomy_search):
+            first = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id=sender_id,
+                text="Sầu riêng nuôi trái non bị rụng hạt chuỗi thì nên bón gì?",
+            ))
+            dosage = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id=sender_id,
+                text="Liều bao nhiêu một gốc?",
+            ))
+            source = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id=sender_id,
+                text="Thông tin này lấy từ đâu?",
+            ))
+
+        self.assertIn("sầu riêng", first.answer.lower())
+        self.assertEqual(dosage.intent, "cfc_dosage_usage_review")
+        self.assertIn("sầu riêng", dosage.answer.lower())
+        self.assertIn("Lê Thanh Đạm", dosage.answer)
+        self.assertIn("chưa có mức kg/gốc", dosage.answer)
+        self.assertNotIn("phối trộn", dosage.answer.lower())
+        self.assertNotIn("thuốc trừ sâu", dosage.answer.lower())
+        self.assertGreaterEqual(agronomy_search.await_count, 2)
+        followup_query = str(agronomy_search.await_args_list[1].kwargs.get("query") or "")
+        self.assertIn("sầu riêng", followup_query.lower())
+        self.assertIn("nuôi trái non", followup_query.lower())
+
+        self.assertEqual(source.intent, "source_challenge_safe_fallback")
+        self.assertIn("cẩm nang kỹ thuật cfc", source.answer.lower())
+        self.assertNotIn("cfccobay.com", source.answer.lower())
+        self.assertNotIn("mua hàng trực tuyến", source.answer.lower())
 
     def test_generator_source_is_blocked_before_customer_send(self):
         sender_id = "provider-source-block"
