@@ -251,6 +251,10 @@ def _detect_entities(text: str, query_entities: Optional[dict[str, Any]]) -> dic
                 re.search(r"\b(cay|trai|qua|vuon)\s+man\b", text)
                 or re.search(r"\bman\s+(hau|tam|do|xanh|chin)\b", text)
             )
+        # "tắc" is a crop, but the normalized token also appears inside the
+        # business phrase "hợp tác xã". Do not persist that phrase as crop=tắc.
+        if normalized_term == "tac" and re.search(r"\bhop tac xa\b", text):
+            return bool(re.search(r"\b(cay|trai|qua|vuon|trong)\s+tac\b", text))
         return bool(re.search(rf"\b{re.escape(normalized_term)}\b", text))
 
     crop = next((term for term in crop_terms if _matches_crop_term(term)), "")

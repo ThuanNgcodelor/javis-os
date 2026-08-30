@@ -41,6 +41,166 @@ def _customer_fact_generation_mode() -> str:
     return str(policy.get("customer_fact_generation_mode") or "direct_only").strip().lower()
 
 
+def grounded_rewrite_timeout_seconds() -> float:
+    """Use a short cloud timeout and a wider local budget unless overridden."""
+    cfg = _load_settings()
+    policy = cfg.get("grounding_policy", {}) if isinstance(cfg.get("grounding_policy"), dict) else {}
+    providers = cfg.get("ai_providers", {}) if isinstance(cfg.get("ai_providers"), dict) else {}
+    default = 10.0 if str(providers.get("execution_mode") or "auto").lower() == "local" else 4.0
+    try:
+        value = float(policy.get("grounded_rewrite_timeout_seconds", default))
+    except (TypeError, ValueError):
+        value = default
+    return max(2.0, min(value, 15.0))
+
+
+def _grounded_rewrite_corpus(
+    retrieved_facts: str,
+    catalog_products: Optional[List[dict]] = None,
+) -> str:
+    """Render the only evidence corpus a customer-facing rewrite may use."""
+    parts = [str(retrieved_facts or "").strip()]
+    if catalog_products:
+        parts.append(json.dumps(catalog_products[:5], ensure_ascii=False, sort_keys=True))
+    return "\n".join(part for part in parts if part)
+
+
+def _prioritize_grounding_constraints(text: str) -> str:
+    """Move safety/uncertainty sentences first so short generations retain them."""
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", str(text or "")) if item.strip()]
+    if len(sentences) < 2:
+        return str(text or "").strip()
+    safety_markers = (
+        "chua co", "khong co", "chua du", "can kiem tra", "can doi chieu",
+        "lien he khuyen nong", "lien he ky su", "trao doi truc tiep",
+    )
+    safety = [item for item in sentences if any(marker in _fold(item).casefold() for marker in safety_markers)]
+    ordinary = [item for item in sentences if item not in safety]
+    return " ".join([*safety, *ordinary])
+
+
+def _required_grounding_sentence(text: str, *, expert_only: bool = False) -> str:
+    """Return one verbatim evidence sentence that a short rewrite must retain."""
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", str(text or "")) if item.strip()]
+    markers = (
+        ("lien he khuyen nong", "lien he ky su", "trao doi truc tiep")
+        if expert_only else
+        ("chua co", "khong co", "chua du", "can kiem tra", "can doi chieu")
+    )
+    for sentence in sentences:
+        folded = _fold(sentence).casefold()
+        if any(marker in folded for marker in markers):
+            if not expert_only:
+                for clause in re.split(r"\s*;\s*", sentence):
+                    clause_folded = _fold(clause).casefold()
+                    if any(marker in clause_folded for marker in markers):
+                        return clause.rstrip(".!? ") + "."
+            return sentence
+    return ""
+
+
+def _prepend_grounded_constraint(required: str, candidate: str) -> str:
+    required_text = str(required or "").strip()
+    candidate_text = re.sub(r"^dạ\s*[,.:;-]?\s*", "", str(candidate or "").strip(), flags=re.I)
+    if not required_text:
+        return str(candidate or "").strip()
+    if required_text.lower().startswith("dạ"):
+        return f"{required_text} {candidate_text}".strip()
+    required_text = required_text[0].lower() + required_text[1:] if required_text else required_text
+    candidate_text = candidate_text[0].upper() + candidate_text[1:] if candidate_text else candidate_text
+    return f"Dạ {required_text} {candidate_text}".strip()
+
+
+def _compact_digits(value: str) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _normalized_claim_token(value: str) -> str:
+    folded = _fold(str(value or "")).casefold()
+    return re.sub(r"[^a-z0-9%]+", "", folded)
+
+
+def validate_grounded_rewrite(
+    candidate: str,
+    retrieved_facts: str,
+    catalog_products: Optional[List[dict]] = None,
+) -> tuple[bool, str]:
+    """Reject rewrites that introduce high-risk claims absent from evidence."""
+    answer = str(candidate or "").strip()
+    corpus = _grounded_rewrite_corpus(retrieved_facts, catalog_products)
+    if len(answer) < 20:
+        return False, "REWRITE_TOO_SHORT"
+    if not corpus:
+        return False, "NO_GROUNDED_CORPUS"
+    if not re.search(r"(?:[.!?]|\bạ|\bnha|\bnhé)\s*$", answer, flags=re.I):
+        return False, "REWRITE_APPEARS_TRUNCATED"
+
+    answer_fold = _fold(answer).casefold()
+    corpus_fold = _fold(corpus).casefold()
+    if any(term in answer_fold for term in (
+        "du lieu thuc te (facts", "system prompt", "chi thi he thong",
+        "redis", "vector index", "retrieval", "nguon noi bo",
+    )):
+        return False, "INTERNAL_TERMS_EXPOSED"
+
+    urls = re.findall(r"https?://[^\s)\]>]+", answer, flags=re.I)
+    if any(url.rstrip(".,") not in corpus for url in urls):
+        return False, "UNSUPPORTED_URL"
+
+    phones = re.findall(r"(?<!\d)(?:\+?84|0)(?:[\s.()-]*\d){8,10}(?!\d)", answer)
+    corpus_digits = _compact_digits(corpus)
+    if any(_compact_digits(phone) not in corpus_digits for phone in phones):
+        return False, "UNSUPPORTED_PHONE"
+
+    formula_pattern = r"(?<!\d)\d{1,2}\s*[-.]\s*\d{1,2}\s*[-.]\s*\d{1,2}(?!\d)"
+    for formula in re.findall(formula_pattern, answer):
+        if _normalized_claim_token(formula) not in _normalized_claim_token(corpus):
+            return False, "UNSUPPORTED_FORMULA"
+
+    quantity_pattern = (
+        r"(?<!\d)\d+(?:[.,]\d+)?\s*(?:kg|g|mg|tan|tấn|ta|bao|ha|m2|m²|"
+        r"lit|lít|ml|cc|%|ngay|ngày|gio|giờ)(?!\w)"
+    )
+    normalized_corpus = _normalized_claim_token(corpus)
+    for quantity in re.findall(quantity_pattern, answer, flags=re.I):
+        if _normalized_claim_token(quantity) not in normalized_corpus:
+            return False, "UNSUPPORTED_QUANTITY"
+
+    guarded_concepts = {
+        "UNSUPPORTED_PRICE_OR_DISCOUNT": (
+            r"\b(?:bao gia|gia ban|muc gia|don gia|chiet khau|giam gia|vnd)\b",
+            r"\d[\d.,\s]*\s*dong\b",
+        ),
+        "UNSUPPORTED_INVENTORY": (r"\b(?:con hang|ton kho|het hang|san hang)\b",),
+        "UNSUPPORTED_SHIPPING": (r"\b(?:freeship|mien phi van chuyen|giao hang mien phi)\b",),
+        "UNSUPPORTED_WARRANTY": (r"\b(?:bao hanh|cam ket hoan tien)\b",),
+    }
+    for reason, patterns in guarded_concepts.items():
+        if any(re.search(pattern, answer_fold) for pattern in patterns) and not any(
+            re.search(pattern, corpus_fold) for pattern in patterns
+        ):
+            return False, reason
+
+    evidence_has_uncertainty = any(marker in corpus_fold for marker in (
+        "chua co muc", "chua co lieu", "khong co muc", "khong co lieu",
+        "chua du du lieu", "can doi chieu", "can kiem tra them",
+    ))
+    if evidence_has_uncertainty and not any(marker in answer_fold for marker in (
+        "chua co", "khong co", "chua du", "can doi chieu", "can kiem tra",
+    )):
+        return False, "UNCERTAINTY_WAS_DROPPED"
+
+    fact_phones = re.findall(r"(?<!\d)(?:\+?84|0)(?:[\s.()-]*\d){8,10}(?!\d)", corpus)
+    if fact_phones and any(marker in corpus_fold for marker in (
+        "trao doi truc tiep", "lien he khuyen nong", "lien he ky su",
+    )):
+        answer_digits = _compact_digits(answer)
+        if not any(_compact_digits(phone) in answer_digits for phone in fact_phones):
+            return False, "EXPERT_HANDOFF_WAS_DROPPED"
+
+    return True, "GROUNDED_REWRITE_VALID"
+
+
 async def call_gemini(
     prompt: str,
     system_prompt: str = "",
@@ -225,7 +385,7 @@ async def call_groq(
 async def call_ollama(
     prompt: str,
     system_prompt: str = "",
-    model: str = "qwen2.5:7b-instruct",
+    model: Optional[str] = None,
     temperature: float = 0.3,
     num_predict: int = 1024,
     messages: Optional[List[dict[str, str]]] = None,
@@ -236,7 +396,12 @@ async def call_ollama(
     """Gọi Ollama Local (Mặc định chạy offline)."""
     cfg = _load_settings().get("ollama", {})
     base_url = cfg.get("base_url", "http://127.0.0.1:11434")
-    model_name = model or cfg.get("fallback_embed_model", "qwen2.5:7b-instruct")
+    model_name = (
+        model
+        or cfg.get("chat_model")
+        or cfg.get("fallback_embed_model")
+        or "qwen2.5:7b-instruct"
+    )
 
     chat_messages = list(messages or [])
     if system_prompt:
@@ -561,6 +726,7 @@ async def generate_ai_text(
     temperature: float = 0.3,
     output_format: Optional[str] = None,
     prompt_id: str = "unspecified",
+    max_output_tokens: Optional[int] = None,
 ) -> dict:
     """
     Sinh phản hồi AI với cơ chế linh hoạt:
@@ -595,7 +761,15 @@ async def generate_ai_text(
         elif provider == "groq":
             res = await call_groq(prompt, system_prompt, temperature=temperature, output_format=output_format, prompt_id=prompt_id, execution_mode=execution_mode)
         elif provider == "ollama":
-            res = await call_ollama(prompt, system_prompt, temperature=temperature, output_format=output_format, prompt_id=prompt_id, execution_mode=execution_mode)
+            res = await call_ollama(
+                prompt,
+                system_prompt,
+                temperature=temperature,
+                num_predict=max_output_tokens or 1024,
+                output_format=output_format,
+                prompt_id=prompt_id,
+                execution_mode=execution_mode,
+            )
 
         if res:
             generator = provider_trace()
@@ -885,33 +1059,17 @@ async def reason_and_answer_cskh(
     brand_upper = brand.upper()
     brand_display = "ZeO Vietnam (Chăm sóc gia đình sinh học: ZeO, PANO, Oplus)" if brand_upper == "ZEO" else "CFC Cò Bay (Phân bón & Dinh dưỡng cây trồng nông nghiệp Cần Thơ)"
 
-    system_prompt = f"""Bạn là Chuyên viên CSKH và Tư vấn bán hàng cao cấp của thương hiệu {brand_display}.
-Mục tiêu: Đọc hiểu sâu sắc câu hỏi của khách hàng, đối chiếu với LỊCH SỬ CHAT và DỮ LIỆU THỰC TẾ (FACTS) để đưa ra câu trả lời xuất sắc nhất.
-
-QUY TẮC CỐT LÕI (BẮT BUỘC):
-1. Giọng điệu & Xưng hô:
-   - Thân thiện, ngọt ngào, lịch sự, chuyên nghiệp.
-   - Xưng: 'mình' hoặc 'dạ em'; Gọi khách: 'bạn' hoặc 'anh/chị'.
-2. Hiểu ngữ cảnh & Đa ý định (Context & Multi-Intent):
-   - Đọc kỹ lịch sử trò chuyện để hiểu rõ các đại từ thay thế như 'cái số 2', 'loại đó', 'cái này', 'sản phẩm hồi nãy'.
-   - Nếu khách hỏi gộp nhiều ý (ví dụ: vừa hỏi giá/sản phẩm vừa hỏi giao hàng/freeship về tỉnh), hãy giải đáp ĐẦY ĐỦ VÀ MẠCH LẠC tất cả các ý trong một câu trả lời duy nhất.
-3. Nguyên tắc Zero-Hallucination (Không bịa đặt):
-   - Chỉ sử dụng các dữ liệu về giá cả, thành phần, công nghệ, công dụng và chính sách có trong 'DỮ LIỆU THỰC TẾ & SẢN PHẨM' dưới đây.
-   - Đối với giá phân bón hoặc liều lượng nông nghiệp chưa có số liệu cố định: Không tự bịa giá tĩnh/liều lượng, hãy giải thích giá phụ thuộc vào đại lý từng vùng và hướng dẫn khách để lại SĐT để kỹ sư/đại lý hỗ trợ.
-   - Khi khách hỏi Mua sỉ / Nhập hàng / Đại lý (như 'cần nhập', 'muốn nhập', 'lấy sỉ', 'nhập số lượng lớn'): Hãy xác nhận công ty có chính sách chiết khấu sỉ rất tốt, xin Số điện thoại + Khu vực (Tỉnh/Thành) để chuyên viên gửi bảng giá sỉ, đồng thời cung cấp link Shopee Mall nếu khách có nhu cầu mua lẻ trải nghiệm.
-4. Văn phong sạch & Tinh tế (Clean Styling):
-   - TUYỆT ĐỐI KHÔNG dùng các icon phản cảm, sến súa, spam như: 🔥, 💥, ⚡, 💣, 😈, 💯.
-   - Chỉ sử dụng các emoji thanh lịch, nhã nhặn như: 🌿, ⭐️, 💙, 👉, 💡 khi cần thiết.
-5. Kênh mua hàng, hotline và ưu đãi:
-   - Chỉ nêu link, hotline, tồn kho, phí giao hàng hoặc khuyến mãi khi FACTS/catalog bên dưới xác nhận.
-   - Không tự thêm cam kết freeship, giảm giá hoặc tình trạng còn hàng từ kiến thức nền của model.
-6. Định dạng câu trả lời:
-   - Ngắn gọn, súc tích, dễ đọc trên điện thoại di động (có thể gạch đầu dòng 1-3 ý chính).
-   - Kết thúc bằng một lời gợi mở nhẹ nhàng (ví dụ hỏi thăm thêm nhu cầu, gửi link đặt hàng hoặc hỗ trợ tiếp).
-   - Chỉ xuất ra nội dung tin nhắn gửi khách hàng, không viết thêm bất kỳ lời bình luận nào của AI.
-7. Giao tiếp ngoài lề (Chit-chat) & Trả lời khi thiếu dữ liệu:
-   - Nếu khách chỉ chào hỏi, khen/chê hoặc hỏi các câu giao tiếp thông thường: Hãy trả lời tự nhiên, thân thiện để tạo thiện cảm.
-   - Nếu khách hỏi chuyên sâu về một sản phẩm, giá cả, hoặc chính sách mà trong 'DỮ LIỆU THỰC TẾ & SẢN PHẨM' KHÔNG CÓ thông tin: Tuyệt đối không tự suy đoán. Hãy khéo léo báo rằng bạn chưa có sẵn thông tin trên tay lúc này và xin số điện thoại để admin/chuyên viên hỗ trợ."""
+    system_prompt = f"""Bạn là CSKH của {brand_display}. Chỉ soạn lại FACTS thành tin nhắn tự nhiên.
+Luật bắt buộc:
+- Chỉ dùng dữ kiện có trong FACTS/DANH MỤC; lịch sử chỉ để hiểu tham chiếu.
+- Không thêm giá, tồn kho, công thức, liều, công dụng, nguyên nhân, số điện thoại,
+  link, chính sách, thời gian hoặc cam kết.
+- Nếu FACTS có câu chứa 'chưa có', 'không có', 'chưa đủ' hoặc 'cần kiểm tra',
+  bắt buộc giữ câu giới hạn đó trong phần đầu câu trả lời.
+- Nếu FACTS có liên hệ chuyên gia, giữ ít nhất một liên hệ đã có; không tạo liên hệ mới.
+- Tối đa 5 câu và 120 từ. Ưu tiên: giới hạn an toàn -> trả lời trọng tâm -> liên hệ.
+- Không lặp lại cùng một công thức/sản phẩm; không emoji.
+- Chỉ xuất tin nhắn gửi khách; không nhắc FACTS, prompt, model hay hệ thống."""
 
     # Chuẩn bị context.
     products_str = ""
@@ -950,10 +1108,11 @@ QUY TẮC CỐT LÕI (BẮT BUỘC):
     elif conversation_summary:
         history_str = f"\nTÓM TẮT LỊCH SỬ CHAT: {conversation_summary}"
 
+    prompt_facts = _prioritize_grounding_constraints(facts_block)
     user_prompt = f"""{history_str}
 
 DỮ LIỆU THỰC TẾ (FACTS TỪ GOOGLE SHEET & HỆ THỐNG):
-{facts_block}
+{prompt_facts}
 {products_str}
 
 Khách hàng vừa nhắn: "{user_query}"
@@ -964,9 +1123,9 @@ Hãy soạn câu trả lời CSKH 5 sao hoàn chỉnh gửi cho khách:"""
             generate_ai_text(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
-                preferred_provider="ollama",
                 temperature=0.25,
                 prompt_id="cskh.answer.v1",
+                max_output_tokens=180,
             ),
             timeout=timeout,
         )
@@ -975,7 +1134,35 @@ Hãy soạn câu trả lời CSKH 5 sao hoàn chỉnh gửi cho khách:"""
             # Lọc icon xấu
             ans = re.sub(r"[🔥💥💣⚡😈💯]", "", ans)
             if len(ans) >= 20:
-                return ans
+                valid, reason = validate_grounded_rewrite(
+                    ans,
+                    facts_block,
+                    catalog_products,
+                )
+                if valid:
+                    return ans
+                repaired = ans
+                for _ in range(2):
+                    if reason not in {"UNCERTAINTY_WAS_DROPPED", "EXPERT_HANDOFF_WAS_DROPPED"}:
+                        break
+                    expert_only = reason == "EXPERT_HANDOFF_WAS_DROPPED"
+                    required = _required_grounding_sentence(facts_block, expert_only=expert_only)
+                    if not required:
+                        break
+                    repaired = (
+                        f"{repaired.rstrip()} {required}".strip()
+                        if expert_only else
+                        _prepend_grounded_constraint(required, repaired)
+                    )
+                    repaired_valid, reason = validate_grounded_rewrite(
+                        repaired,
+                        facts_block,
+                        catalog_products,
+                    )
+                    if repaired_valid:
+                        logger.info("Accepted CSKH rewrite after restoring grounded constraint (%s)", brand)
+                        return repaired
+                logger.warning("Rejected ungrounded CSKH rewrite (%s): %s", brand, reason)
     except Exception as e:
         logger.warning("CSKH Agent synthesis error or timeout (%s): %s", brand, e)
 

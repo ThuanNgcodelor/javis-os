@@ -1,21 +1,17 @@
 Chào em, mình muốn tìm hiểu giá phân NPK 20-20-15 để chuẩn bị bón cho vụ tới.
 
-Số điện thoại của mình là 0388509046, kiểm tra xem mình có tích điểm hay chiết khấu gì chưa? 
+Tôi ở gần chợ Ô Môn, muốn mua 10 bao thì ghé đại lý nào gần nhất?
 
-Số điện thoại của mình là 0976000085, kiểm tra xem mình có tích điểm hay chiết khấu gì chưa?
+Số điện thoại của mình là 0976000085, kiểm tra xem mình có tích điểm hay ưu đãi gì chưa?
 
-Tra giúp tôi đơn 00005065 số điện thoại 0976000085
+Nhân tiện tra giúp tôi đơn 00005065 với số điện thoại đó.
 
-Tôi ở gần chợ Ô Môn, muốn mua 10 bao phân NPK thì ghé đại lý nào gần nhất?
+Còn sầu riêng đang nuôi trái non bị rụng hạt chuỗi thì nên dùng công thức nào và liều ra sao?
 
-Khu vực xã Định Môn, Thới Lai có đại lý nào giao tận nhà không shop?
+Cụ thể liều bao nhiêu một gốc?
 
-Sầu riêng nuôi trái non bị rụng hạt chuỗi, nên dùng công thức nào và liều ra sao?
+Thông tin này lấy từ đâu, có chắc không?
 
-Liều bao nhiêu một gốc?
+Nếu hợp tác xã của tôi muốn đặt 30 tấn thì liên hệ ai để trao đổi hợp đồng?
 
-Thông tin này lấy từ đâu?
-
-Tôi muốn đặt 30 tấn phân bón cho hợp tác xã, cần gặp giám đốc kinh doanh thương lượng hợp đồng gấp.
-
-Phân bón mua về bị vón cục quá nhiều, tôi muốn khiếu nại đổi trả ngay!
+Nếu nhận phân mà bị vón cục nhiều thì bên mình xử lý khiếu nại thế nào?

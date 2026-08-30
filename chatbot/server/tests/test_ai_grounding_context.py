@@ -8,7 +8,11 @@ SERVER_DIR = Path(__file__).resolve().parents[1]
 if str(SERVER_DIR) not in sys.path:
     sys.path.insert(0, str(SERVER_DIR))
 
-from ai_engine import consult_cfc_agronomy_with_ai, synthesize_cskh_answer  # noqa: E402
+from ai_engine import (  # noqa: E402
+    consult_cfc_agronomy_with_ai,
+    synthesize_cskh_answer,
+    validate_grounded_rewrite,
+)
 from chat_pipeline import _sanitized_chat_history  # noqa: E402
 
 
@@ -54,6 +58,34 @@ class AiGroundingContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("[PHONE]", prompt)
         self.assertNotIn("shopee.vn/zeovietnamofficial", prompt)
         self.assertNotIn("Freeship Extra toàn quốc", system_prompt)
+        self.assertNotIn("preferred_provider", generator.await_args.kwargs)
+
+    def test_grounded_rewrite_accepts_supported_agronomy_facts(self):
+        facts = (
+            "Sầu riêng giai đoạn nuôi trái non cần cân đối Kali và Canxi-Bo, tránh dư Đạm. "
+            "Cẩm nang chưa có mức kg/gốc cho trường hợp này. "
+            "Trao đổi trực tiếp với Khuyến nông Lê Thanh Đạm 0353 857 516."
+        )
+        candidate = (
+            "Dạ với sầu riêng đang nuôi trái non, mình nên cân đối Kali và Canxi-Bo, "
+            "đồng thời tránh dư Đạm. Cẩm nang chưa có mức kg/gốc cụ thể; bạn có thể "
+            "trao đổi với anh Lê Thanh Đạm qua số 0353 857 516 để được kiểm tra sát vườn ạ."
+        )
+        self.assertEqual(validate_grounded_rewrite(candidate, facts), (True, "GROUNDED_REWRITE_VALID"))
+
+    def test_grounded_rewrite_rejects_invented_dose(self):
+        facts = "Sầu riêng giai đoạn nuôi trái non cần cân đối Kali; chưa có mức kg/gốc."
+        candidate = "Dạ bạn bón 2 kg/gốc, lặp lại sau 10 ngày để nuôi trái non ạ."
+        valid, reason = validate_grounded_rewrite(candidate, facts)
+        self.assertFalse(valid)
+        self.assertEqual(reason, "UNSUPPORTED_QUANTITY")
+
+    def test_grounded_rewrite_rejects_invented_commercial_claim(self):
+        facts = "Công ty có sản phẩm NPK 20-20-15 bao 25kg."
+        candidate = "Dạ sản phẩm đang còn hàng và được miễn phí vận chuyển toàn quốc ạ."
+        valid, reason = validate_grounded_rewrite(candidate, facts)
+        self.assertFalse(valid)
+        self.assertIn(reason, {"UNSUPPORTED_INVENTORY", "UNSUPPORTED_SHIPPING"})
 
     async def test_synthesis_does_not_call_generator_without_grounded_input(self):
         generator = AsyncMock(return_value={"success": True, "text": "Nội dung tự sinh"})
@@ -69,6 +101,27 @@ class AiGroundingContextTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(answer)
         generator.assert_not_awaited()
+
+    async def test_synthesis_restores_verbatim_uncertainty_before_accepting_rewrite(self):
+        generator = AsyncMock(return_value={
+            "success": True,
+            "text": "Dạ với sầu riêng nuôi trái non, mình nên cân đối Kali và Canxi-Bo, tránh dư Đạm ạ.",
+        })
+        facts = (
+            "Cẩm nang hiện chưa có mức kg/gốc cho trường hợp này. "
+            "Sầu riêng nuôi trái non cần cân đối Kali và Canxi-Bo, tránh dư Đạm."
+        )
+        with patch("ai_engine._load_settings", return_value={
+            "grounding_policy": {"customer_fact_generation_mode": "grounded_rewrite"},
+        }), patch("ai_engine.generate_ai_text", generator):
+            answer = await synthesize_cskh_answer(
+                user_query="Liều bao nhiêu một gốc?",
+                brand="cfc",
+                retrieved_facts=facts,
+            )
+
+        self.assertIsNotNone(answer)
+        self.assertTrue(answer.startswith("Dạ cẩm nang hiện chưa có mức kg/gốc"))
 
     async def test_direct_only_mode_skips_even_grounded_rewrite(self):
         generator = AsyncMock(return_value={"success": True, "text": "Nội dung rewrite"})

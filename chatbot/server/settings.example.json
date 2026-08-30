@@ -9,6 +9,7 @@
     "base_url": "http://127.0.0.1:11434",
     "embed_model": "bge-m3",
     "embed_dim": 1024,
+    "chat_model": "qwen2.5:7b-instruct",
     "fallback_embed_model": "qwen2.5:7b-instruct"
   },
   "llm_nlu": {
@@ -36,7 +37,8 @@
   },
   "grounding_policy": {
     "mode": "enforce",
-    "customer_fact_generation_mode": "direct_only"
+    "customer_fact_generation_mode": "grounded_rewrite",
+    "grounded_rewrite_timeout_seconds": 4.0
   },
   "rag": {
     "top_k": 5,

@@ -86,7 +86,12 @@ from shopee_matcher import (
     is_fabric_softener_inquiry,
     match_fabric_softener_products,
 )
-from ai_engine import synthesize_cskh_answer, reason_and_answer_cskh, plan_chat_intent_with_ai
+from ai_engine import (
+    grounded_rewrite_timeout_seconds,
+    plan_chat_intent_with_ai,
+    reason_and_answer_cskh,
+    synthesize_cskh_answer,
+)
 from ai_engine import plan_conversation_turn_with_ai
 from conversation_orchestrator import (
     build_conversation_context,
@@ -3049,6 +3054,29 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 or preplanner_agronomy_slots.get("symptom")
             )
         )
+        # QueryPlan already gives these operational CFC intents a high-confidence,
+        # deterministic route. Ollama cannot change their fact source or tool, so
+        # calling both semantic planners only adds seconds of latency on later turns.
+        explicit_cfc_fast_intents = {
+            "privacy_sensitive_lookup",
+            "cfc_contact_information_request",
+            "cfc_b2b_large_order_request",
+            "cfc_product_complaint_request",
+            "cfc_purchase_request",
+            "cfc_order_status_request",
+            "cfc_loyalty_lookup_request",
+            "cfc_inventory_request",
+            "cfc_wholesale_policy_request",
+            "cfc_dealer_location_request",
+            "cfc_price_unverified",
+            "financial_service_unsupported",
+        }
+        skip_ai_planners_for_explicit_cfc_route = bool(
+            brand == "cfc"
+            and query_plan.intent_confidence >= 0.90
+            and query_plan.intent in explicit_cfc_fast_intents
+            and not (query_plan.needs_context and not reference_resolution.get("resolved"))
+        )
         if skip_ai_planners_for_order_lookup:
             pipeline_trace_extra["protected_fast_path"] = {
                 "tool": "order_status_lookup",
@@ -3080,6 +3108,11 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 "tool": "faq_by_intent",
                 "reason": "DETERMINISTIC_WEBSITE_FAQ_SKIPS_AI_PLANNERS",
             }
+        elif skip_ai_planners_for_explicit_cfc_route:
+            pipeline_trace_extra["protected_fast_path"] = {
+                "tool": deterministic_route.tool or deterministic_route.action,
+                "reason": "EXPLICIT_CFC_ROUTE_SKIPS_AI_PLANNERS",
+            }
         
         # --- BẮT ĐẦU: SEMANTIC ROUTING BẰNG LLM ---
         llm_nlu_mode, _, _ = _llm_nlu_config()
@@ -3091,6 +3124,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             and not skip_ai_planners_for_clear_agronomy
             and not skip_ai_planners_for_source_challenge
             and not skip_ai_planners_for_website_faq
+            and not skip_ai_planners_for_explicit_cfc_route
             and llm_nlu_mode in {"assist", "shadow"}
         ):
             from cfc_semantic_planner import plan_cfc_intents
@@ -3115,6 +3149,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             and not skip_ai_planners_for_clear_agronomy
             and not skip_ai_planners_for_source_challenge
             and not skip_ai_planners_for_website_faq
+            and not skip_ai_planners_for_explicit_cfc_route
         ):
             conversation_messages = build_conversation_messages(
                 conversation_state,
@@ -3568,6 +3603,50 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 ],
                 force_expert=continue_expert_intake,
             )
+            direct_answer = str(guidance["answer"])
+            generation_mode = "grounded_faq_composition" if guidance.get("source_ids") else "direct_only"
+            if guidance.get("source_ids"):
+                rewrite_facts = direct_answer
+                exact_dose_question = bool(re.search(
+                    r"\b(lieu(?: luong)?|bao nhieu(?: kg| ky)?|kg/goc|moi goc|mot goc)\b",
+                    _normalize_vn(user_text),
+                ))
+                direct_fold = _normalize_vn(direct_answer)
+                if exact_dose_question and any(marker in direct_fold for marker in (
+                    "chua co muc", "chua co lieu", "khong co muc", "khong co lieu",
+                )):
+                    constraint_sentences = [
+                        sentence.strip()
+                        for sentence in re.split(r"(?<=[.!?])\s+", direct_answer)
+                        if any(marker in _normalize_vn(sentence) for marker in (
+                            "chua co muc", "chua co lieu", "khong co muc", "khong co lieu",
+                        ))
+                    ]
+                    case_parts = [
+                        str(slots.get(field) or "").strip()
+                        for field in ("crop", "crop_stage", "symptom")
+                        if str(slots.get(field) or "").strip()
+                    ]
+                    case_line = f"Trường hợp: {', '.join(case_parts)}." if case_parts else ""
+                    rewrite_facts = " ".join([case_line, *constraint_sentences]).strip() or direct_answer
+                synthesized = await synthesize_cskh_answer(
+                    user_query=user_text,
+                    brand=brand,
+                    retrieved_facts=rewrite_facts,
+                    # The deterministic guidance already contains the resolved
+                    # crop/stage/symptom. Sending unrelated earlier dealer/order
+                    # turns only inflates the local-model prompt and latency.
+                    conversation_summary="",
+                    chat_history=[],
+                    timeout=grounded_rewrite_timeout_seconds(),
+                )
+                if synthesized:
+                    guidance["answer"] = synthesized
+                    generation_mode = "grounded_rewrite"
+                else:
+                    guidance["answer"] = direct_answer
+                    generation_mode = f"{generation_mode}_fallback"
+            guidance["customer_fact_generation_mode"] = generation_mode
             return (
                 str(guidance["answer"]),
                 approved_fact,
@@ -4405,7 +4484,10 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                     trace_extra={
                         "source_intent": route_decision.intent,
                         "expert_intake": True,
-                        "customer_fact_generation_mode": "grounded_faq_composition" if support_source_ids else "direct_only",
+                        "customer_fact_generation_mode": agronomy_meta.get(
+                            "customer_fact_generation_mode",
+                            "grounded_faq_composition" if support_source_ids else "direct_only",
+                        ),
                         "agronomy_support_source_ids": support_source_ids,
                         "agronomy_support_intents": agronomy_meta.get("source_intents", []),
                         "agronomy_evidence_count": agronomy_meta.get("evidence_count", 0),
@@ -4559,7 +4641,10 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 trace_extra={
                     "source_intent": "cfc_dosage_usage_review",
                     "expert_intake": True,
-                    "customer_fact_generation_mode": "grounded_faq_composition" if support_source_ids else "direct_only",
+                    "customer_fact_generation_mode": agronomy_meta.get(
+                        "customer_fact_generation_mode",
+                        "grounded_faq_composition" if support_source_ids else "direct_only",
+                    ),
                     "agronomy_support_source_ids": support_source_ids,
                     "agronomy_support_intents": agronomy_meta.get("source_intents", []),
                     "agronomy_evidence_count": agronomy_meta.get("evidence_count", 0),
@@ -5791,8 +5876,9 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                     trace_extra={
                         "source_intent": "cfc_dosage_usage_review",
                         "expert_intake": True,
-                        "customer_fact_generation_mode": (
-                            "grounded_faq_composition" if support_source_ids else "direct_only"
+                        "customer_fact_generation_mode": agronomy_meta.get(
+                            "customer_fact_generation_mode",
+                            "grounded_faq_composition" if support_source_ids else "direct_only",
                         ),
                         "agronomy_support_source_ids": support_source_ids,
                         "agronomy_support_intents": agronomy_meta.get("source_intents", []),

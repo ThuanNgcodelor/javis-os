@@ -86,6 +86,13 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(slots.get("symptom"), "rụng hạt chuỗi")
         self.assertNotIn("area", slots)
 
+    def test_large_order_cooperative_does_not_become_kumquat_crop(self):
+        slots = _extract_cfc_confirmed_slots(
+            "Tôi muốn đặt 30 tấn phân bón cho hợp tác xã, cần gặp giám đốc kinh doanh"
+        )
+        self.assertEqual(slots.get("quantity"), "30 tấn")
+        self.assertNotIn("crop", slots)
+
     def test_cfc_workflow_forwards_messenger_location_contract(self):
         workflow = (
             SERVER_DIR.parents[1]
@@ -358,7 +365,8 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             ],
         })
         with redis_patch, faq_patch, profile_patch, nlu_patch, \
-                patch("chat_pipeline.semantic_search", new=agronomy_search):
+                patch("chat_pipeline.semantic_search", new=agronomy_search), \
+                patch("chat_pipeline.synthesize_cskh_answer", new=AsyncMock(return_value=None)):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
                 sender_id="agronomy-intake",
@@ -383,9 +391,49 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             "cfc:session:messenger:agronomy-intake"
         ]["last_trace"]
         self.assertEqual(trace["source_id"], "test:cfc_agronomy_young_fruit_sizing")
-        self.assertEqual(trace["customer_fact_generation_mode"], "grounded_faq_composition")
+        self.assertEqual(
+            trace["customer_fact_generation_mode"],
+            "grounded_faq_composition_fallback",
+        )
         self.assertEqual(trace["agronomy_evidence_count"], 2)
         agronomy_search.assert_awaited_once()
+
+    async def test_agronomy_grounded_facts_can_be_rewritten_without_changing_source(self):
+        redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
+        agronomy_search = AsyncMock(return_value={
+            "confidence": "high",
+            "score": 0.9,
+            "results": [{
+                "intent": "cfc_agronomy_young_fruit_sizing",
+                "answer": FAQS["cfc_agronomy_young_fruit_sizing"],
+                "category": "agronomy",
+                "audience": "customer",
+                "risk_level": "medium",
+                "source_id": "test:cfc_agronomy_young_fruit_sizing",
+                "score": 0.9,
+            }],
+        })
+        natural_answer = (
+            "Dạ với sầu riêng đang nuôi trái non, mình nên cân đối dinh dưỡng theo "
+            "hướng dẫn đã đối chiếu; phần kg/gốc cần kỹ sư kiểm tra sát vườn ạ."
+        )
+        synthesizer = AsyncMock(return_value=natural_answer)
+        with redis_patch, faq_patch, profile_patch, nlu_patch, \
+                patch("chat_pipeline.semantic_search", new=agronomy_search), \
+                patch("chat_pipeline.synthesize_cskh_answer", new=synthesizer):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id="agronomy-grounded-rewrite",
+                text="Sầu riêng nuôi trái non bị rụng hạt chuỗi nên bón gì?",
+            ))
+
+        self.assertEqual(result.answer, natural_answer)
+        synthesizer.assert_awaited_once()
+        trace = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:agronomy-grounded-rewrite"
+        ]["last_trace"]
+        self.assertEqual(trace["source_id"], "test:cfc_agronomy_young_fruit_sizing")
+        self.assertEqual(trace["customer_fact_generation_mode"], "grounded_rewrite")
 
     async def test_tc01_price_family_shows_catalog_then_asks_missing_slots_once(self):
         product_snapshot = {
@@ -462,7 +510,8 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         with redis_patch, faq_patch, profile_patch, \
                 patch("chat_pipeline._llm_nlu_config", return_value=("assist", 0.3, 0.72)), \
                 patch("cfc_semantic_planner.plan_cfc_intents", new=semantic_planner), \
-                patch("chat_pipeline.semantic_search", new=agronomy_search):
+                patch("chat_pipeline.semantic_search", new=agronomy_search), \
+                patch("chat_pipeline.synthesize_cskh_answer", new=AsyncMock(return_value=None)):
             await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
                 sender_id="tc01-fast-route",
@@ -488,6 +537,39 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             agronomy_trace["protected_fast_path"]["reason"],
             "CLEAR_AGRONOMY_ROUTE_SKIPS_AI_PLANNERS",
+        )
+
+    async def test_explicit_cfc_operational_route_skips_both_ai_planners(self):
+        sender_id = "explicit-cfc-fast-route"
+        session_key = f"cfc:session:messenger:{sender_id}"
+        state = chat_pipeline._default_conversation_state("cfc")
+        state["recent_turns"] = [{"user": "Chào em", "bot": "Dạ chào bạn"}]
+        chat_pipeline._local_session_cache[session_key] = {
+            "last_user_message": "Chào em",
+            "last_bot_reply": "Dạ chào bạn",
+            "last_intent": "greeting",
+            "conversation_state": state,
+        }
+        redis_patch, faq_patch, profile_patch, _ = self._patches()
+        semantic_planner = AsyncMock(return_value=[])
+        conversation_planner = AsyncMock(return_value=None)
+        with redis_patch, faq_patch, profile_patch, \
+                patch("chat_pipeline._llm_nlu_config", return_value=("assist", 0.3, 0.72)), \
+                patch("cfc_semantic_planner.plan_cfc_intents", new=semantic_planner), \
+                patch("chat_pipeline.plan_conversation_turn_with_ai", new=conversation_planner):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc",
+                sender_id=sender_id,
+                text="Phân bón bị vón cục, tôi muốn khiếu nại đổi trả ngay",
+            ))
+
+        self.assertEqual(result.intent, "cfc_product_complaint_request")
+        semantic_planner.assert_not_awaited()
+        conversation_planner.assert_not_awaited()
+        trace = chat_pipeline._local_session_cache[session_key]["last_trace"]
+        self.assertEqual(
+            trace["protected_fast_path"]["reason"],
+            "EXPLICIT_CFC_ROUTE_SKIPS_AI_PLANNERS",
         )
 
     async def test_durian_eligibility_does_not_expand_into_protocol_or_policy(self):
@@ -642,7 +724,8 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
             }],
         })
         with redis_patch, faq_patch, profile_patch, nlu_patch, \
-                patch("chat_pipeline.semantic_search", new=agronomy_search):
+                patch("chat_pipeline.semantic_search", new=agronomy_search), \
+                patch("chat_pipeline.synthesize_cskh_answer", new=AsyncMock(return_value=None)):
             first = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
                 sender_id=sender_id,
