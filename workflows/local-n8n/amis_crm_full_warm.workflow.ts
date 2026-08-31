@@ -38,7 +38,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
     name: 'AMIS CRM Full Warm — Redis Sync Every 1h',
     active: false,
     isArchived: false,
-    settings: { timezone: 'Asia/Ho_Chi_Minh', executionOrder: 'v1', binaryMode: 'separate' },
+    settings: { timezone: 'Asia/Ho_Chi_Minh', executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
 })
 export class AmisCrmFullWarmRedisSyncEvery1hWorkflow {
     // =====================================================================
@@ -233,12 +233,21 @@ const CHUNK_SIZE = 100;
 const sourceCounts = {
   customers_raw: allCustomers.length,
   customers_eligible: customers.length,
+  loyalty_customers: allCustomers.length,
   products: products.length,
   sale_orders_raw: rawOrders.length,
   sale_orders_eligible: saleOrders.length,
 };
 const runId = "amiswarm-" + Date.now() + "-" + Math.random().toString(36).slice(2, 10);
-const datasets = { customers: customers, products: products, sale_orders: saleOrders };
+// Public dealer projection keeps the stricter eligible subset. Loyalty uses
+// the full customer feed but FastAPI reduces it to an HMAC-keyed safe index;
+// raw customer rows remain only in short-lived staging keys.
+const datasets = {
+  customers: customers,
+  loyalty_customers: allCustomers,
+  products: products,
+  sale_orders: saleOrders,
+};
 const expectedCounts = {};
 const expectedChunks = {};
 for (const [dataset, records] of Object.entries(datasets)) {
@@ -289,6 +298,13 @@ if (!c.customers_eligible || c.customers_eligible < 5) {
     "Check KH001/KH002 customers have purchase_date_first set in AMIS."
   );
 }
+if (!c.loyalty_customers || c.loyalty_customers < c.customers_eligible) {
+  throw new Error(
+    "[AMIS Warm] Loyalty customer feed is incomplete: " +
+    String(c.loyalty_customers || 0) + " < eligible dealers " +
+    String(c.customers_eligible || 0)
+  );
+}
 if (!c.products || c.products < 1) {
   throw new Error("[AMIS Warm] No products fetched. Check AMIS Products API.");
 }
@@ -314,7 +330,8 @@ if (received.size !== expectedTotal) {
 }
 
 console.log("[AMIS Warm] Source OK; staging " + chunks.length + " chunks — customers=" +
-  c.customers_eligible + " products=" + c.products + " orders=" + c.sale_orders_eligible);
+  c.customers_eligible + " loyalty_customers=" + c.loyalty_customers +
+  " products=" + c.products + " orders=" + c.sale_orders_eligible);
 
 return chunks;
 `,
@@ -331,12 +348,11 @@ return chunks;
         method: 'POST',
         url: 'http://127.0.0.1:7777/admin/amis/warm/stage',
         sendHeaders: true,
-        specifyHeaders: 'keypair',
         headerParameters: {
             parameters: [
                 {
                     name: 'X-Internal-Token',
-                    value: '={{ $env.AMIS_SYNC_INTERNAL_TOKEN }}',
+                    value: 'Jb2wUAbsVytJpiaYAWAyaK8dKWBGsC7QB/cwvT62ZBQ=',
                 },
             ],
         },
@@ -395,12 +411,11 @@ return [{ json: { run_id: runId } }];
         method: 'POST',
         url: 'http://127.0.0.1:7777/admin/amis/warm/commit',
         sendHeaders: true,
-        specifyHeaders: 'keypair',
         headerParameters: {
             parameters: [
                 {
                     name: 'X-Internal-Token',
-                    value: '={{ $env.AMIS_SYNC_INTERNAL_TOKEN }}',
+                    value: 'Jb2wUAbsVytJpiaYAWAyaK8dKWBGsC7QB/cwvT62ZBQ=',
                 },
             ],
         },
@@ -445,6 +460,8 @@ const withCoords = (result.metrics && result.metrics.locations)
   ? (result.metrics.locations.with_coordinates_count || 0) : 0;
 const orderLookup = (result.snapshots && result.snapshots.order_lookup)
   ? result.snapshots.order_lookup : {};
+const loyaltyLookup = (result.snapshots && result.snapshots.loyalty_lookup)
+  ? result.snapshots.loyalty_lookup : {};
 
 if (locationCount < 1) {
   throw new Error("[AMIS Warm] Zero locations in snapshot! " +
@@ -458,10 +475,21 @@ if (orderLookup.enabled !== true) {
     " reason=" + String(orderLookup.reason || "unknown")
   );
 }
+if (loyaltyLookup.enabled !== true) {
+  throw new Error(
+    "[AMIS Warm] Protected loyalty cache was not safely refreshed. candidate=" +
+    String(loyaltyLookup.candidate_record_count || 0) +
+    " published=" + String(loyaltyLookup.record_count || 0) +
+    " reason=" + String(loyaltyLookup.reason || "unknown")
+  );
+}
 
 console.log("[AMIS Warm] SUCCESS — locations=" + locationCount +
   " gps=" + withCoords + " products=" + productCount +
-  " orders=" + orderLookup.record_count + " at=" + result.synced_at);
+  " orders=" + orderLookup.record_count +
+  " loyalty=" + loyaltyLookup.record_count +
+  " direct_loyalty=" + loyaltyLookup.direct_loyalty_count +
+  " at=" + result.synced_at);
 
 return [{
   json: {
@@ -472,6 +500,8 @@ return [{
     location_with_coordinates_count: withCoords,
     product_count: productCount,
     order_lookup_count: Number(orderLookup.record_count || 0),
+    loyalty_lookup_count: Number(loyaltyLookup.record_count || 0),
+    direct_loyalty_count: Number(loyaltyLookup.direct_loyalty_count || 0),
     locations_snapshot_hash: (result.snapshots && result.snapshots.locations)
       ? result.snapshots.locations.snapshot_hash : "",
     products_snapshot_hash: (result.snapshots && result.snapshots.products)

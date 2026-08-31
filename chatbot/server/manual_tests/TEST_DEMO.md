@@ -6,7 +6,7 @@ Số điện thoại của mình là 0976000085, kiểm tra xem mình có tích 
 
 Nhân tiện tra giúp tôi đơn 00005065 với số điện thoại đó.
 
-Còn sầu riêng đang nuôi trái non bị rụng hạt chuỗi thì nên dùng công thức nào và liều ra sao?
+Còn sầu riêng đang nuôi trái non bị rụng hạt chuỗi thì nên dùng công thức nào?
 
 Cụ thể liều bao nhiêu một gốc?
 

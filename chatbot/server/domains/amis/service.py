@@ -11,6 +11,7 @@ from domains.common.db import get_redis_client
 
 from .client import AmisClient
 from .config import AmisConfig, load_amis_config
+from .loyalty_cache import build_loyalty_lookup_index, build_loyalty_lookup_snapshot
 from .order_cache import build_order_lookup_index, build_order_lookup_snapshot
 from .projection import (
     assert_public_projection_safe,
@@ -45,6 +46,7 @@ async def build_public_bundle(
     raw_datasets: Optional[dict[str, list]] = None,
     order_synced_at: str = "",
     include_private_order_snapshot: bool = False,
+    include_private_loyalty_snapshot: bool = False,
 ) -> dict[str, Any]:
     cfg = config or load_amis_config()
     if raw_datasets is not None:
@@ -99,6 +101,19 @@ async def build_public_bundle(
             config=cfg,
             synced_at=order_synced_at or (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
         )
+    if include_private_loyalty_snapshot:
+        # Keep the wider AMIS customer feed isolated from the public dealer
+        # projection. Only the minimal HMAC-keyed loyalty projection survives.
+        loyalty_customers = datasets.get("loyalty_customers", datasets["customers"])
+        bundle["_private_loyalty_snapshot"] = build_loyalty_lookup_snapshot(
+            {
+                "customers": loyalty_customers,
+                "sale_orders": datasets["sale_orders"],
+            },
+            config=cfg,
+            synced_at=order_synced_at
+            or (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
+        )
     return bundle
 
 
@@ -110,6 +125,7 @@ async def _write_bundle_to_redis(
     locations_snapshot: dict[str, Any],
     metadata: dict[str, Any],
     order_snapshot: Optional[dict[str, Any]] = None,
+    loyalty_snapshot: Optional[dict[str, Any]] = None,
 ) -> None:
     pipeline = redis_client.pipeline(transaction=True)
     pipeline.set(
@@ -155,6 +171,23 @@ async def _write_bundle_to_redis(
                 "snapshot_hash": order_snapshot.get("snapshot_hash", ""),
             }, ensure_ascii=False, separators=(",", ":")),
         )
+    if loyalty_snapshot is not None:
+        loyalty_index = build_loyalty_lookup_index(loyalty_snapshot)
+        pipeline.delete(config.redis_loyalty_lookup_index_key)
+        if loyalty_index:
+            pipeline.hset(config.redis_loyalty_lookup_index_key, mapping=loyalty_index)
+        pipeline.set(
+            config.redis_loyalty_lookup_metadata_key,
+            json.dumps({
+                "schema_version": loyalty_snapshot.get("schema_version", 1),
+                "source": loyalty_snapshot.get("source", "amis_crm_loyalty_warm"),
+                "synced_at": loyalty_snapshot.get("synced_at", ""),
+                "record_count": loyalty_snapshot.get("record_count", 0),
+                "direct_loyalty_count": loyalty_snapshot.get("direct_loyalty_count", 0),
+                "ambiguous_count": loyalty_snapshot.get("ambiguous_count", 0),
+                "snapshot_hash": loyalty_snapshot.get("snapshot_hash", ""),
+            }, ensure_ascii=False, separators=(",", ":")),
+        )
     await pipeline.execute()
 
 
@@ -176,8 +209,10 @@ async def sync_public_snapshots(
         raw_datasets=raw_datasets,
         order_synced_at=synced_at,
         include_private_order_snapshot=True,
+        include_private_loyalty_snapshot=True,
     )
     order_snapshot = bundle.pop("_private_order_snapshot", None)
+    loyalty_snapshot = bundle.pop("_private_loyalty_snapshot", None)
     order_lookup_skip_reason = ""
     candidate_order_count = int((order_snapshot or {}).get("record_count") or 0)
     if order_snapshot is not None and candidate_order_count < cfg.min_order_lookup_records:
@@ -186,6 +221,17 @@ async def sync_public_snapshots(
         # refresh; the old private order cache remains atomically intact.
         order_snapshot = None
         order_lookup_skip_reason = "ORDER_LOOKUP_RECORD_COUNT_BELOW_MINIMUM"
+    loyalty_lookup_skip_reason = ""
+    candidate_loyalty_count = int((loyalty_snapshot or {}).get("record_count") or 0)
+    candidate_direct_loyalty_count = int(
+        (loyalty_snapshot or {}).get("direct_loyalty_count") or 0
+    )
+    if (
+        loyalty_snapshot is not None
+        and candidate_loyalty_count < cfg.min_loyalty_lookup_records
+    ):
+        loyalty_snapshot = None
+        loyalty_lookup_skip_reason = "LOYALTY_LOOKUP_RECORD_COUNT_BELOW_MINIMUM"
     products_snapshot = _snapshot(bundle["products"], synced_at=synced_at)
     locations_snapshot = _snapshot(bundle["locations"], synced_at=synced_at)
 
@@ -217,6 +263,16 @@ async def sync_public_snapshots(
                 "retained_previous": bool(order_lookup_skip_reason),
                 "reason": order_lookup_skip_reason,
             },
+            "loyalty_lookup": {
+                "key": cfg.redis_loyalty_lookup_index_key,
+                "record_count": int((loyalty_snapshot or {}).get("record_count") or 0),
+                "candidate_record_count": candidate_loyalty_count,
+                "direct_loyalty_count": candidate_direct_loyalty_count,
+                "snapshot_hash": str((loyalty_snapshot or {}).get("snapshot_hash") or ""),
+                "enabled": bool(loyalty_snapshot),
+                "retained_previous": bool(loyalty_lookup_skip_reason),
+                "reason": loyalty_lookup_skip_reason,
+            },
         },
     }
     if dry_run:
@@ -245,6 +301,7 @@ async def sync_public_snapshots(
             locations_snapshot=locations_snapshot,
             metadata=metadata,
             order_snapshot=order_snapshot,
+            loyalty_snapshot=loyalty_snapshot,
         )
     finally:
         if owns_redis:

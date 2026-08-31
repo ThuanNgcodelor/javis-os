@@ -198,7 +198,13 @@ class CfcGroundedMemoryTests(unittest.IsolatedAsyncioTestCase):
     async def test_phone_with_loyalty_question_looks_up_exact_phone(self):
         redis_patch, faq_patch, profile_patch, nlu_patch = self._patches()
         with redis_patch, faq_patch, profile_patch, nlu_patch, \
-                patch("chat_pipeline.lookup_loyalty_info", return_value=None):
+                patch(
+                    "chat_pipeline.lookup_cached_loyalty_info",
+                    new=AsyncMock(return_value={
+                        "outcome": "not_found",
+                        "source_id": "amis:internal:loyalty-warm",
+                    }),
+                ):
             result = await process_chat_pipeline(ChatPipelineRequest(
                 brand="cfc",
                 sender_id="loyalty-intent",

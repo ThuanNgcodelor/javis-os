@@ -85,9 +85,18 @@ def datasets(approved=True):
                 "inactive": False,
             }
         ],
+        "loyalty_customers": [
+            {
+                "account_number": "KH001",
+                "account_name": "Điểm bán mẫu",
+                "office_tel": "0976000085",
+                "total_score": 0,
+            }
+        ],
         "sale_orders": [
             {
                 "account_code": "KH001",
+                "phone": "0976000085",
                 "sale_order_no": "DH-TEST-001",
                 "is_invoiced": True,
                 "invoiced_amount": 500000,
@@ -114,6 +123,8 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
             min_public_locations=1,
             min_order_lookup_records=1,
             order_lookup_hmac_secret="unit-test-order-hmac",
+            min_loyalty_lookup_records=1,
+            loyalty_lookup_hmac_secret="unit-test-loyalty-hmac",
         )
 
     async def test_dry_run_returns_aggregate_only_and_does_not_write(self):
@@ -129,6 +140,8 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["snapshots"]["products"]["record_count"], 1)
         self.assertEqual(result["snapshots"]["locations"]["record_count"], 1)
         self.assertEqual(result["snapshots"]["order_lookup"]["record_count"], 1)
+        self.assertEqual(result["snapshots"]["loyalty_lookup"]["record_count"], 1)
+        self.assertEqual(result["snapshots"]["loyalty_lookup"]["direct_loyalty_count"], 1)
         self.assertNotIn("items", result)
 
     async def test_real_sync_writes_safe_snapshots_and_geo_in_one_transaction(self):
@@ -163,6 +176,13 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
             command[0] == "hset" and command[1] == self.config.redis_order_lookup_index_key
             for command in pipeline.commands
         ))
+        loyalty_hset = next(
+            command for command in pipeline.commands
+            if command[0] == "hset" and command[1] == self.config.redis_loyalty_lookup_index_key
+        )
+        encoded_loyalty = json.dumps(loyalty_hset[2], ensure_ascii=False)
+        self.assertNotIn("0976000085", encoded_loyalty)
+        self.assertNotIn("Điểm bán mẫu", encoded_loyalty)
 
     async def test_failed_location_gate_preserves_existing_snapshot(self):
         redis = FakeRedis()
@@ -189,6 +209,8 @@ class AmisSyncServiceTests(unittest.IsolatedAsyncioTestCase):
             min_public_locations=1,
             min_order_lookup_records=2,
             order_lookup_hmac_secret="unit-test-order-hmac",
+            min_loyalty_lookup_records=1,
+            loyalty_lookup_hmac_secret="unit-test-loyalty-hmac",
         )
 
         result = await sync_public_snapshots(

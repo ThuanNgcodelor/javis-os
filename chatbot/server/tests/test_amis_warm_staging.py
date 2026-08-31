@@ -57,6 +57,8 @@ class AmisWarmStagingTests(unittest.IsolatedAsyncioTestCase):
             min_public_locations=1,
             min_order_lookup_records=1,
             order_lookup_hmac_secret="test-secret",
+            min_loyalty_lookup_records=1,
+            loyalty_lookup_hmac_secret="test-loyalty-secret",
         )
         self.run_id = "amiswarm-test-run-001"
         self.counts = {"customers": 1, "products": 1, "sale_orders": 3}
@@ -125,6 +127,33 @@ class AmisWarmStagingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(self.redis.values)
         self.assertFalse(self.redis.hashes)
+
+    async def test_optional_loyalty_customer_dataset_is_reassembled(self):
+        self.counts["loyalty_customers"] = 2
+        self.chunks["loyalty_customers"] = 1
+        await self._stage("customers", 0, [{"account_number": "KH001"}])
+        await self._stage(
+            "loyalty_customers",
+            0,
+            [{"id": 1, "office_tel": "0976000085"}, {"id": 2}],
+        )
+        await self._stage("products", 0, [{"product_code": "P001"}])
+        await self._stage("sale_orders", 0, [{"sale_order_no": "A"}, {"sale_order_no": "B"}])
+        await self._stage("sale_orders", 1, [{"sale_order_no": "C"}])
+
+        with patch(
+            "domains.amis.warm_staging.sync_public_snapshots",
+            new=AsyncMock(return_value={"status": "ok", "written": True}),
+        ) as sync:
+            await commit_warm_run(
+                run_id=self.run_id,
+                config=self.config,
+                redis_client=self.redis,
+            )
+
+        loyalty_rows = sync.await_args.kwargs["raw_datasets"]["loyalty_customers"]
+        self.assertEqual(len(loyalty_rows), 2)
+        self.assertEqual(loyalty_rows[0]["office_tel"], "0976000085")
 
 
 if __name__ == "__main__":

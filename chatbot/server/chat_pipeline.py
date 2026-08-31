@@ -47,7 +47,7 @@ from domains.amis.catalog import (
     search_public_fertilizers,
 )
 from domains.amis.order_cache import lookup_cached_order_status
-from domains.amis.live_crm import lookup_loyalty_info
+from domains.amis.loyalty_cache import lookup_cached_loyalty_info
 from evidence_trace import (
     assess_previous_answer_challenge,
     begin_request_trace,
@@ -1351,8 +1351,10 @@ def _build_cfc_capability_boundary(intent: str, slots: dict[str, Any], raw_text:
     return answer, "WHOLESALE_POLICY_NOT_VERIFIED"
 
 
-def _build_cfc_loyalty_lookup_answer(phone: str) -> tuple[str, str, str]:
-    """Tra cứu hồ sơ điểm/hạng từ trường CRM thật, không tự tính giá trị."""
+def _format_cfc_loyalty_lookup_reply(
+    lookup: dict[str, Any], phone: str
+) -> tuple[str, str, str]:
+    """Format only facts returned by the protected AMIS loyalty cache."""
     clean_phone = re.sub(r"\D", "", str(phone or ""))
     if len(clean_phone) < 9:
         return (
@@ -1361,38 +1363,56 @@ def _build_cfc_loyalty_lookup_answer(phone: str) -> tuple[str, str, str]:
             "",
         )
 
-    record = lookup_loyalty_info(clean_phone)
     masked = _mask_phone(clean_phone)
-    if not record:
+    outcome = str(lookup.get("outcome") or "unavailable")
+    source_id = str(lookup.get("source_id") or "")
+    if outcome == "not_found":
         return (
             f"Dạ mình chưa tìm thấy hồ sơ hội viên khớp với số {masked} trong dữ liệu hiện có. "
             "Bạn kiểm tra lại số điện thoại đã đăng ký hoặc liên hệ Trưởng phòng Kinh doanh "
             f"{_display_contact_phone(CFC_SALES_CONTACT[1])} để được đối chiếu nhé.",
             "LOYALTY_RECORD_NOT_FOUND",
-            "",
+            source_id,
         )
-
-    points = record.get("points")
-    tier = str(record.get("tier") or "").strip()
-    if points is None and not tier:
+    if outcome == "ambiguous":
+        return (
+            f"Dạ số {masked} đang khớp với nhiều hồ sơ nên mình chưa thể chọn một hồ sơ để báo điểm. "
+            f"Bạn liên hệ Trưởng phòng Kinh doanh {_display_contact_phone(CFC_SALES_CONTACT[1])} "
+            "để xác minh đúng tài khoản nhé.",
+            "LOYALTY_IDENTITY_AMBIGUOUS",
+            source_id,
+        )
+    if outcome == "profile_found_no_loyalty":
         return (
             f"Dạ số {masked} đã khớp hồ sơ khách hàng. Hiện bên mình chưa có thông tin điểm hoặc hạng hội viên được xác minh để báo chính xác. "
             f"Trưởng phòng Kinh doanh {_display_contact_phone(CFC_SALES_CONTACT[1])} sẽ kiểm tra giúp bạn nhé.",
             "LOYALTY_FIELDS_NOT_AVAILABLE",
-            "amis:internal:crm-customer-snapshot",
+            source_id,
+        )
+    if outcome != "found":
+        return (
+            f"Dạ hiện mình chưa đối chiếu được điểm hoặc hạng của số {masked}. "
+            f"Bạn có thể liên hệ Trưởng phòng Kinh doanh {_display_contact_phone(CFC_SALES_CONTACT[1])} "
+            "để được kiểm tra ngay nhé.",
+            "LOYALTY_LOOKUP_UNAVAILABLE",
+            "",
         )
 
+    points = lookup.get("points")
+    tier = str(lookup.get("tier") or "").strip()
+    benefits = str(lookup.get("benefits") or "").strip()
     details: list[str] = []
     if points is not None:
         details.append(f"điểm tích lũy **{int(points):,}**".replace(",", "."))
     if tier:
         details.append(f"hạng **{tier}**")
+    if benefits:
+        details.append(f"ưu đãi **{benefits}**")
     return (
         f"Dạ số {masked} hiện có " + " và ".join(details) + ". "
-        "Nếu cần đối chiếu chính sách áp dụng cho đơn hàng cụ thể, Trưởng phòng Kinh doanh "
-        f"{_display_contact_phone(CFC_SALES_CONTACT[1])} sẽ hỗ trợ bạn nhé.",
+        "Nếu cần kiểm tra quyền lợi áp dụng cho đơn hàng cụ thể, mình sẽ chuyển nhân viên phụ trách đối chiếu giúp bạn nhé.",
         "LOYALTY_LOOKUP_FOUND",
-        "amis:internal:crm-customer-snapshot",
+        source_id,
     )
 
 
@@ -4287,8 +4307,14 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 )
 
             if route_decision.tool == "loyalty_lookup":
-                answer, lookup_reason, source_id = _build_cfc_loyalty_lookup_answer(
-                    str(cfc_slots.get("phone") or phone or "")
+                loyalty_phone = str(cfc_slots.get("phone") or phone or "")
+                lookup = await lookup_cached_loyalty_info(
+                    r,
+                    config=load_amis_config(),
+                    phone=loyalty_phone,
+                )
+                answer, lookup_reason, source_id = _format_cfc_loyalty_lookup_reply(
+                    lookup, loyalty_phone
                 )
                 _remember_response(
                     answer,
@@ -4300,6 +4326,9 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                         "loyalty_lookup": {
                             "phone_present": bool(cfc_slots.get("phone") or phone),
                             "source": source_id,
+                            "outcome": lookup.get("outcome"),
+                            "data_mode": lookup.get("data_mode"),
+                            "freshness_checked": lookup.get("freshness_checked"),
                         }
                     },
                 )
@@ -4737,8 +4766,14 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
             }:
                 final_reply, fallback_reason = _build_cfc_capability_boundary(resumed_intent, cfc_slots)
             elif resumed_intent == "cfc_loyalty_lookup_request":
-                final_reply, fallback_reason, source_id = _build_cfc_loyalty_lookup_answer(
-                    str(cfc_slots.get("phone") or phone or "")
+                loyalty_phone = str(cfc_slots.get("phone") or phone or "")
+                loyalty_lookup = await lookup_cached_loyalty_info(
+                    r,
+                    config=load_amis_config(),
+                    phone=loyalty_phone,
+                )
+                final_reply, fallback_reason, source_id = _format_cfc_loyalty_lookup_reply(
+                    loyalty_lookup, loyalty_phone
                 )
             elif resumed_intent == "cfc_order_status_request":
                 lookup = await lookup_cached_order_status(
@@ -4945,7 +4980,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 and not any(k in norm_text for k in ["ship", "mo cua", "gia", "san pham", "mua", "dia chi", "hotline", "website", "doi tra"])
             )
             if is_pure_greeting:
-                greeting = "Dạ ZeO Vietnam chào bạn! Bạn đang cần tư vấn về nước giặt sinh học, nước rửa chén hay mua hàng ạ?" if brand == "zeo" else "Dạ phân bón Cò Bay (CFC) chào bạn! Bạn đang cần tư vấn phân bón cho cây lúa, cây ăn trái hay đại lý phân phối ạ?"
+                greeting = "Dạ ZeO Vietnam chào bạn! Bạn đang cần tư vấn về nước giặt sinh học, nước rửa chén hay mua hàng ạ?" if brand == "zeo" else "Dạ phân bón Cò Bay (CFC) chào  ạ! Bạn đang cần tư vấn phân bón cho cây lúa, cây ăn trái hay đại lý phân phối ạ?"
                 return _fast_response(greeting, "greeting", brand, start_time)
 
             # 2.5. Đồng ý nhận link sản phẩm khi lượt trước bot vừa hỏi 'Bạn muốn mình gửi link...'

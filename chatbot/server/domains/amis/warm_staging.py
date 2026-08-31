@@ -18,7 +18,9 @@ from .config import AmisConfig, load_amis_config
 from .service import AmisSyncSafetyError, sync_public_snapshots
 
 
-DATASET_NAMES = ("customers", "products", "sale_orders")
+REQUIRED_DATASET_NAMES = ("customers", "products", "sale_orders")
+OPTIONAL_DATASET_NAMES = ("loyalty_customers",)
+ALLOWED_DATASET_NAMES = (*REQUIRED_DATASET_NAMES, *OPTIONAL_DATASET_NAMES)
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{8,100}$")
 
 
@@ -35,12 +37,20 @@ def _normalise_plan(
     *,
     max_records: int,
 ) -> tuple[dict[str, int], dict[str, int]]:
-    if set(expected_counts) != set(DATASET_NAMES) or set(expected_chunks) != set(DATASET_NAMES):
+    count_names = set(expected_counts)
+    chunk_names = set(expected_chunks)
+    if count_names != chunk_names:
+        raise AmisSyncSafetyError("AMIS warm plan counts and chunks must contain the same datasets")
+    if not set(REQUIRED_DATASET_NAMES).issubset(count_names):
         raise AmisSyncSafetyError("AMIS warm plan must include customers, products and sale_orders")
+    if not count_names.issubset(set(ALLOWED_DATASET_NAMES)):
+        raise AmisSyncSafetyError("AMIS warm plan contains an unsupported dataset")
 
     counts: dict[str, int] = {}
     chunks: dict[str, int] = {}
-    for dataset in DATASET_NAMES:
+    for dataset in ALLOWED_DATASET_NAMES:
+        if dataset not in count_names:
+            continue
         try:
             count = int(expected_counts[dataset])
             chunk_count = int(expected_chunks[dataset])
@@ -77,7 +87,7 @@ async def stage_warm_chunk(
     """Store one bounded raw-data chunk without changing any active snapshot."""
     cfg = config or load_amis_config()
     run_id = _validate_run_id(run_id)
-    if dataset not in DATASET_NAMES:
+    if dataset not in ALLOWED_DATASET_NAMES:
         raise AmisSyncSafetyError("Unsupported AMIS warm dataset")
     if not isinstance(records, list) or not all(isinstance(item, dict) for item in records):
         raise AmisSyncSafetyError("AMIS warm chunk must contain object records")
@@ -159,7 +169,7 @@ async def commit_warm_run(
             raise AmisSyncSafetyError("AMIS warm run manifest is invalid") from exc
 
         raw_datasets: dict[str, list[dict[str, Any]]] = {}
-        for dataset in DATASET_NAMES:
+        for dataset in counts:
             collected: list[dict[str, Any]] = []
             for index in range(chunks[dataset]):
                 key = _chunk_key(cfg, run_id, dataset, index)

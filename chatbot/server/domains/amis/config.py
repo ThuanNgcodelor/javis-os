@@ -92,6 +92,14 @@ class AmisConfig:
     # replace a healthy private order cache.
     min_order_lookup_records: int = 100
     order_lookup_hmac_secret: str = field(default="", repr=False)
+    # Protected customer-loyalty projection. The Redis Hash key is an HMAC of
+    # the normalized phone; raw customer rows and raw phone numbers are not
+    # published to the active cache.
+    redis_loyalty_lookup_index_key: str = "amis:internal:loyalty:index:active"
+    redis_loyalty_lookup_metadata_key: str = "amis:internal:loyalty:last-success"
+    loyalty_lookup_max_age_seconds: int = 5400
+    min_loyalty_lookup_records: int = 100
+    loyalty_lookup_hmac_secret: str = field(default="", repr=False)
     internal_token: str = field(default="", repr=False)
     warehouse_location: str = "Tổng kho Nhà máy Cần Thơ (KCN Trà Nóc)"
 
@@ -119,6 +127,8 @@ class AmisConfig:
             "internal_token_configured": bool(self.internal_token),
             "order_lookup_enabled": bool(self.order_lookup_hmac_secret),
             "order_lookup_max_age_seconds": self.order_lookup_max_age_seconds,
+            "loyalty_lookup_enabled": bool(self.loyalty_lookup_hmac_secret),
+            "loyalty_lookup_max_age_seconds": self.loyalty_lookup_max_age_seconds,
             "warm_staging_ttl_seconds": self.warm_staging_ttl_seconds,
             "warm_staging_chunk_max_records": self.warm_staging_chunk_max_records,
             "warehouse_location": self.warehouse_location,
@@ -146,6 +156,10 @@ def load_amis_config() -> AmisConfig:
     # keeps the private cache usable during migration without storing a phone
     # number in Redis; the value is never exposed through status responses.
     order_lookup_hmac_secret = os.getenv("AMIS_ORDER_LOOKUP_HMAC_SECRET", "").strip() or client_secret
+    loyalty_lookup_hmac_secret = (
+        os.getenv("AMIS_LOYALTY_LOOKUP_HMAC_SECRET", "").strip()
+        or order_lookup_hmac_secret
+    )
 
     return AmisConfig(
         base_url=str(value("AMIS_BASE_URL", "base_url", AmisConfig.base_url)).rstrip("/"),
@@ -264,6 +278,39 @@ def load_amis_config() -> AmisConfig:
             1,
         ),
         order_lookup_hmac_secret=order_lookup_hmac_secret,
+        redis_loyalty_lookup_index_key=str(
+            value(
+                "AMIS_REDIS_LOYALTY_LOOKUP_INDEX_KEY",
+                "redis_loyalty_lookup_index_key",
+                AmisConfig.redis_loyalty_lookup_index_key,
+            )
+        ).strip(),
+        redis_loyalty_lookup_metadata_key=str(
+            value(
+                "AMIS_REDIS_LOYALTY_LOOKUP_METADATA_KEY",
+                "redis_loyalty_lookup_metadata_key",
+                AmisConfig.redis_loyalty_lookup_metadata_key,
+            )
+        ).strip(),
+        loyalty_lookup_max_age_seconds=_as_int(
+            value(
+                "AMIS_LOYALTY_LOOKUP_MAX_AGE_SECONDS",
+                "loyalty_lookup_max_age_seconds",
+                5400,
+            ),
+            5400,
+            60,
+        ),
+        min_loyalty_lookup_records=_as_int(
+            value(
+                "AMIS_MIN_LOYALTY_LOOKUP_RECORDS",
+                "min_loyalty_lookup_records",
+                100,
+            ),
+            100,
+            1,
+        ),
+        loyalty_lookup_hmac_secret=loyalty_lookup_hmac_secret,
         internal_token=internal_token,
         warehouse_location=str(
             value("AMIS_WAREHOUSE_DEFAULT", "warehouse_location", AmisConfig.warehouse_location)
