@@ -36,7 +36,7 @@ import { workflow, node, links } from '@n8n-as-code/transformer';
 @workflow({
     id: 'QLY0cLK5tqcx3KY6',
     name: 'AMIS CRM Full Warm — Redis Sync Every 1h',
-    active: false,
+    active: true,
     isArchived: false,
     settings: { timezone: 'Asia/Ho_Chi_Minh', executionOrder: 'v1', binaryMode: 'separate', availableInMCP: true },
 })
@@ -83,6 +83,9 @@ export class AmisCrmFullWarmRedisSyncEvery1hWorkflow {
 const BASE_URL = "https://crmconnect.misa.vn/api/v2";
 const CLIENT_ID = "JavisCFCChatbot";
 const CLIENT_SECRET = "Jb2wUAbsVytJpiaYAWAyaK8dKWBGsC7QB/cwvT62ZBQ=";
+const MAX_TRANSIENT_RETRIES = 5;
+const REQUEST_TIMEOUT_MS = 30000;
+const PAGE_GAP_MS = 250;
 
 if (!CLIENT_SECRET) {
   throw new Error(
@@ -93,37 +96,59 @@ if (!CLIENT_SECRET) {
 
 const helpers = this.helpers;
 
-let tokenRaw;
-try {
-  tokenRaw = await helpers.httpRequest({
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const errorText = (err) => String((err && err.message) || err || "unknown error");
+const isRetryable = (message) => /ECONNRESET|ECONNREFUSED|ETIMEDOUT|ESOCKETTIMEDOUT|socket hang up|network|timeout|\\b429\\b|\\b5\\d\\d\\b/i.test(message);
+const isUnauthorized = (message) => /\\b401\\b|unauthori[sz]ed|token.*expired/i.test(message);
+
+async function requestWithRetry(label, request) {
+  let lastError = null;
+  for (let attempt = 0; attempt < MAX_TRANSIENT_RETRIES; attempt++) {
+    try {
+      return await request();
+    } catch (err) {
+      lastError = err;
+      const message = errorText(err);
+      if (!isRetryable(message) || attempt + 1 >= MAX_TRANSIENT_RETRIES) {
+        throw new Error("[AMIS Warm] " + label + " failed after " + (attempt + 1) + " attempt(s): " + message);
+      }
+      const backoffMs = Math.min(15000, 1000 * Math.pow(2, attempt)) + Math.floor(Math.random() * 500);
+      console.warn("[AMIS Warm] " + label + " transient failure; retry " + (attempt + 2) + "/" + MAX_TRANSIENT_RETRIES + " in " + backoffMs + "ms: " + message);
+      await sleep(backoffMs);
+    }
+  }
+  throw new Error("[AMIS Warm] " + label + " failed: " + errorText(lastError));
+}
+
+async function authenticate() {
+  const tokenRaw = await requestWithRetry("Auth", () => helpers.httpRequest({
     method: "POST",
     url: BASE_URL + "/Account",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET }),
-  });
-} catch (err) {
-  throw new Error("[AMIS Warm] Auth failed: " + String(err.message || err));
+    timeout: REQUEST_TIMEOUT_MS,
+  }));
+  const tokenPayload = (typeof tokenRaw === "string") ? JSON.parse(tokenRaw) : tokenRaw;
+  let token = "";
+  if (typeof tokenPayload.data === "string") {
+    token = tokenPayload.data;
+  } else if (tokenPayload.data && typeof tokenPayload.data.access_token === "string") {
+    token = tokenPayload.data.access_token;
+  }
+  if (!token) {
+    throw new Error("[AMIS Warm] Empty token. AMIS response: " + JSON.stringify(tokenPayload).slice(0, 300));
+  }
+  return token;
 }
 
-const tokenPayload = (typeof tokenRaw === "string") ? JSON.parse(tokenRaw) : tokenRaw;
-let token = "";
-if (typeof tokenPayload.data === "string") {
-  token = tokenPayload.data;
-} else if (tokenPayload.data && typeof tokenPayload.data.access_token === "string") {
-  token = tokenPayload.data.access_token;
-}
-if (!token) {
-  throw new Error("[AMIS Warm] Empty token. AMIS response: " + JSON.stringify(tokenPayload).slice(0, 300));
-}
+let token = await authenticate();
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const AUTH_HEADERS = {
+const authHeaders = () => ({
   "Authorization": "Bearer " + token,
   "Clientid": CLIENT_ID,
   "Accept": "application/json",
   "Connection": "close",
-};
+});
 
 async function fetchAllPages(resource, maxPages) {
   const all = [];
@@ -137,31 +162,25 @@ async function fetchAllPages(resource, maxPages) {
       "&orderBy=modified_date&isDescending=true";
 
     let raw = null;
-    let lastError = null;
-
-    // Retry up to 3 times on socket reset (ECONNRESET) / network glitch
-    for (let attempt = 0; attempt < 3; attempt++) {
+    let refreshedToken = false;
+    while (true) {
       try {
-        raw = await helpers.httpRequest({
+        raw = await requestWithRetry(resource + " page " + page, () => helpers.httpRequest({
           method: "GET",
           url: url,
-          headers: AUTH_HEADERS,
-          timeout: 20000,
-        });
+          headers: authHeaders(),
+          timeout: REQUEST_TIMEOUT_MS,
+        }));
         break;
       } catch (err) {
-        lastError = err;
-        const msg = String(err.message || err);
-        if (msg.indexOf("401") !== -1 && page > 0) {
-          throw new Error("[AMIS Warm] Authentication expired while fetching " + resource + " page " + page + ".");
+        const message = errorText(err);
+        if (!refreshedToken && isUnauthorized(message)) {
+          token = await authenticate();
+          refreshedToken = true;
+          continue;
         }
-        // Pause and retry on ECONNRESET, timeout or 502/503/429
-        await sleep(500 * (attempt + 1));
+        throw err;
       }
-    }
-
-    if (!raw && lastError) {
-      throw new Error("[AMIS Warm] GET " + resource + " page " + page + " failed: " + String(lastError.message || lastError));
     }
 
     const payload = (typeof raw === "string") ? JSON.parse(raw) : raw;
@@ -196,8 +215,9 @@ async function fetchAllPages(resource, maxPages) {
     if (total !== null && typeof total === "number" && all.length >= total) break;
     if (records.length < PAGE_SIZE) break;
 
-    // Rate-limit buffer (100ms) to avoid tripping MISA AMIS firewall
-    await sleep(100);
+    // Deliberate gap reduces AMIS 429/socket-reset bursts without slowing the
+    // customer-facing lookup, which reads Redis rather than this workflow.
+    await sleep(PAGE_GAP_MS);
   }
   return all;
 }

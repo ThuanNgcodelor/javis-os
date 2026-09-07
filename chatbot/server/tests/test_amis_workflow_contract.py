@@ -22,7 +22,8 @@ class AmisWorkflowContractTests(unittest.TestCase):
     def test_full_warm_workflow_contract_and_security(self):
         source = WORKFLOW_FULL_WARM.read_text(encoding="utf-8")
 
-        self.assertIn("active: false", source)
+        # Live Full Warm is the sole hourly writer for private order snapshots.
+        self.assertIn("active: true", source)
         self.assertIn("/admin/amis/warm", source)
         self.assertIn("CLIENT_SECRET", source)
         # Verify no literal secret is hardcoded in git repo template
@@ -37,6 +38,9 @@ class AmisWorkflowContractTests(unittest.TestCase):
             "/admin/amis/warm/commit",
             "Prepare AMIS Warm Commit",
             "refusing a partial snapshot",
+            "MAX_TRANSIENT_RETRIES = 5",
+            "requestWithRetry",
+            "PAGE_GAP_MS = 250",
         ):
             self.assertIn(contract, source)
 

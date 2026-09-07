@@ -130,6 +130,9 @@ Hệ thống hỗ trợ chuyển đổi tức thì thông qua file `chatbot/serv
    - Bổ sung Guardrail: Cho phép AI trò chuyện tự nhiên (Chit-chat) nhưng nếu khách hỏi giá/sản phẩm chưa có trong CSDL thì AI khéo léo xin SĐT chứ không tự bịa giá.
 5. **Cơ chế Switch Mode Local / Cloud tức thì:**
    - Cập nhật `ai_engine.py` nhận diện `execution_mode: "cloud" | "local" | "auto"`.
+6. **AMIS order cache last-known-good:**
+   - Full Warm chỉ publish sau khi stage/commit đầy đủ; một execution lỗi không xoá snapshot đơn đang active.
+   - Protected order lookup dùng snapshot thành công gần nhất trong tối đa 12 giờ. Sau 12 giờ không có sync thành công, bot fail-closed thay vì trả trạng thái đơn quá cũ.
 6. **TC01/TC12 — Catalog-grounded price intake & dynamic agronomy retrieval:**
    - Câu hỏi giá CFC có sản phẩm/công thức rõ ràng đi thẳng danh mục AMIS public, hiển thị tối đa các tên/quy cách khớp rồi chỉ hỏi một lần các dữ kiện còn thiếu; không hiển thị mã nội bộ, giá hoặc tồn kho.
    - Câu nông học có crop + stage/symptom rõ ràng bỏ qua semantic planner/orchestrator, nhưng truy xuất động các FAQ `category=agronomy` theo nguyên câu hỏi và ngữ cảnh đã nhớ; không còn ánh xạ riêng TC12/sầu riêng sang intent hoặc công thức cố định trong code.

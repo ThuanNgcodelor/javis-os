@@ -101,6 +101,6 @@
     "min_public_locations": 1,
     "redis_order_lookup_key": "amis:internal:orders:active",
     "redis_order_lookup_metadata_key": "amis:internal:orders:last-success",
-    "order_lookup_max_age_seconds": 5400
+    "order_lookup_max_age_seconds": 43200
   }
 }

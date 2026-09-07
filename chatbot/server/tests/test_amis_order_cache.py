@@ -18,6 +18,7 @@ from domains.amis.order_cache import (  # noqa: E402
 
 
 NOW = datetime(2026, 8, 29, 8, 0, tzinfo=timezone.utc)
+ORDER_CACHE_MAX_AGE_SECONDS = 12 * 60 * 60
 
 
 class FakeRedis:
@@ -36,7 +37,7 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.config = AmisConfig(
             order_lookup_hmac_secret="unit-test-order-hmac",
-            order_lookup_max_age_seconds=5400,
+            order_lookup_max_age_seconds=ORDER_CACHE_MAX_AGE_SECONDS,
         )
         self.snapshot = build_order_lookup_snapshot(
             {
@@ -132,14 +133,26 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(wrong_phone["outcome"], "phone_mismatch")
         self.assertNotIn("status", wrong_phone)
 
-    async def test_stale_snapshot_is_not_used(self):
+    async def test_last_known_good_snapshot_is_usable_for_twelve_hours(self):
         redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})
         result = await lookup_cached_order_status(
             redis,
             config=self.config,
             order_code="DH-2026-889",
             phone="0901234567",
-            now=NOW + timedelta(seconds=5401),
+            now=NOW + timedelta(seconds=ORDER_CACHE_MAX_AGE_SECONDS),
+        )
+
+        self.assertEqual(result["outcome"], "found")
+
+    async def test_snapshot_older_than_twelve_hours_is_not_used(self):
+        redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})
+        result = await lookup_cached_order_status(
+            redis,
+            config=self.config,
+            order_code="DH-2026-889",
+            phone="0901234567",
+            now=NOW + timedelta(seconds=ORDER_CACHE_MAX_AGE_SECONDS + 1),
         )
 
         self.assertEqual(result["outcome"], "unavailable")

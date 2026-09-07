@@ -87,7 +87,11 @@ class AmisConfig:
     redis_warm_staging_prefix: str = "amis:internal:warm:stage"
     warm_staging_ttl_seconds: int = 7200
     warm_staging_chunk_max_records: int = 100
-    order_lookup_max_age_seconds: int = 5400
+    # Keep the last complete, ownership-protected order snapshot usable through
+    # intermittent AMIS/n8n failures.  The warm pipeline publishes atomically,
+    # so a failed run never overwrites this snapshot.  After 12 hours we fail
+    # closed rather than risk presenting an excessively old order status.
+    order_lookup_max_age_seconds: int = 43200
     # Refuse a suspiciously small warm result so a partial AMIS response cannot
     # replace a healthy private order cache.
     min_order_lookup_records: int = 100
@@ -268,8 +272,8 @@ def load_amis_config() -> AmisConfig:
             1,
         ),
         order_lookup_max_age_seconds=_as_int(
-            value("AMIS_ORDER_LOOKUP_MAX_AGE_SECONDS", "order_lookup_max_age_seconds", 5400),
-            5400,
+            value("AMIS_ORDER_LOOKUP_MAX_AGE_SECONDS", "order_lookup_max_age_seconds", 43200),
+            43200,
             60,
         ),
         min_order_lookup_records=_as_int(
