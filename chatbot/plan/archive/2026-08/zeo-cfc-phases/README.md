@@ -1,8 +1,10 @@
 # Bộ phase triển khai nâng cấp chatbot ZeO / CFC
 
+> **Lưu trữ (08/09/2026):** Chỉ dùng để xem lịch sử phase. Tài liệu hiện hành bắt đầu ở [plan/README.md](../../../README.md).
+
 Ngày tạo: 2026-08-28  
 Trạng thái chung: `PLANNED — CHƯA CODE, CHƯA DEPLOY`  
-Nguồn hiện trạng: [Audit live và kế hoạch tổng](../../PLAN_AUDIT_LIVE_VA_NANG_CAP_CHATBOT_ZEO_CFC_2026-08-28.md)
+Nguồn hiện trạng tại thời điểm đó: [Audit live và kế hoạch tổng](../historical-plans/PLAN_AUDIT_LIVE_VA_NANG_CAP_CHATBOT_ZEO_CFC_2026-08-28.md)
 
 ## 1. Mục đích
 
@@ -140,4 +142,3 @@ Chương trình chỉ hoàn tất khi:
 - paraphrase, follow-up, topic switch và tool failure đạt gate;
 - n8n không còn false-green cho lỗi pipeline;
 - rollout có canary, error budget và rollback đã thử.
-

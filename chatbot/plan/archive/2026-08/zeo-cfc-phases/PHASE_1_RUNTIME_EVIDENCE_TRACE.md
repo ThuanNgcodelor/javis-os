@@ -1,5 +1,7 @@
 # Phase 1 — Runtime manifest, provider trace và evidence contract
 
+> **Lưu trữ (08/09/2026):** Phase lịch sử; xem [plan/README.md](../../../README.md) để định hướng tài liệu hiện hành.
+
 Trạng thái: `BLOCKED — LOCAL IMPLEMENTATION COMPLETE; chờ canary/live evidence`
 Ưu tiên: P1, nền tảng cho source challenge và rollout  
 Ước lượng: 3–5 ngày  

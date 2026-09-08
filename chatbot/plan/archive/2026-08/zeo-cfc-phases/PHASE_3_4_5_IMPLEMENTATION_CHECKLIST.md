@@ -3,6 +3,8 @@
 
 # Checklist triển khai Phase 3–5 — 2026-08-29
 
+> **Lưu trữ (08/09/2026):** Checklist lịch sử; xem [plan/README.md](../../../README.md) để định hướng tài liệu hiện hành.
+
 Phạm vi checklist này phân biệt rõ **đã kiểm chứng local** với **cần quyết định nghiệp vụ/live**. Không mục nào bên dưới đồng nghĩa đã deploy production.
 
 ## Phase 3 — AMIS, phân quyền và freshness

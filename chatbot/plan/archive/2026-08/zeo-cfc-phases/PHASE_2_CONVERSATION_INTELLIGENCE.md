@@ -1,5 +1,7 @@
 # Phase 2 — QueryPlan v2, multi-intent, memory/reference và source challenge
 
+> **Lưu trữ (08/09/2026):** Phase lịch sử; xem [plan/README.md](../../../README.md) để định hướng tài liệu hiện hành.
+
 Trạng thái: `BLOCKED — LOCAL CORE IMPLEMENTED; chờ shadow/canary evidence`
 Ưu tiên: P2 sau nền an toàn/evidence  
 Ước lượng: 6–7 ngày  

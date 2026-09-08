@@ -137,7 +137,7 @@ Không mục nào dưới đây được xoá hoặc unpublish trong đợt lậ
 | `workflows/local-n8n/amis_crm_public_sync.workflow.ts` | Workflow public sync cũ/riêng, lịch 30 phút; Full Warm hiện cũng làm sync | **Archive/unpublish trước**, chưa xoá file | Full Warm chạy ổn tối thiểu 3 chu kỳ, catalog/dealer không mất và có đường rollback | Chờ duyệt; không xoá ngay. |
 | `chatbot/server/data/amis_real_crm_cache.json` | Cache legacy lớn, `live_crm.py` còn đọc | Chỉ retire sau migration | Audit toàn bộ caller, có nguồn thay thế và test regression | Không xoá. |
 | `chatbot/server/domains/amis/live_crm.py` | Có phần legacy đọc file cache; còn được `routes.py`/test tham chiếu | Refactor/tách dần, không xoá trực tiếp | Xác nhận module mới thay thế mọi capability, test pass | Không xoá. |
-| `chatbot/plan/zeo-cfc-phases/PHASE_0...PHASE_5...` | Tài liệu lịch sử/acceptance | Có thể **archive**, không delete | Bạn muốn gọn repo và đã giữ summary/handoff mới | Nên giữ, chưa xoá. |
+| `chatbot/plan/archive/2026-08/zeo-cfc-phases/` | Tài liệu lịch sử/acceptance | Đã **archive**, không delete | Giữ nguyên nội dung để đối chiếu, trong khi summary/handoff mới là nguồn hiện hành | Đã hoàn tất archive; không xoá. |
 | `chatbot/server/manual_tests/TEST_CFC_REAL_WORLD_PHASE_0_5.md` và `TEST_ZEO_REAL_WORLD_PHASE_0_5.md` | Regression test lịch sử | Giữ làm suite regression | Chỉ archive khi có suite thay thế đã chạy thực tế | Không xoá. |
 | `chatbot/server/manual_tests/TEST_DEMO.md` | File đang có thay đổi chưa commit của bạn | Không đụng | Chủ file tự duyệt nội dung demo | Tuyệt đối không xoá/sửa trong cleanup. |
 
@@ -154,4 +154,3 @@ Không mục nào dưới đây được xoá hoặc unpublish trong đợt lậ
 3. Làm Phase B và C, demo read-only/customer intake trên Page test.
 4. Duyệt mapping CRM với người quản trị AMIS rồi mới làm Phase D dry-run.
 5. Chạy bộ test mục 6; chỉ sau đó mới cho phép ghi CRM thật ở canary.
-

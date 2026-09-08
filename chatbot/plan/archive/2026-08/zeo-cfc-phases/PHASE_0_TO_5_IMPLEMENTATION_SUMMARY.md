@@ -1,5 +1,7 @@
 # Tổng kết triển khai ZeO/CFC — Phase 0 → 5
 
+> **Lưu trữ (08/09/2026):** Bản tổng kết lịch sử; xem [plan/README.md](../../../README.md) để định hướng tài liệu hiện hành.
+
 Ngày cập nhật: 2026-08-29  
 Phạm vi: local code/test; **chưa push Git, chưa bật canary, chưa tự deploy n8n production**.
 

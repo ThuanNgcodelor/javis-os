@@ -1,5 +1,7 @@
 # Phase 4 — Tri thức nông học được duyệt và có thể kiểm chứng
 
+> **Lưu trữ (08/09/2026):** Phase lịch sử; xem [plan/README.md](../../../README.md) để định hướng tài liệu hiện hành.
+
 Trạng thái: `IN PROGRESS — LOCAL FACT GATE DONE / TECHNICAL APPROVAL BLOCKED`
 Ưu tiên: P1 đối với CFC customer-facing agronomy  
 Ước lượng: 5–10 ngày kỹ thuật, cộng thời gian kỹ sư/phòng kỹ thuật duyệt  

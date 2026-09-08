@@ -1,5 +1,7 @@
 # Audit live và kế hoạch nâng cấp chatbot ZeO / CFC
 
+> **Lưu trữ (08/09/2026):** Tài liệu audit tại thời điểm 28/08/2026. Dùng để đối chiếu lịch sử; hiện trạng mới xem [plan/README.md](../../../README.md).
+
 Ngày kiểm tra: 2026-08-28  
 Phạm vi: Javis OS, FastAPI chatbot, n8n live, Redis, Google Sheet, dữ liệu local, AMIS CRM  
 Nguyên tắc của đợt kiểm tra: chỉ đọc trạng thái live; không sửa logic chatbot, không push/sync/activate/deactivate workflow.

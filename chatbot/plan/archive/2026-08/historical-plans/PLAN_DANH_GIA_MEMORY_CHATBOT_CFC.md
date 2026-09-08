@@ -1,5 +1,7 @@
 # Kế hoạch đánh giá Memory Chatbot CFC theo phạm vi Knowledge hiện có
 
+> **Lưu trữ (08/09/2026):** Kế hoạch lịch sử. Hiện trạng và bộ test hiện hành xem [plan/README.md](../../../README.md).
+
 **Ngày cập nhật:** 26/08/2026  
 **Phạm vi:** Chatbot CFC Cò Bay trên Facebook Messenger  
 **Nguồn Knowledge chuẩn:** `google_upload/cfc_faq_google_sheet_from_CfcCoBayN8n_2026_08_13.csv`  

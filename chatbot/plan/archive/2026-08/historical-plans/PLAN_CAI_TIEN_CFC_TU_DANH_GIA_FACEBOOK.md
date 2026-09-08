@@ -1,5 +1,7 @@
 # Kế hoạch cải tiến Chatbot CFC từ bộ đánh giá Facebook
 
+> **Lưu trữ (08/09/2026):** Kế hoạch lịch sử. Hiện trạng và bộ test hiện hành xem [plan/README.md](../../../README.md).
+
 **Ngày đối chiếu:** 26/08/2026  
 **Nguồn đánh giá:** `Bang_Danh_Gia_Chatbot_Facebook_AI.xlsx`  
 **Phạm vi:** Chatbot CFC Cò Bay, Messenger, FastAPI pipeline, memory, grounding và handoff  

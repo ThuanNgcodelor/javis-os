@@ -1,5 +1,7 @@
 # Phase 5 — Evaluation, shadow, canary và vận hành
 
+> **Lưu trữ (08/09/2026):** Phase lịch sử; xem [plan/README.md](../../../README.md) để định hướng tài liệu hiện hành.
+
 Trạng thái: `IN PROGRESS — LOCAL FOUNDATION DONE / NO LIVE CANARY OR N8N OPERATIONS ACTIVATED`
 Ưu tiên: bắt đầu dựng baseline song song Phase 0; rollout production thực hiện sau các phase liên quan  
 Ước lượng: 4–5 ngày dựng nền + 3–7 ngày lịch để đủ shadow/canary traffic  

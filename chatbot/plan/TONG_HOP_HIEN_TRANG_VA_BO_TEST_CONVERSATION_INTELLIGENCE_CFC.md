@@ -33,7 +33,7 @@ Phần này là bản tóm tắt ưu tiên để không nhầm giữa **đã s�
 | 4 — Approved agronomy | `approved_facts.json`, validator nguồn/approval/expiry, eligibility sầu riêng, expert handoff | Gate kỹ thuật local đã có; chưa có protocol liều lượng được kỹ sư duyệt để public |
 | 5 — Evaluation/canary | Replay manifest/scorer, redacted shadow v2, stable canary primitive, bộ test CFC/ZeO | Nền tảng local đã có; chưa bật shadow/canary production và chưa có baseline live được duyệt |
 
-Không phase nào được gọi là “hoàn tất production” chỉ dựa trên unit test. Các mục còn thiếu nằm trong [PHASE_3_4_5_IMPLEMENTATION_CHECKLIST.md](zeo-cfc-phases/PHASE_3_4_5_IMPLEMENTATION_CHECKLIST.md).
+Không phase nào được gọi là “hoàn tất production” chỉ dựa trên unit test. Các mục còn thiếu được lưu để đối chiếu tại [PHASE_3_4_5_IMPLEMENTATION_CHECKLIST.md](archive/2026-08/zeo-cfc-phases/PHASE_3_4_5_IMPLEMENTATION_CHECKLIST.md).
 
 ### 0.2 Những thay đổi code đã thực hiện
 

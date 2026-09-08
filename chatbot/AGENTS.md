@@ -1,10 +1,23 @@
 # 🤖 AGENTS.md — AI AGENT CONTEXT & OPERATIONAL GUIDELINES
 <!-- AI-CONTEXT-ROOT: chatbot/ -->
-<!-- LAST-UPDATED: 2026-08-28 -->
+<!-- LAST-UPDATED: 2026-09-08 -->
 
 > **DÀNH CHO AI / CODEX / COPILOT TIẾP THEO KHI MỞ THƯ MỤC NÀY:**
 > Bạn **BẮT BUỘC** phải đọc kỹ toàn bộ tài liệu này trước khi phân tích hoặc chỉnh sửa bất kỳ file nào trong `chatbot/`.
 > Mọi thay đổi lớn về kiến trúc hoặc tính năng sau phiên làm việc của bạn phải được **cập nhật bổ sung vào file này** để bảo toàn ngữ cảnh (Context Continuity).
+
+---
+
+## TÀI LIỆU MASTER — THỨ TỰ ĐỌC BẮT BUỘC
+
+Khi cần hiểu hiện trạng trước khi sửa code hoặc workflow, đọc theo thứ tự sau:
+
+1. [AGENTS.md](AGENTS.md) — quy tắc an toàn, kiến trúc và các thay đổi đã triển khai.
+2. [TAI_LIEU_HE_THONG_CFC_AI.md](TAI_LIEU_HE_THONG_CFC_AI.md) — tài liệu hệ thống/nghiệp vụ.
+3. [Tổng hợp hiện trạng & bộ test Conversation Intelligence](plan/TONG_HOP_HIEN_TRANG_VA_BO_TEST_CONVERSATION_INTELLIGENCE_CFC.md) — hiện trạng vận hành, giới hạn và cách test.
+4. [Plan khách hàng mới/cũ, tạo đơn CRM và dọn dẹp](PLAN_KHACH_HANG_MOI_CU_TAO_DON_CRM_VA_DON_DEP_2026-08-31.md) — backlog nghiệp vụ đang chờ duyệt.
+
+Các audit và phase lịch sử nằm tại [plan/archive/2026-08](plan/archive/2026-08/). Chúng chỉ dùng để đối chiếu, không thay thế nguồn hiện trạng ở trên.
 
 ---
 
@@ -30,12 +43,13 @@ chatbot/
 ├── AGENTS.md                      # [FILE NÀY] Ngữ cảnh & Cẩm nang bắt buộc cho AI
 ├── README.md                      # Tài liệu tổng quan tính năng & hướng dẫn chạy
 ├── Bao_Cao_Doi_Chieu_Khach_Hang.md # Báo cáo phân tích đối soát dữ liệu khách hàng
-├── PLAN_CAI_TIEN_CFC_...md       # Kế hoạch cải tiến chất lượng hội thoại
+├── TAI_LIEU_HE_THONG_CFC_AI.md  # Tài liệu hệ thống/nghiệp vụ hiện hành
+├── PLAN_KHACH_HANG_...md        # Backlog CRM hiện hành, chờ chủ hệ thống duyệt
 ├── knowledge/                     # Kho tri thức tĩnh (Static Knowledge Base)
 │   ├── cfc_faq.md                 # Bộ FAQ & kỹ thuật bón phân CFC Cò Bay
 │   ├── zeo_faq.md                 # Bộ FAQ sản phẩm & chính sách ZeO
 │   └── shopee_catalog.json        # Database cache sản phẩm Shopee Mall
-├── plan/                          # Tài liệu kế hoạch & lộ trình phát triển
+├── plan/                          # Index, hiện trạng/test và archive lịch sử
 ├── skills/                        # Các kỹ năng & tài liệu nghiệp vụ mở rộng
 └── server/                        # Backend FastAPI Lõi
     ├── main.py                    # Khởi tạo FastAPI App, Background Workers & Lifecycle

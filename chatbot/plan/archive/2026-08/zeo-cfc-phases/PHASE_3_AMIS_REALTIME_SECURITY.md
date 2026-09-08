@@ -1,5 +1,7 @@
 # Phase 3 — AMIS realtime, phân quyền và bảo mật
 
+> **Lưu trữ (08/09/2026):** Phase lịch sử; xem [plan/README.md](../../../README.md) để định hướng tài liệu hiện hành.
+
 Trạng thái: `IN PROGRESS — LOCAL FOUNDATION DONE / LIVE DECISIONS BLOCKED`
 Ưu tiên: P1 đối với bảo mật public sync; P2 đối với realtime capabilities  
 Ước lượng: 5–10 ngày kỹ thuật, chưa tính phê duyệt API/nghiệp vụ  

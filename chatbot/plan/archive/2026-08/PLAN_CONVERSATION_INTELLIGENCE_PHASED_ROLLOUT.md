@@ -1,5 +1,7 @@
 # Kế hoạch nâng cấp Conversation Intelligence đa luồng cho CFC/ZeO
 
+> **Lưu trữ (08/09/2026):** Roadmap lịch sử. Hiện trạng và backlog hiện hành xem [plan/README.md](../../README.md).
+
 **Ngày cập nhật:** 27/08/2026  
 **Phạm vi:** `chatbot/server`, bộ replay và regression tests  
 **Mục tiêu:** hiểu hội thoại nhiều lượt, giữ đúng output đã grounded, không để Ollama tự bịa dữ liệu nghiệp vụ.

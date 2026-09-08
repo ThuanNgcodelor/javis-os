@@ -1,5 +1,7 @@
 # Phase 0 — Containment, grounding và chặn rủi ro production
 
+> **Lưu trữ (08/09/2026):** Phase lịch sử; xem [plan/README.md](../../../README.md) để định hướng tài liệu hiện hành.
+
 Trạng thái: `BLOCKED — LOCAL IMPLEMENTATION COMPLETE; chờ quyết định AMIS/live canary`
 Ưu tiên: P0, blocking mọi phase customer-facing khác  
 Ước lượng: 1–2 ngày kỹ thuật; thao tác live cần phê duyệt riêng  
