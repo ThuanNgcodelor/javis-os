@@ -11,6 +11,7 @@ import yaml
 
 
 FAIL = []
+DEPLOY_DOCKER = ROOT / "deploy" / "docker"
 
 
 def check(label, ok):
@@ -20,7 +21,7 @@ def check(label, ok):
 
 
 def compose(name):
-    return yaml.safe_load((ROOT / name).read_text(encoding="utf-8"))
+    return yaml.safe_load((DEPLOY_DOCKER / name).read_text(encoding="utf-8"))
 
 
 hostinger = compose("docker-compose.hostinger.yml")["services"]["javis"]
@@ -49,9 +50,9 @@ internal = {
 check("Hostinger không lộ biến kỹ thuật", not (hostinger_env & internal))
 check(
     "Hostinger không tạo thêm trường COMPOSE_PROJECT_NAME",
-    "${COMPOSE_PROJECT_NAME" not in (ROOT / "docker-compose.hostinger.yml").read_text(encoding="utf-8"),
+    "${COMPOSE_PROJECT_NAME" not in (DEPLOY_DOCKER / "docker-compose.hostinger.yml").read_text(encoding="utf-8"),
 )
-hostinger_src = (ROOT / "docker-compose.hostinger.yml").read_text(encoding="utf-8")
+hostinger_src = (DEPLOY_DOCKER / "docker-compose.hostinger.yml").read_text(encoding="utf-8")
 hostinger_vars = set(re.findall(r"\$\{([A-Z0-9_]+)", hostinger_src))
 # Từ 0.26.22 có thêm HAI núm deploy để cài được nhiều bản Javis trên cùng một VPS: JAVIS_NAME
 # (tên container + tên router/service Traefik) và JAVIS_HOST_PORT (cổng máy chủ). Chúng KHÔNG
@@ -85,14 +86,14 @@ check(
 check("VPS production vẫn không lặp lại biến kỹ thuật của image", not (vps_env & internal))
 check(
     "và hai trường admin đọc từ .env cạnh compose, có mặc định rỗng",
-    "${JAVIS_ADMIN_USER:-}" in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
-    and "${JAVIS_ADMIN_PASSWORD:-}" in (ROOT / "docker-compose.yml").read_text(encoding="utf-8"),
+    "${JAVIS_ADMIN_USER:-}" in (DEPLOY_DOCKER / "docker-compose.yml").read_text(encoding="utf-8")
+    and "${JAVIS_ADMIN_PASSWORD:-}" in (DEPLOY_DOCKER / "docker-compose.yml").read_text(encoding="utf-8"),
 )
 
 build = compose("docker-compose.build.yml")["services"]["javis"]
 check("compose build không lặp mặc định Docker image", not build.get("environment"))
 
-dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+dockerfile = (DEPLOY_DOCKER / "Dockerfile").read_text(encoding="utf-8")
 for key in (
     "JAVIS_HOST=0.0.0.0",
     "JAVIS_PORT=7777",

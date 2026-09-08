@@ -26,8 +26,8 @@ def check(name, cond, them=""):
         _fails.append(name)
 
 
-WD = ROOT / "watchdog.sh"
-check("watchdog.sh tồn tại ở gốc repo (cạnh install.sh, update.sh)", WD.exists())
+WD = ROOT / "deploy" / "linux" / "watchdog.sh"
+check("watchdog.sh tồn tại trong deploy/linux", WD.exists())
 _syntax = subprocess.run(["bash", "-n", str(WD)], capture_output=True, text=True)
 check("cú pháp bash hợp lệ", _syntax.returncode == 0, _syntax.stderr)
 

@@ -35,8 +35,8 @@ def check(name, cond):
         _fails.append(name)
 
 
-EP = ROOT / "docker" / "entrypoint.sh"
-check("có docker/entrypoint.sh", EP.is_file())
+EP = ROOT / "deploy" / "docker" / "entrypoint.sh"
+check("có deploy/docker/entrypoint.sh", EP.is_file())
 check("entrypoint có quyền thực thi (git giữ bit +x)", os.access(EP, os.X_OK))
 
 
@@ -100,12 +100,12 @@ else:
               r4.returncode == 0 and "DA_CHAY" in r4.stdout)
 
 # ---- Dockerfile: codex hết best-effort + entrypoint được nối dây ----
-df = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+df = (ROOT / "deploy" / "docker" / "Dockerfile").read_text(encoding="utf-8")
 dong_codex = next((l for l in df.splitlines() if "npm install -g @openai/codex" in l), "")
 check("CANARY: cài codex KHÔNG còn nuốt lỗi (thiếu codex là build đỏ, hết ship image què)",
       dong_codex != "" and "||" not in dong_codex)
 check("codex --version vẫn là cổng kiểm sau cài", "codex --version" in df)
-check("ENTRYPOINT chạy qua entrypoint.sh", "/app/docker/entrypoint.sh" in df)
+check("ENTRYPOINT chạy qua entrypoint.sh", "/app/deploy/docker/entrypoint.sh" in df)
 
 # ---- Trang Models nói thật khi thiếu binary ----
 src = (SERVER / "main.py").read_text(encoding="utf-8")

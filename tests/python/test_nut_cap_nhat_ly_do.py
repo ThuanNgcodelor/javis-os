@@ -123,11 +123,11 @@ check("thiếu mã lý do vẫn có câu dự phòng",
 # ============================================================
 # Cả bản vá dựa trên sự thật này. Ngày nào ai đó bỏ profile đi thì lời khuyên trong app thành
 # sai, mà không có gì báo - nên canh thẳng vào file compose.
-COMPOSE = io.open(os.path.join(ROOT, "docker-compose.yml"), encoding="utf-8").read()
+COMPOSE = io.open(os.path.join(ROOT, "deploy", "docker", "docker-compose.yml"), encoding="utf-8").read()
 check("CANARY: watchtower vẫn nằm trong profiles [update]",
       re.search(r'watchtower:[\s\S]{0,400}profiles:\s*\["update"\]', COMPOSE) is not None)
 # Hostinger cố tình không có watchtower - nhánh no_token dựa vào đúng điều này.
-HOST = io.open(os.path.join(ROOT, "docker-compose.hostinger.yml"), encoding="utf-8").read()
+HOST = io.open(os.path.join(ROOT, "deploy", "docker", "docker-compose.hostinger.yml"), encoding="utf-8").read()
 check("CANARY: stack Hostinger vẫn không có service watchtower",
       re.search(r'^\s{2}watchtower:', HOST, re.M) is None)
 

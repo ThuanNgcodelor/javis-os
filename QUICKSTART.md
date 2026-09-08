@@ -24,15 +24,15 @@ Cập nhật bản mới: bấm **Redeploy** trong Docker Manager (image `:lates
 ## Cách 2 - Docker ở máy/VPS bất kỳ
 
 ```
-docker compose -f docker-compose.yml up -d
+docker compose -f deploy/docker/docker-compose.yml up -d
 ```
-Mở http://localhost:7777. Muốn HTTPS qua Caddy: thêm `-f docker-compose.https.yml`.
+Mở http://localhost:7777. Muốn HTTPS qua Caddy: thêm `-f deploy/docker/docker-compose.https.yml`.
 
 ## Cách 3 - Chạy trực tiếp (Windows, không Docker)
 
 1. Cài Python 3.12 + Node 22.
-2. Trong thư mục dự án: `setup.bat` một lần - tạo .venv, cài deps, và cài sẵn hai engine CLI (Claude Code, Codex).
-3. `start-javis.bat` để chạy nền (tắt: `stop-javis.bat`).
+2. Trong thư mục dự án: `deploy/windows/setup.bat` một lần - tạo .venv, cài deps, và cài sẵn hai engine CLI (Claude Code, Codex).
+3. Mở `deploy/windows/JAVIS OS.bat` để chạy nền.
 4. Mở http://localhost:7777.
 
 ## Sau khi chạy

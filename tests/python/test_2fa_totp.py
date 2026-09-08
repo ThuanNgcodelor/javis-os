@@ -286,7 +286,7 @@ check("CANARY: /auth/2fa/* KHÔNG nằm trong danh sách miễn đăng nhập",
       "2fa" not in _src[_src.index("_AUTH_PUBLIC_EXACT = "):_src.index("_AUTH_PUBLIC_EXACT = ") + 400])
 
 # install.sh chỉ ghi Ý ĐỊNH, không được tự bật 2FA (bật trước khi quét QR = tự khoá mình).
-_ins = (ROOT / "install.sh").read_text(encoding="utf-8")
+_ins = (ROOT / "deploy" / "linux" / "install.sh").read_text(encoding="utf-8")
 check("install.sh có hỏi bật 2FA", "JAVIS_SETUP_2FA" in _ins)
 check("CANARY: install.sh KHÔNG tự bật, chỉ ghi cờ gợi ý",
       "_env_set JAVIS_SETUP_2FA 1" in _ins and "totp" not in _ins.lower())

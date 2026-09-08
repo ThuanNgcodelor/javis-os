@@ -22,11 +22,12 @@ def check(ten, cond, them=""):
         _fails.append(ten)
 
 
-BAT = ROOT / "JAVIS OS.bat"
-AS_BAT = ROOT / "javis-autostart.bat"
-AS_PS1 = ROOT / "javis-autostart.ps1"
+DEPLOY_WINDOWS = ROOT / "deploy" / "windows"
+BAT = DEPLOY_WINDOWS / "JAVIS OS.bat"
+AS_BAT = DEPLOY_WINDOWS / "javis-autostart.bat"
+AS_PS1 = DEPLOY_WINDOWS / "javis-autostart.ps1"
 
-check("có JAVIS OS.bat ở gốc repo (đối xứng JAVIS OS.app bên Mac)", BAT.exists())
+check("có JAVIS OS.bat trong deploy/windows", BAT.exists())
 check("có javis-autostart.bat + .ps1", AS_BAT.exists() and AS_PS1.exists())
 
 bat = BAT.read_text(encoding="utf-8")

@@ -6,7 +6,10 @@
 services:
   javis:
     build:
-      context: .
+      # Dockerfile nằm trong deploy/, nhưng context phải là repository root để COPY
+      # requirements.txt, server/, dashboard/ và system/ vào image.
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
       args:
         CLAUDE_CLI_VERSION: ${CLAUDE_CLI_VERSION:-latest}
     image: ghcr.io/ThuanNgcodelor/javis-os:latest

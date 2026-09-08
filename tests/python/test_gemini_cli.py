@@ -641,8 +641,9 @@ try:
 finally:
     gemini_cli.find_gemini_cli = _that_find2
 
-for _f, _ten in ((ROOT / "Dockerfile", "Dockerfile"), (ROOT / "install.sh", "install.sh"),
-                 (ROOT / "setup.bat", "setup.bat")):
+for _f, _ten in ((ROOT / "deploy" / "docker" / "Dockerfile", "Dockerfile"),
+                 (ROOT / "deploy" / "linux" / "install.sh", "install.sh"),
+                 (ROOT / "deploy" / "windows" / "setup.bat", "setup.bat")):
     _txt = _f.read_text(encoding="utf-8")
     _dong_cai = [d for d in _txt.splitlines()
                  if "@google/gemini-cli" in d and not d.strip().startswith(("#", "REM"))]

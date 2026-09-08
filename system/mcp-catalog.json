@@ -1263,13 +1263,13 @@
           {
             "key": "host",
             "label": "Địa chỉ Host",
-            "placeholder": "127.0.0.1",
+            "placeholder": "Ví dụ: 127.0.0.1",
             "default": "127.0.0.1"
           },
           {
             "key": "port",
             "label": "Cổng Port",
-            "placeholder": "6379",
+            "placeholder": "Ví dụ: 6379",
             "default": "6379"
           },
           {
@@ -1281,22 +1281,23 @@
           {
             "key": "db",
             "label": "Database Index (0-15)",
-            "placeholder": "0",
+            "placeholder": "Ví dụ: 0",
             "default": "0"
           },
           {
             "key": "redis_url",
             "label": "Hoặc chuỗi URL kết nối đầy đủ (tuỳ chọn)",
-            "placeholder": "redis://:password@127.0.0.1:6379/0",
+            "placeholder": "Ví dụ: redis://:password@127.0.0.1:6379/0",
             "default": "redis://:crS9Lb7f%2FywrTCiRP22gc32QCLZpirWIkczbnhjYIdU1o02Z@127.0.0.1:6379/0",
             "optional": true
           }
         ],
-        "guide": "Hệ thống đã tự động điền sẵn toàn bộ thông số kết nối Redis local của bạn (Host, Port, Password, Database và URL đã mã hoá an toàn). Bạn có thể kiểm tra hoặc sửa đổi nếu muốn kết nối Redis khác, sau đó bấm Kết nối.",
+        "guide": "Hệ thống đã tự động điền sẵn thông số Redis local. Bạn có thể kiểm tra hoặc sửa đổi khi kết nối Redis khác.\n\nNếu dùng Redis local, giữ nguyên các ô rồi bấm Kết nối. Nếu là Redis từ xa/VPS, thay Host, Port, Password và Database theo thông tin máy chủ.",
         "steps": [
           { "text": "Hệ thống đã tự động điền sẵn Host (127.0.0.1), Port (6379) và mật khẩu bảo mật của bạn." },
           { "text": "Nếu bạn kết nối Redis local thì chỉ cần giữ nguyên các ô và bấm 'Kết nối'." },
-          { "text": "Nếu kết nối Redis từ xa/VPS, hãy thay đổi Host, Port và Password tương ứng." }
+          { "text": "Nếu kết nối Redis từ xa/VPS, hãy thay đổi Host, Port và Password tương ứng." },
+          { "text": "Chỉ cấp quyền cần thiết; không dùng lệnh xoá dữ liệu như flushdb hoặc flushall nếu chưa có bản sao lưu." }
         ]
       },
       "tool_meta": {

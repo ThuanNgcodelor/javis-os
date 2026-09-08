@@ -125,5 +125,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=25s --retries=3 \
 # (trước đây HOME không nằm trên volume nào → mỗi lần đổi image là cài + đăng nhập lại).
 # uvicorn launched with --app-dir server because main.py uses the "main:app" import
 # string and `from claude_cli import ...`.
-ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/app/deploy/docker/entrypoint.sh"]
 CMD ["sh", "-c", "python -m uvicorn main:app --app-dir server --host ${JAVIS_HOST} --port ${JAVIS_PORT}"]

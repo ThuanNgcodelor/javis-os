@@ -55,12 +55,20 @@ def expand(text, env):
     return _VAR.sub(_one, text)
 
 
+DEPLOY_DOCKER = ROOT / "deploy" / "docker"
+DEPLOY_LINUX = ROOT / "deploy" / "linux"
+
+
 def load(name, env=None):
-    return yaml.safe_load(expand((ROOT / name).read_text(encoding="utf-8"), env or {}))
+    return yaml.safe_load(expand((DEPLOY_DOCKER / name).read_text(encoding="utf-8"), env or {}))
 
 
 def src(name):
     return (ROOT / name).read_text(encoding="utf-8")
+
+
+def docker_src(name):
+    return (DEPLOY_DOCKER / name).read_text(encoding="utf-8")
 
 
 BAN2 = {"JAVIS_NAME": "javis-shop", "JAVIS_HOST_PORT": "7778",
@@ -132,16 +140,16 @@ check("multi: nhãn trỏ đúng cổng trong container",
 check("multi: KHÔNG khai lại ports (nối chồng là hai binding cùng một cổng)",
       "ports" not in msvc)
 check("multi: thu cổng về loopback bằng biến JAVIS_BIND ở file gốc",
-      "JAVIS_BIND" in src("docker-compose.yml") and "JAVIS_BIND" in src("docker-compose.multi.yml"))
+      "JAVIS_BIND" in docker_src("docker-compose.yml") and "JAVIS_BIND" in docker_src("docker-compose.multi.yml"))
 check("multi: thiếu DOMAIN_NAME thì báo lỗi rõ chứ không dựng site rỗng",
-      "${DOMAIN_NAME:?" in src("docker-compose.multi.yml"))
+      "${DOMAIN_NAME:?" in docker_src("docker-compose.multi.yml"))
 check("bản Caddy cũ nói rõ nó chỉ dành cho máy chạy MỘT bản",
-      "MỘT BẢN JAVIS" in src("docker-compose.https.yml"))
+      "MỘT BẢN JAVIS" in docker_src("docker-compose.https.yml"))
 
 # ============================================================
 # 4. Native: tên dịch vụ systemd + cổng đều theo bản
 # ============================================================
-ins = src("install.sh")
+ins = (DEPLOY_LINUX / "install.sh").read_text(encoding="utf-8")
 check("install.sh: tên dịch vụ lấy từ JAVIS_NAME", 'SVC="${JAVIS_NAME:-javis}"' in ins)
 check("install.sh: cổng lấy từ JAVIS_PORT", 'PORT="${JAVIS_PORT:-7777}"' in ins)
 check("install.sh: ghi unit theo tên bản, không đè javis.service",
@@ -150,7 +158,7 @@ check("install.sh: không còn --port 7777 đóng cứng", "--port 7777" not in 
 check("install.sh: chặn tên có ký tự lạ trước khi ghi vào /etc/systemd",
       "JAVIS_NAME chi duoc dung" in ins)
 
-upd = src("update.sh")
+upd = (DEPLOY_LINUX / "update.sh").read_text(encoding="utf-8")
 check("update.sh: đọc JAVIS_NAME từ .env của thư mục đang đứng", "JAVIS_NAME" in upd)
 check("update.sh: restart ĐÚNG dịch vụ của bản mình, không phải 'javis' cứng",
       'systemctl restart "$NAME"' in upd)

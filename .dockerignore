@@ -1,3 +1,4 @@
+# Build context is the repository root for deploy/docker/Dockerfile.
 # Keep build context small + never bake secrets/state into the image.
 # LƯU Ý: KHÔNG loại .claude/skills và system/ - đó là TẦNG HỆ THỐNG (skill/loop mặc định)
 # phải nằm trong image để update theo phiên bản.

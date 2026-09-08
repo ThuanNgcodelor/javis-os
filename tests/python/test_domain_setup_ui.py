@@ -17,8 +17,9 @@ MAIN = "\n".join(
     [(SERVER / "main.py").read_text(encoding="utf-8")]
     + [p.read_text(encoding="utf-8") for p in sorted((SERVER / "routes").glob("*.py"))]
 )
-HOSTINGER = (ROOT / "docker-compose.hostinger.yml").read_text(encoding="utf-8")
-VPS = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+DEPLOY_DOCKER = ROOT / "deploy" / "docker"
+HOSTINGER = (DEPLOY_DOCKER / "docker-compose.hostinger.yml").read_text(encoding="utf-8")
+VPS = (DEPLOY_DOCKER / "docker-compose.yml").read_text(encoding="utf-8")
 DOC = (ROOT / "docs" / "15-thuong-hieu-ten-mien.md").read_text(encoding="utf-8")
 
 fails = []

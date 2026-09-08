@@ -99,7 +99,7 @@ os.environ.pop("JAVIS_CODEX_SANDBOX", None)
 
 
 # ---- 3. Ảnh Docker phải THẬT SỰ tắt rào, không thì bản vá chỉ nằm trên giấy ----
-DOCKERFILE = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+DOCKERFILE = (ROOT / "deploy" / "docker" / "Dockerfile").read_text(encoding="utf-8")
 check("Dockerfile đặt JAVIS_CODEX_SANDBOX=off", "ENV JAVIS_CODEX_SANDBOX=off" in DOCKERFILE)
 check("Dockerfile nói rõ vì sao (bubblewrap không chạy nổi trong container)",
       "bubblewrap" in DOCKERFILE and "CAP_SYS_ADMIN" in DOCKERFILE)

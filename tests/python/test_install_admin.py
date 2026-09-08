@@ -32,11 +32,12 @@ def check(name, cond):
         _fails.append(name)
 
 
-SRC = (ROOT / "install.sh").read_text(encoding="utf-8")
+INSTALL = ROOT / "deploy" / "linux" / "install.sh"
+SRC = INSTALL.read_text(encoding="utf-8")
 
 # ---- 1. Cú pháp + hợp đồng của khối ----
 check("install.sh còn chạy được (bash -n)",
-      subprocess.run(["bash", "-n", str(ROOT / "install.sh")]).returncode == 0)
+      subprocess.run(["bash", "-n", str(INSTALL)]).returncode == 0)
 check("có khối đặt sẵn tài khoản quản trị", "JAVIS_ADMIN_PASSWORD" in SRC)
 check("KHÔNG dùng sed để ghi mật khẩu vào .env (mật khẩu chứa | & \\ \" ' là vỡ)",
       not re.search(r"sed .*JAVIS_ADMIN_PASSWORD", SRC))
