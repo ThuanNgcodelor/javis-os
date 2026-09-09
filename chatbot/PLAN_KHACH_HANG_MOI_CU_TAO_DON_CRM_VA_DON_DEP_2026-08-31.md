@@ -4,6 +4,8 @@
 **Phạm vi:** CFC trước, sau đó mới cân nhắc áp dụng cho ZeO  
 **Trạng thái:** Chờ chủ hệ thống duyệt. Tài liệu này **không cho phép xoá file, unpublish workflow, tạo khách hay tạo đơn**.
 
+**Kế hoạch tích hợp ngày 08/09/2026:** [CFC Agent và CRM trên Mac M4 16GB](plan/PLAN_CFC_AGENT_VA_CRM_2026-09-08.md) kết nối các Phase A–E và cleanup bên dưới với kiến trúc Agent, đánh giá Qwen 7B, xác minh khách cũ và chống tạo trùng CRM. Đây là đề xuất bổ sung; chưa mở quyền ghi hoặc triển khai live.
+
 ## 1. Mục tiêu nghiệp vụ
 
 Khi khách nhắn trên Page CFC, chatbot cần phân biệt được ba việc khác nhau:

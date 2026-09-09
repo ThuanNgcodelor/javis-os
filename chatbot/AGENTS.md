@@ -1,6 +1,6 @@
 # 🤖 AGENTS.md — AI AGENT CONTEXT & OPERATIONAL GUIDELINES
 <!-- AI-CONTEXT-ROOT: chatbot/ -->
-<!-- LAST-UPDATED: 2026-09-08 -->
+<!-- LAST-UPDATED: 2026-09-09 -->
 
 > **DÀNH CHO AI / CODEX / COPILOT TIẾP THEO KHI MỞ THƯ MỤC NÀY:**
 > Bạn **BẮT BUỘC** phải đọc kỹ toàn bộ tài liệu này trước khi phân tích hoặc chỉnh sửa bất kỳ file nào trong `chatbot/`.
@@ -13,9 +13,11 @@
 Khi cần hiểu hiện trạng trước khi sửa code hoặc workflow, đọc theo thứ tự sau:
 
 1. [AGENTS.md](AGENTS.md) — quy tắc an toàn, kiến trúc và các thay đổi đã triển khai.
-2. [TAI_LIEU_HE_THONG_CFC_AI.md](TAI_LIEU_HE_THONG_CFC_AI.md) — tài liệu hệ thống/nghiệp vụ.
-3. [Tổng hợp hiện trạng & bộ test Conversation Intelligence](plan/TONG_HOP_HIEN_TRANG_VA_BO_TEST_CONVERSATION_INTELLIGENCE_CFC.md) — hiện trạng vận hành, giới hạn và cách test.
-4. [Plan khách hàng mới/cũ, tạo đơn CRM và dọn dẹp](PLAN_KHACH_HANG_MOI_CU_TAO_DON_CRM_VA_DON_DEP_2026-08-31.md) — backlog nghiệp vụ đang chờ duyệt.
+2. [Master plan CFC AI Agent: hiện tại và tương lai](plan/MASTER_PLAN_CFC_AI_AGENT_HIEN_TAI_VA_TUONG_LAI_2026-09-09.md) — điểm vào dễ hiểu về luồng hệ thống, vai trò từng file, CRM đã có/chưa có và roadmap.
+3. [Phase roadmap nâng cấp không làm mất hệ thống cũ](plan/PHASE_ROADMAP_CFC_AI_AGENT_NANG_CAP_KHONG_MAT_HE_THONG_CU_2026-09-09.md) — thứ tự thực thi, dependency, nghiệm thu và rollback cho từng phase.
+4. [TAI_LIEU_HE_THONG_CFC_AI.md](TAI_LIEU_HE_THONG_CFC_AI.md) — tài liệu hệ thống/nghiệp vụ.
+5. [Tổng hợp hiện trạng & bộ test Conversation Intelligence](plan/TONG_HOP_HIEN_TRANG_VA_BO_TEST_CONVERSATION_INTELLIGENCE_CFC.md) — hiện trạng vận hành, giới hạn và cách test.
+6. [Plan khách hàng mới/cũ, tạo đơn CRM và dọn dẹp](PLAN_KHACH_HANG_MOI_CU_TAO_DON_CRM_VA_DON_DEP_2026-08-31.md) — backlog nghiệp vụ đang chờ duyệt.
 
 Các audit và phase lịch sử nằm tại [plan/archive/2026-08](plan/archive/2026-08/). Chúng chỉ dùng để đối chiếu, không thay thế nguồn hiện trạng ở trên.
 
@@ -31,7 +33,7 @@ Hệ thống `chatbot/` là **Nền tảng Quản trị & Trợ lý AI Bán hàn
 - **Fast-path (Deterministic & FSM)**: Dùng Regex & State Machine bóc tách SĐT, mã đơn, địa bàn với độ trễ <20ms, bảo toàn ngữ cảnh đa lượt.
 - **RAG & Vector Search**: Redis Stack Vector Search (1024 dims BGE-M3 / Semantic Text Search) tra cứu FAQ, quy trình kỹ thuật từ Google Sheets & Markdown.
 - **Single Brain AI Engine (`ai_engine.py`)**: Bộ não sinh câu trả lời tự nhiên, có Guardrails chống bịa đặt giá/chính sách, hỗ trợ Chit-chat tự nhiên.
-- **CRM Integration (`domains/amis/`)**: Tích hợp trực tiếp MISA AMIS CRM (Đơn hàng, Tích điểm, Đại lý phân phối).
+- **CRM Integration (`domains/amis/`)**: Đồng bộ dữ liệu đọc từ MISA AMIS thành public/protected warm cache cho sản phẩm, điểm bán, đơn hàng và loyalty. Customer-facing pipeline hiện chưa có API tạo khách hoặc tạo đơn AMIS.
 - **Control Center Dashboard (`static/`, `admin_routes.py`)**: UI quản trị Domain-Driven Design (DDD).
 
 ---
@@ -116,6 +118,9 @@ Hệ thống hỗ trợ chuyển đổi tức thì thông qua file `chatbot/serv
 ```
 
 ### Hướng Dẫn Switch Nhanh (Chỉ cần sửa 1 trường `execution_mode`):
+
+> **Hiệu chỉnh sau source audit 09/09/2026:** mô tả switch dưới đây áp dụng cho đường `generate_ai_text` của customer pipeline. `run_assistant_agent_chat` có nhánh Groq riêng khi tồn tại API key, nên chưa được coi là local-only theo cùng flag cho đến khi contract này được thống nhất và kiểm tra runtime.
+
 1. **Chế độ 100% Cloud (Khuyên dùng khi test / chạy thật):**
    - Đổi `"execution_mode": "cloud"`
    - Bot sẽ **chỉ** gọi Cloud API (ưu tiên `preferred_provider` -> fallback sang các cloud còn lại). Hoàn toàn **ngắt kết nối** với Ollama Local để tránh bị kéo chậm/treo do hết RAM máy.
@@ -138,10 +143,10 @@ Hệ thống hỗ trợ chuyển đổi tức thì thông qua file `chatbot/serv
 3. **Nâng cấp NLU & Xử lý số điện thoại:**
    - Bổ sung từ lóng `"ne", "day ne", "zalo"` vào regex bóc tách SĐT `_is_phone_only_submission`.
    - Khi khách cung cấp SĐT trong luồng tư vấn kỹ thuật bón phân, hệ thống giữ chặt ngữ cảnh `agronomy`, không bị nhảy nhầm sang tra cứu tích điểm (`loyalty_lookup`).
-4. **Mở khóa Trí thông minh & Giao tiếp (Phase 1):**
-   - Xóa bỏ rào cản "chặn AI khi không có facts" trong `reason_and_answer_cskh` (`ai_engine.py`).
-   - Xóa bỏ câu thông báo lỗi cứng nhắc của CFC trong `chat_pipeline.py`.
-   - Bổ sung Guardrail: Cho phép AI trò chuyện tự nhiên (Chit-chat) nhưng nếu khách hỏi giá/sản phẩm chưa có trong CSDL thì AI khéo léo xin SĐT chứ không tự bịa giá.
+4. **Grounding cho Trí thông minh & Giao tiếp (hiện trạng source 09/09/2026):**
+   - `reason_and_answer_cskh` hiện vẫn yêu cầu facts phù hợp trước khi sinh câu trả lời; mô tả lịch sử về việc xóa hoàn toàn gate này không còn đúng với source hiện hành.
+   - CFC dùng fast path/template/RAG có nguồn cho dữ kiện nghiệp vụ và fallback khi thiếu nguồn.
+   - Chit-chat có thể dùng model trong phạm vi an toàn; giá, sản phẩm, tồn kho, chính sách và dữ liệu CRM không được tự bịa.
 5. **Cơ chế Switch Mode Local / Cloud tức thì:**
    - Cập nhật `ai_engine.py` nhận diện `execution_mode: "cloud" | "local" | "auto"`.
 6. **AMIS order cache last-known-good:**

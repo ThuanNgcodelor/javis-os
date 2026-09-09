@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "signature": "fde953664cb8530f7ce05609a66dca4ec8a0f0f496a505b0193641dc0aac9b56",
+  "signature": "8789ef9a83ddda4db349403df83cfc0de5300f16e8843ed652a8d2b2d406a3f6",
   "n8nacVersion": "2.5.0",
-  "n8nVersion": "2.37.9",
-  "generatedAt": "2026-09-08T04:12:59.277Z",
+  "n8nVersion": "2.37.10",
+  "generatedAt": "2026-09-09T00:53:24.477Z",
   "reason": "sync-initialized"
 }
