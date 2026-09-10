@@ -58,6 +58,10 @@ def customer(account_number="KH001", approved=True):
         "shipping_ward": "Định Môn",
         "shipping_long": "105.6235",
         "shipping_lat": "10.1092",
+        # Current public-location contract requires the customer aggregate to
+        # confirm at least one order or positive sales in addition to a
+        # qualifying order row.
+        "number_orders": 1,
         "debt": 5000000,
         "tax_code": "SECRET",
         "inactive": False,
@@ -129,6 +133,7 @@ class AmisProjectionTests(unittest.TestCase):
         stale = order(order_date="2020-01-01")
         not_invoiced = order()
         not_invoiced["is_invoiced"] = False
+        not_invoiced["invoiced_amount"] = 0
 
         items, metrics = build_public_sales_locations(
             [customer()],
@@ -139,8 +144,20 @@ class AmisProjectionTests(unittest.TestCase):
         )
 
         self.assertEqual(items, [])
-        self.assertEqual(metrics["skipped_order_reasons"]["stale_order"], 1)
-        self.assertEqual(metrics["skipped_order_reasons"]["not_invoiced"], 1)
+        self.assertEqual(metrics["skipped_order_reasons"]["stale_order_over_recency_window"], 1)
+        self.assertEqual(metrics["skipped_order_reasons"]["zero_amount_or_not_invoiced"], 1)
+
+    def test_customer_without_sales_or_order_aggregate_is_not_published(self):
+        candidate = customer()
+        candidate["number_orders"] = 0
+        candidate["order_sales"] = 0
+
+        items, metrics = build_public_sales_locations(
+            [candidate], [order()], products(), self.config, now=NOW,
+        )
+
+        self.assertEqual(items, [])
+        self.assertEqual(metrics["skipped_customer_reasons"]["zero_sales_or_no_orders"], 1)
 
     def test_allowlist_can_approve_pilot_record_without_public_field(self):
         config = AmisConfig(
@@ -212,4 +229,3 @@ class AmisProjectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

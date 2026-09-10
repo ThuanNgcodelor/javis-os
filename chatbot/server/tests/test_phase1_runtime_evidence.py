@@ -16,7 +16,7 @@ from evidence_trace import (  # noqa: E402
     latest_provider_trace,
     record_provider_attempt,
 )
-from runtime_manifest import _redact_config, get_runtime_manifest  # noqa: E402
+from runtime_manifest import _redact_config, build_runtime_manifest, get_runtime_manifest  # noqa: E402
 
 
 class FakeRedis:
@@ -38,6 +38,12 @@ class PhaseOneRuntimeEvidenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manifest_one["runtime_manifest_id"], manifest_two["runtime_manifest_id"])
         self.assertNotIn("super-secret", str(manifest_one))
         self.assertIn("chatbot/server/chat_pipeline.py", manifest_one["files"])
+
+    def test_manifest_id_is_stable_across_process_start_times(self):
+        first = build_runtime_manifest(started_at="2026-09-09T00:00:00+00:00")
+        second = build_runtime_manifest(started_at="2026-09-09T01:00:00+00:00")
+        self.assertNotEqual(first["started_at"], second["started_at"])
+        self.assertEqual(first["runtime_manifest_id"], second["runtime_manifest_id"])
 
     async def test_trace_never_treats_model_as_evidence_or_keeps_phone_plaintext(self):
         token = begin_request_trace()

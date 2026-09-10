@@ -20,12 +20,13 @@ Nhánh Web chỉ được dùng khi khách hỏi trực tiếp; chưa nằm tron
 ```bash
 cd /Users/hyden/Documents/David-nguyen/javis-os
 LLM_NLU_MODE=off .venv/bin/python -m unittest discover -s chatbot/server/tests -p 'test_*.py' -v
-LLM_NLU_MODE=off .venv/bin/python chatbot/server/conversation_replay_eval.py
+LLM_NLU_MODE=off CHAT_CONVERSATION_MODE=off \
+  .venv/bin/python chatbot/server/conversation_replay_eval.py --validation-mode redis_integration
 npx n8nac skills validate workflows/local-n8n/zeo_chatbot.workflow.ts
 npx n8nac skills validate workflows/local-n8n/cfc_cobay_chatbot.workflow.ts
 ```
 
-Replay dùng sender/message ID riêng và tự dọn session test. NLU vẫn ở `shadow`; grounding policy ở `audit`.
+Replay dùng namespace `eval-replay:<run_id>:` riêng cho từng lần chạy, chỉ dọn đúng session test và chặn Telegram trong context evaluation. Report luôn ghi đúng dataset/runtime manifest và validation mode. NLU runtime vẫn có thể cấu hình `shadow`; lệnh baseline ở trên cố định cả hai planner ở `off` để kết quả có thể so sánh.
 
 ## Cài đặt
 

@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from evaluation_safety import external_side_effects_allowed
+
 
 logger = logging.getLogger(__name__)
 _shadow_tasks: set[asyncio.Task] = set()
@@ -544,6 +546,8 @@ def schedule_conversation_shadow(
     deterministic_plan: dict[str, Any],
 ) -> str:
     """Run the new planner in the background; it cannot affect the response."""
+    if not external_side_effects_allowed():
+        return "blocked_evaluation"
     cfg = _shadow_config()
     sample_key = message_id or f"{brand}:{sender_id}:{user_query}"
     if not _sample_selected(sample_key, cfg["sample_rate"]):

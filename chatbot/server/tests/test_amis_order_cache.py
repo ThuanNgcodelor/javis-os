@@ -133,6 +133,21 @@ class AmisOrderCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(wrong_phone["outcome"], "phone_mismatch")
         self.assertNotIn("status", wrong_phone)
 
+    async def test_missing_input_and_cache_failure_fail_closed(self):
+        missing = await lookup_cached_order_status(
+            FakeRedis({}), config=self.config, order_code="", phone="0901234567", now=NOW
+        )
+
+        class BrokenRedis:
+            async def get(self, _key):
+                raise ConnectionError("cache unavailable")
+
+        unavailable = await lookup_cached_order_status(
+            BrokenRedis(), config=self.config, order_code="DH-2026-889", phone="0901234567", now=NOW
+        )
+        self.assertEqual(missing["outcome"], "missing_input")
+        self.assertEqual(unavailable, {"outcome": "unavailable", "reason": "ORDER_CACHE_READ_FAILED"})
+
     async def test_last_known_good_snapshot_is_usable_for_twelve_hours(self):
         redis = FakeRedis({self.config.redis_order_lookup_key: json.dumps(self.snapshot)})
         result = await lookup_cached_order_status(

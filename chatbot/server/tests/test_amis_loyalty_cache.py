@@ -96,6 +96,21 @@ class AmisLoyaltyCacheTests(unittest.IsolatedAsyncioTestCase):
         result = await self._lookup(snapshot, "0388509046")
         self.assertEqual(result["outcome"], "not_found")
 
+    async def test_missing_input_and_cache_failure_fail_closed(self):
+        missing = await lookup_cached_loyalty_info(
+            FakeRedis(), config=self.config, phone="", now=NOW
+        )
+
+        class BrokenRedis:
+            async def get(self, _key):
+                raise ConnectionError("cache unavailable")
+
+        unavailable = await lookup_cached_loyalty_info(
+            BrokenRedis(), config=self.config, phone="0976000085", now=NOW
+        )
+        self.assertEqual(missing["outcome"], "missing_input")
+        self.assertEqual(unavailable, {"outcome": "unavailable", "reason": "LOYALTY_CACHE_READ_FAILED"})
+
     async def test_stale_snapshot_is_unavailable_not_not_found(self):
         old = NOW - timedelta(hours=2)
         snapshot = self._snapshot(

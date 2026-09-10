@@ -2,7 +2,7 @@
 
 Ngày lập: 09/09/2026. Tài liệu nguồn: [Master plan CFC AI Agent](MASTER_PLAN_CFC_AI_AGENT_HIEN_TAI_VA_TUONG_LAI_2026-09-09.md).
 
-Trạng thái chung: `PLANNED — CHƯA TRIỂN KHAI CÁC PHASE MỚI`.
+Trạng thái chung: `PHASE 0 LOCAL_COMPLETE — SẴN SÀNG TRIỂN KHAI PHASE 1 LOCAL`.
 
 Mục tiêu: chia chương trình nâng cấp thành các phần nhỏ có thể hoàn thiện, kiểm tra và rollback độc lập. Hệ thống hiện tại tiếp tục hoạt động trong suốt quá trình; tính năng mới chỉ thay thế đường cũ sau khi chứng minh tốt hơn.
 
@@ -89,6 +89,8 @@ Một phase không được đánh dấu `DONE` chỉ vì viết xong code.
 ## 5. Phase 0 — Đóng băng hành vi và dựng hàng rào
 
 Khả năng hoàn thiện trước: **cao nhất**. Phạm vi local, không cần thay live.
+
+Trạng thái ngày 09/09/2026: `LOCAL_COMPLETE`. Contract, dataset/runtime manifest và replay isolation đã triển khai; 63/63 test mục tiêu và full suite 247/247 pass. Redis replay đạt 11/19 case, 24/36 turn với source coverage 100%; tám case chưa đạt được giữ nguyên làm baseline cho Phase 1–2, chưa đủ điều kiện shadow/canary. Xem [báo cáo baseline Phase 0](PHASE_0_BASELINE_REPORT_2026-09-09.md).
 
 ### Mục tiêu
 

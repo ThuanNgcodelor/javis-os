@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 from ai_engine import plan_chat_intent_with_ai
 from evaluation_ops import append_shadow_event, build_shadow_event
+from evaluation_safety import external_side_effects_allowed
 from rag_search import get_redis
 
 
@@ -216,6 +217,8 @@ def schedule_nlu_shadow(
     confidence_threshold: float,
 ) -> str:
     """Schedule one non-blocking shadow observation and return its scheduling status."""
+    if not external_side_effects_allowed():
+        return "blocked_evaluation"
     cfg = _shadow_config()
     sample_key = message_id or f"{brand}:{sender_id}:{raw_text}"
     if not _sample_selected(sample_key, cfg["sample_rate"]):

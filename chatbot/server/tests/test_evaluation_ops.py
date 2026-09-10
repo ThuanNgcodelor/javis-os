@@ -38,10 +38,23 @@ class EvaluationOpsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "cases.jsonl"
             path.write_text('{"id":"case","turns":[]}\n', encoding="utf-8")
-            report = evaluation_report_envelope({"generated_at": "2026-08-29T00:00:00Z"}, dataset_paths=[path], validation_mode="unit")
-        self.assertEqual(report["validation_mode"], "unit")
+            report = evaluation_report_envelope(
+                {"generated_at": "2026-08-29T00:00:00Z"},
+                dataset_paths=[path],
+                validation_mode="unit_static",
+            )
+        self.assertEqual(report["validation_mode"], "unit_static")
         self.assertIn("runtime_manifest_id", report["runtime_manifest"])
         self.assertTrue(report["report_id"].startswith("eval:"))
+
+    def test_report_rejects_unclassified_validation_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cases.jsonl"
+            path.write_text('{"id":"case","turns":[]}\n', encoding="utf-8")
+            with self.assertRaises(ValueError):
+                evaluation_report_envelope(
+                    {}, dataset_paths=[path], validation_mode="looks_good_locally"
+                )
 
     def test_shadow_event_has_no_raw_query_or_phone(self):
         event = build_shadow_event(

@@ -54,6 +54,7 @@ from evidence_trace import (
     build_answer_trace,
     end_request_trace,
 )
+from evaluation_safety import external_side_effects_allowed
 from grounding_policy import assess_grounding
 from message_idempotency import begin_message, complete_message, release_message
 from rag_search import get_redis, get_faq_by_intent, get_knowledge_runtime_status, semantic_search, refresh_knowledge_cache
@@ -6631,6 +6632,8 @@ def _fast_response(answer: str, intent: str, brand: str, start_time: float, lead
 
 async def _async_save_profile_and_notify(brand: str, sender_id: str, profile: dict, phone: str, area: str, fb_name: str, need: str):
     """Cập nhật Redis profile và gửi thông báo Telegram trong nền."""
+    if not external_side_effects_allowed():
+        return
     try:
         r = await get_redis()
         customer_key = f"{brand}:customer:messenger:{sender_id}"
@@ -6650,6 +6653,8 @@ async def _async_save_profile_and_notify(brand: str, sender_id: str, profile: di
 
 async def _async_update_customer_profile(*, brand: str, sender_id: str, profile: dict[str, Any]) -> None:
     """Persist an explicit profile edit without emitting a new-lead notification."""
+    if not external_side_effects_allowed():
+        return
     try:
         r = await get_redis()
         customer_key = f"{brand}:customer:messenger:{sender_id}"

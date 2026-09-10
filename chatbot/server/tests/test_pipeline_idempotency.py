@@ -80,6 +80,64 @@ class PipelineIdempotencyTests(unittest.IsolatedAsyncioTestCase):
         execute_once.assert_awaited_once()
         self.assertEqual(len(redis_client.lists["zeo:history:messenger:sender-1"]), 1)
 
+    async def test_same_text_with_different_message_ids_executes_twice(self):
+        redis_client = FakeRedis()
+        execute_once = AsyncMock(side_effect=[
+            ChatPipelineResponse(
+                answer="Hotline ZeO 1900 5307", intent="company_contact_information",
+                confidence="high", score=1.0, brand="ZEO",
+            ),
+            ChatPipelineResponse(
+                answer="Hotline ZeO 1900 5307", intent="company_contact_information",
+                confidence="high", score=1.0, brand="ZEO",
+            ),
+        ])
+        first_request = ChatPipelineRequest(
+            brand="zeo", sender_id="sender-repeat", text="Cho mình xin hotline", message_id="mid-a",
+        )
+        second_request = ChatPipelineRequest(
+            brand="zeo", sender_id="sender-repeat", text="Cho mình xin hotline", message_id="mid-b",
+        )
+
+        with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=redis_client)), \
+                patch("chat_pipeline._process_chat_pipeline_once", execute_once):
+            first = await process_chat_pipeline(first_request)
+            second = await process_chat_pipeline(second_request)
+
+        self.assertFalse(first.duplicate)
+        self.assertFalse(second.duplicate)
+        self.assertEqual(execute_once.await_count, 2)
+        self.assertEqual(len(redis_client.lists["zeo:history:messenger:sender-repeat"]), 2)
+
+    async def test_same_message_id_is_isolated_by_brand_and_sender_state_by_both(self):
+        redis_client = FakeRedis()
+
+        async def execute(request):
+            return ChatPipelineResponse(
+                answer=f"{request.brand}:{request.sender_id}",
+                intent="greeting",
+                confidence="high",
+                score=1.0,
+                brand=request.brand.upper(),
+            )
+
+        requests = (
+            ChatPipelineRequest(brand="zeo", sender_id="same-sender", text="Alo", message_id="same-mid"),
+            ChatPipelineRequest(brand="cfc", sender_id="same-sender", text="Alo", message_id="same-mid"),
+            ChatPipelineRequest(brand="zeo", sender_id="sender-a", text="Alo", message_id="mid-a"),
+            ChatPipelineRequest(brand="zeo", sender_id="sender-b", text="Alo", message_id="mid-b"),
+        )
+
+        with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=redis_client)), \
+                patch("chat_pipeline._process_chat_pipeline_once", new=AsyncMock(side_effect=execute)) as execute_once:
+            responses = [await process_chat_pipeline(request) for request in requests]
+
+        self.assertEqual(execute_once.await_count, 4)
+        self.assertTrue(all(not response.duplicate for response in responses))
+        for request in requests:
+            key = f"{request.brand}:session:messenger:{request.sender_id}"
+            self.assertEqual(chat_pipeline._local_session_cache[key]["sender_id"], request.sender_id)
+
     async def test_in_flight_duplicate_is_not_executed(self):
         redis_client = FakeRedis()
         request = ChatPipelineRequest(

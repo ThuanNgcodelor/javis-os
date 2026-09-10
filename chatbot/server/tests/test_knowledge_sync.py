@@ -215,6 +215,26 @@ class StrictHotCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["intent"] for item in rag_search._knowledge_items["cfc"]], ["public_faq"])
         self.assertEqual(set(rag_search._intent_map["cfc"]), {"public_faq"})
 
+    async def test_admin_refresh_replaces_a_hot_cache_without_serving_old_answer(self):
+        rag_search._knowledge_items["cfc"] = [{
+            "intent": "public_faq", "answer": "old answer", "active": True,
+            "audience": "customer", "source_id": "old:faq",
+        }]
+        rag_search._intent_map["cfc"] = {
+            "public_faq": rag_search._knowledge_items["cfc"][0]
+        }
+        updated = _active_item("public_faq")
+        updated["answer"] = "new approved answer"
+        updated["source_id"] = "admin:approved:v2"
+        fake = FakeRedis(_snapshot(updated))
+
+        with patch("rag_search.get_redis", new=AsyncMock(return_value=fake)), \
+                patch("rag_search._load_settings", return_value=CFG):
+            await rag_search.refresh_knowledge_cache("cfc", strict=True)
+
+        self.assertEqual(rag_search._intent_map["cfc"]["public_faq"]["answer"], "new approved answer")
+        self.assertEqual(rag_search._intent_map["cfc"]["public_faq"]["source_id"], "admin:approved:v2")
+
     async def test_strict_invalid_snapshot_keeps_previous_cache(self):
         rag_search._knowledge_items["cfc"] = [{"intent": "old", "answer": "old answer"}]
         rag_search._intent_map["cfc"] = {"old": rag_search._knowledge_items["cfc"][0]}

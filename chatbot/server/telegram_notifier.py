@@ -14,6 +14,8 @@ from typing import Optional
 
 import httpx
 
+from evaluation_safety import external_side_effects_allowed
+
 logger = logging.getLogger(__name__)
 
 _settings: dict = {}
@@ -42,6 +44,12 @@ async def send_telegram_message(
     parse_mode: str = "HTML",
 ) -> dict:
     """Gửi tin nhắn bất kỳ qua Telegram Bot API."""
+    if not external_side_effects_allowed():
+        return {
+            "success": False,
+            "skipped": True,
+            "reason": "EVALUATION_EXTERNAL_SIDE_EFFECT_BLOCKED",
+        }
     cfg = _telegram_cfg()
     token = bot_token or cfg.get("bot_token", "")
     target_chat = chat_id or cfg.get("chat_id", "")
@@ -163,4 +171,3 @@ async def test_telegram(bot_token: str, chat_id: str) -> dict:
     """Gửi tin nhắn kiểm thử kết nối Telegram."""
     test_msg = "⚡ <b>CFC AI Test Notification</b>\n\nKết nối Telegram Bot thành công! Bạn sẽ nhận được thông báo Lead và Báo cáo tại đây."
     return await send_telegram_message(test_msg, bot_token=bot_token, chat_id=chat_id)
-

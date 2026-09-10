@@ -23,6 +23,14 @@ EVALUATION_SCHEMA_VERSION = 1
 SHADOW_EVENT_SCHEMA_VERSION = 2
 CANARY_POLICY_VERSION = "phase5.canary.v1"
 _SERVER_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SERVER_DIR.parents[1]
+VALIDATION_MODES = frozenset({
+    "unit_static",
+    "pipeline_fixture",
+    "ollama_local",
+    "redis_integration",
+    "live_canary",
+})
 _HIGH_RISK_CAPABILITIES = {
     "order_status", "inventory", "price", "discount", "loyalty", "agronomy_protocol",
 }
@@ -91,8 +99,12 @@ def build_dataset_manifest(paths: Iterable[Path | str]) -> dict[str, Any]:
                 raise ValueError(f"Duplicate evaluation case id: {case_id}")
             seen_case_ids.add(case_id)
             case_ids.append(case_id)
+        try:
+            display_path = path.resolve().relative_to(_REPO_ROOT.resolve()).as_posix()
+        except ValueError:
+            display_path = path.name
         datasets.append({
-            "path": path.name,
+            "path": display_path,
             "sha256": _sha256(content),
             "case_count": len(case_ids),
             "case_id_hash": _sha256(_canonical(sorted(case_ids))),
@@ -106,6 +118,9 @@ def evaluation_report_envelope(
     report: dict[str, Any], *, dataset_paths: Iterable[Path | str], validation_mode: str,
 ) -> dict[str, Any]:
     """Attach reproducibility metadata to an offline/replay report."""
+    if validation_mode not in VALIDATION_MODES:
+        allowed = ", ".join(sorted(VALIDATION_MODES))
+        raise ValueError(f"Unsupported validation_mode={validation_mode!r}; expected one of: {allowed}")
     payload = dict(report)
     payload["schema_version"] = EVALUATION_SCHEMA_VERSION
     payload["validation_mode"] = validation_mode
