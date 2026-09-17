@@ -17,6 +17,29 @@ class FakeRedis:
         return None
 
 
+class MutableFakeRedis:
+    def __init__(self):
+        self.values = {}
+
+    async def get(self, key):
+        return self.values.get(key)
+
+    async def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
+    async def delete(self, key):
+        self.values.pop(key, None)
+
+    async def eval(self, _script, _numkeys, key, token):
+        if self.values.get(key) == token:
+            self.values.pop(key, None)
+            return 1
+        return 0
+
+
 class HandoffFlowTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         chat_pipeline._local_session_cache.clear()
@@ -46,6 +69,63 @@ class HandoffFlowTests(unittest.IsolatedAsyncioTestCase):
         ]["conversation_state"]
         self.assertEqual(state["takeover_state"]["status"], "pending")
         self.assertEqual(state["takeover_state"]["reason"], "human_handoff_requested")
+
+    async def test_claimed_human_conversation_stays_silent(self):
+        key = "cfc:session:messenger:claimed-user"
+        state = chat_pipeline._default_conversation_state("cfc")
+        state["takeover_state"] = {
+            "status": "human", "owner": "admin-7", "reason": "admin_claimed",
+        }
+        chat_pipeline._local_session_cache[key] = {"conversation_state": state}
+
+        with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=FakeRedis())), \
+                patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)):
+            result = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc", sender_id="claimed-user", text="Mình gửi thêm hình sau nha",
+            ))
+
+        self.assertEqual(result.intent, "human_handoff_active")
+        self.assertTrue(result.suppress_send)
+
+    async def test_admin_can_claim_and_close_takeover_state(self):
+        redis = MutableFakeRedis()
+        with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=redis)):
+            claimed = await chat_pipeline.set_conversation_takeover_state(
+                brand="cfc", sender_id="admin-control-user", status="human",
+                admin_id="admin-7", reason="picked_up_from_inbox",
+            )
+            closed = await chat_pipeline.set_conversation_takeover_state(
+                brand="cfc", sender_id="admin-control-user", status="closed",
+                admin_id="admin-7", reason="resolved",
+            )
+
+        self.assertEqual(claimed["status"], "human")
+        self.assertEqual(claimed["owner"], "admin-7")
+        self.assertEqual(closed["status"], "closed")
+        state = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:admin-control-user"
+        ]["conversation_state"]
+        self.assertEqual(state["takeover_state"]["reason"], "resolved")
+
+    async def test_cfc_sales_request_then_phone_keeps_purchase_goal(self):
+        with patch("chat_pipeline.get_redis", new=AsyncMock(return_value=FakeRedis())), \
+                patch("chat_pipeline._async_save_profile_and_notify", new=AsyncMock()), \
+                patch("chat_pipeline._llm_nlu_config", return_value=("off", 0.3, 0.72)):
+            first = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc", sender_id="cfc-sales-user",
+                text="Mình ở Hậu Giang, cần nhập phân, nhờ add tư vấn.",
+            ))
+            second = await process_chat_pipeline(ChatPipelineRequest(
+                brand="cfc", sender_id="cfc-sales-user", text="0783456199",
+            ))
+
+        self.assertEqual(first.intent, "cfc_purchase_request")
+        self.assertEqual(second.intent, "cfc_purchase_request")
+        self.assertNotIn("Khuyến nông", second.answer)
+        state = chat_pipeline._local_session_cache[
+            "cfc:session:messenger:cfc-sales-user"
+        ]["conversation_state"]
+        self.assertEqual(state["active_goal"]["name"], "purchase_intake")
 
     async def test_escalated_damage_does_not_promise_automatic_refund(self):
         async def faq(brand, intent):

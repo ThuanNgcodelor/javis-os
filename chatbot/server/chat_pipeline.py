@@ -2718,6 +2718,81 @@ class ChatPipelineResponse(BaseModel):
     runtime_manifest_id: str = ""
 
 
+_ACTIVE_TAKEOVER_STATUSES = {"pending", "human"}
+
+
+async def set_conversation_takeover_state(
+    *,
+    brand: str,
+    sender_id: str,
+    status: str,
+    admin_id: str = "",
+    reason: str = "",
+) -> dict[str, Any]:
+    """Persist an operator's claim or close action without generating a bot reply.
+
+    This is deliberately a small internal capability.  The caller (an admin inbox
+    or an authenticated automation) owns authorization; this function only keeps
+    the sender's durable conversation state consistent with the chat pipeline.
+    """
+    normalized_brand = str(brand or "").strip().lower()
+    normalized_sender = str(sender_id or "").strip()
+    normalized_status = str(status or "").strip().lower()
+    if normalized_brand not in {"cfc", "zeo"}:
+        raise ValueError("unsupported_brand")
+    if not normalized_sender:
+        raise ValueError("missing_sender_id")
+    if normalized_status not in {"human", "closed"}:
+        raise ValueError("unsupported_takeover_status")
+
+    redis_client = await get_redis()
+    session_key = f"{normalized_brand}:session:messenger:{normalized_sender}"
+    now_str = datetime.now(timezone.utc).isoformat()
+    async with sender_lease(
+        redis_client,
+        brand=normalized_brand,
+        sender_id=normalized_sender,
+        config=_conversation_store_config,
+    ):
+        snapshot = _local_session_cache.get(session_key) or await load_json(redis_client, session_key)
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        state = _load_conversation_state(snapshot, normalized_brand)
+        previous = state.get("takeover_state") if isinstance(state.get("takeover_state"), dict) else {}
+        state["takeover_state"] = {
+            "status": normalized_status,
+            "owner": str(admin_id or previous.get("owner") or "")[:120],
+            "reason": str(reason or previous.get("reason") or "")[:240],
+            "requested_at": str(previous.get("requested_at") or now_str),
+            ("taken_over_at" if normalized_status == "human" else "closed_at"): now_str,
+        }
+        state["updated_at"] = now_str
+        snapshot["conversation_state"] = state
+        snapshot["last_seen_at"] = now_str
+        trace = snapshot.get("last_trace") if isinstance(snapshot.get("last_trace"), dict) else {}
+        trace["conversation_control"] = {
+            "status": normalized_status,
+            "admin_id": str(admin_id or "")[:120],
+            "reason": str(reason or "")[:240],
+            "at": now_str,
+        }
+        snapshot["last_trace"] = trace
+        _local_session_cache[session_key] = snapshot
+        try:
+            await redis_client.set(
+                session_key,
+                json.dumps(snapshot, ensure_ascii=False),
+                ex=_conversation_store_config.session_ttl_seconds,
+            )
+        except TypeError:
+            await redis_client.set(session_key, json.dumps(snapshot, ensure_ascii=False))
+            expire = getattr(redis_client, "expire", None)
+            if callable(expire):
+                await expire(session_key, _conversation_store_config.session_ttl_seconds)
+
+    return dict(state["takeover_state"])
+
+
 async def _sheet_fast_response(
     brand: str,
     start_time: float,
@@ -3816,7 +3891,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 need=need,
             ))
 
-        if (conversation_state.get("takeover_state") or {}).get("status") == "pending":
+        if (conversation_state.get("takeover_state") or {}).get("status") in _ACTIVE_TAKEOVER_STATUSES:
             return ChatPipelineResponse(
                 answer="",
                 intent="human_handoff_active",
@@ -4757,6 +4832,7 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 "wholesale_policy": "cfc_wholesale_policy_unverified",
                 "dealer_lookup": "cfc_dealer_location_request",
                 "price_quote": "cfc_price_unverified",
+                "purchase_intake": "cfc_purchase_request",
                 "agronomy_consultation": "cfc_dosage_usage_review",
             }
             resumed_intent = resume_intents.get(active_cfc_goal, "contact_phone_provided")
@@ -4790,6 +4866,9 @@ async def _process_chat_pipeline_once(req: ChatPipelineRequest) -> ChatPipelineR
                 final_reply, approved_fact, support_source_ids, _agronomy_meta = await _cfc_grounded_agronomy_answer(cfc_slots, raw_text)
                 source_id = str((support_source_ids or [(approved_fact or {}).get("source_id") or item.get("source_id", "")])[0])
                 fallback_reason = "AGRONOMY_GROUNDED_GUIDANCE" if support_source_ids else "AGRONOMY_REQUIRES_EXPERT_REVIEW"
+            elif resumed_intent == "cfc_purchase_request":
+                final_reply = _format_cfc_purchase_intake_reply(cfc_slots)
+                fallback_reason = "PURCHASE_INTAKE_REQUIRES_VERIFIED_QUOTE"
             elif resumed_intent == "cfc_dealer_location_request":
                 item = await get_faq_by_intent(brand, resumed_intent)
                 source_id = item.get("source_id", "")

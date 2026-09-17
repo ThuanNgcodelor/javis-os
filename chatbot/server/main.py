@@ -9,14 +9,16 @@ Endpoints:
 """
 
 import asyncio
+import hmac
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -141,6 +143,20 @@ class RewriteRequest(BaseModel):
     answer: str           # Câu trả lời thô từ RAG
     brand: str = "zeo"
     tone: str = "friendly"  # "friendly" | "formal"
+
+
+class ConversationControlRequest(BaseModel):
+    admin_id: str = ""
+    reason: str = ""
+
+
+def _require_conversation_control_key(value: Optional[str]) -> None:
+    """Keep the handover controls closed until an internal caller is configured."""
+    expected = os.getenv("CHAT_CONVERSATION_CONTROL_KEY", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="conversation control is not configured")
+    if not value or not hmac.compare_digest(value, expected):
+        raise HTTPException(status_code=403, detail="invalid conversation control key")
 
 
 # ─────────────────────────────────────────
@@ -305,6 +321,52 @@ async def chat_pipeline_endpoint(req: ChatPipelineRequest):
     Tốc độ: < 50ms - 300ms.
     """
     return await process_chat_pipeline(req)
+
+
+@app.post("/api/conversations/{brand}/{sender_id}/takeover")
+async def conversation_takeover_endpoint(
+    brand: str,
+    sender_id: str,
+    req: ConversationControlRequest,
+    x_conversation_control_key: Optional[str] = Header(default=None),
+):
+    """Internal inbox/n8n contract: an admin has claimed the conversation."""
+    _require_conversation_control_key(x_conversation_control_key)
+    from chat_pipeline import set_conversation_takeover_state
+    try:
+        takeover = await set_conversation_takeover_state(
+            brand=brand,
+            sender_id=sender_id,
+            status="human",
+            admin_id=req.admin_id,
+            reason=req.reason or "admin_claimed",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "takeover_state": takeover}
+
+
+@app.post("/api/conversations/{brand}/{sender_id}/close")
+async def conversation_close_endpoint(
+    brand: str,
+    sender_id: str,
+    req: ConversationControlRequest,
+    x_conversation_control_key: Optional[str] = Header(default=None),
+):
+    """Internal inbox/n8n contract: admin ended support and the bot may resume."""
+    _require_conversation_control_key(x_conversation_control_key)
+    from chat_pipeline import set_conversation_takeover_state
+    try:
+        takeover = await set_conversation_takeover_state(
+            brand=brand,
+            sender_id=sender_id,
+            status="closed",
+            admin_id=req.admin_id,
+            reason=req.reason or "admin_closed",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "takeover_state": takeover}
 
 
 @app.post("/api/shopee/refresh-cache")

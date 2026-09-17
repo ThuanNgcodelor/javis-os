@@ -130,6 +130,26 @@ def _has_any(text: str, terms: list[str]) -> bool:
     return any(term in text for term in terms)
 
 
+def _looks_like_cfc_sales_consultation(text: str) -> bool:
+    """Recognize a commercial request before an advisory fallback claims it.
+
+    This is a small business boundary, not a growing list of paraphrases: the
+    customer explicitly says they want to buy/import fertiliser and asks sales
+    to contact or advise them.  Technical advice without a commercial request
+    continues to use the agronomy branch below.
+    """
+    wants_purchase = bool(re.search(
+        r"\b(muon mua|can mua|dat mua|dat hang|lay hang|mua|nhap hang|can nhap|nhap)\b",
+        text,
+    ))
+    mentions_fertiliser = bool(re.search(r"\b(phan|phan bon|npk|huu co)\b", text))
+    asks_sales_help = bool(re.search(
+        r"\b(tu van|add|lien he|bao gia|sale|kinh doanh|nhan vien)\b",
+        text,
+    ))
+    return wants_purchase and mentions_fertiliser and asks_sales_help
+
+
 def _unique(items: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -443,8 +463,11 @@ def _detect_intent(text: str, attrs: list[str], entities: dict[str, Any], brand:
     ):
         return "cfc_dealer_location_request", 0.95
     if brand == "cfc" and (
-        re.search(r"\b(muon mua|can mua|can|dat mua|dat hang|lay hang|mua|nhap)\b", text)
-        and re.search(r"\b\d+(?:[.,]\d+)?\s*(kg|tan|bao|thung)\b", text)
+        (
+            re.search(r"\b(muon mua|can mua|dat mua|dat hang|lay hang|mua|nhap)\b", text)
+            and re.search(r"\b\d+(?:[.,]\d+)?\s*(kg|tan|bao|thung)\b", text)
+        )
+        or _looks_like_cfc_sales_consultation(text)
     ):
         return "cfc_purchase_request", 0.97
     if brand == "cfc" and (

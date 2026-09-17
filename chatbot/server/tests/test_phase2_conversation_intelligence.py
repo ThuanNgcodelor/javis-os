@@ -32,6 +32,25 @@ class PhaseTwoConversationIntelligenceTests(unittest.TestCase):
             self.assertNotIn("answer", candidate)
             self.assertNotIn("source_id", candidate)
 
+    def test_sales_request_without_quantity_beats_agronomy_fallback(self):
+        plan = build_query_plan(
+            raw_text="Mình ở Hậu Giang, cần nhập phân, nhờ add tư vấn.",
+            norm_text="minh o hau giang can nhap phan nho add tu van",
+            brand="cfc",
+        )
+
+        self.assertEqual(plan.intent, "cfc_purchase_request")
+        self.assertEqual(plan.constraints.get("location"), "hau giang")
+
+    def test_technical_fertilizer_question_stays_agronomy_without_purchase_signal(self):
+        plan = build_query_plan(
+            raw_text="Sầu riêng bị rụng trái, nên bón phân thế nào?",
+            norm_text="sau rieng bi rung trai nen bon phan the nao",
+            brand="cfc",
+        )
+
+        self.assertEqual(plan.intent, "cfc_agronomy_review_request")
+
     def test_protected_candidate_wins_attribute_candidate(self):
         plan = build_query_plan(
             raw_text="Tra cứu đơn DH-2026-889 và báo giá giúp",

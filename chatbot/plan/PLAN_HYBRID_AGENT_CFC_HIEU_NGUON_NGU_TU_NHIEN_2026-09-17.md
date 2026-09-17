@@ -1,7 +1,16 @@
 # Plan CFC Hybrid Agent: hiểu ngôn ngữ tự nhiên mà không bịa dữ liệu
 
 Ngày lập: 17/09/2026  
-Trạng thái: `PLANNED` — đây là thiết kế và lộ trình triển khai; chưa thay đổi runtime, n8n hay CRM production.
+Trạng thái: `IN PROGRESS` — nền tảng local đã bắt đầu triển khai; chưa deploy runtime, n8n hay CRM production.
+
+## Tiến độ triển khai local (17/09/2026)
+
+- Đã sửa route CFC cho nhu cầu mua/nhập phân kèm yêu cầu tư vấn: không bắt buộc khách phải nói sẵn số lượng mới được vào luồng mua hàng.
+- Đã sửa SĐT-only tiếp tục đúng `purchase_intake`, nên không quay lại trả lời khuyến nông khi lượt trước khách muốn mua hàng.
+- Đã có API nội bộ để admin `takeover` hoặc `close` một cuộc hội thoại. API yêu cầu `CHAT_CONVERSATION_CONTROL_KEY`; nếu chưa cấu hình key thì từ chối gọi.
+- Đã có regression test cho lỗi Hậu Giang → SĐT và cho trạng thái admin takeover.
+- Workflow Messenger CFC hiện đã tôn trọng `suppress_send`, nên khi pipeline trả trạng thái admin takeover thì n8n không gửi tin tự động.
+- Semantic Intake model-driven, learning queue và n8n inbox chưa mở cho khách thật; các phần này vẫn phải chạy shadow và xác minh kênh admin trước.
 
 ## 1. Điều cần sửa thật sự
 
@@ -84,8 +93,11 @@ Vì route này có confidence cao, `chat_pipeline.py` coi đây là protected fa
 
 ```mermaid
 flowchart LR
-    U[Khách nhắn tự nhiên] --> I[Semantic Intake: hiểu câu gốc và lịch sử]
-    S[Redis: GoalFrame, câu bot đang chờ, lịch sử, slot] --> I
+    U[Khách nhắn tự nhiên] --> H{Admin đang xử lý?}
+    S[Redis: GoalFrame, câu bot đang chờ, lịch sử, slot] --> H
+    H -->|Có| X[Chỉ lưu và chuyển tin cho admin, bot im lặng]
+    H -->|Không| I[Semantic Intake: hiểu câu gốc và lịch sử]
+    S --> I
     I --> D[Decision Agent: model trả JSON action]
     S --> D
     D --> V[Validator: schema, policy, quyền]
@@ -140,6 +152,33 @@ SĐT, địa chỉ, ảnh, mã đơn và “ok/gửi đi” là **dữ liệu tr
 
 Không được dùng một mapping cố định “có SĐT + active goal nông học = trả lại câu nông học” nếu active goal có dấu hiệu được chọn từ một decision sai hoặc còn confidence thấp.
 
+### Admin takeover: khi người thật đã vào thì bot phải im
+
+Làm được, và đây là phần cần có trước khi mở Agent rộng cho khách thật. Mỗi hội thoại có một trạng thái chủ sở hữu:
+
+| Trạng thái | Ai được trả lời | Điều xảy ra |
+|---|---|---|
+| `bot` | Bot | Bot hiểu câu, gọi tool được phép và trả lời. |
+| `waiting_admin` | Bot chỉ được nhắn một lần | Bot báo đã chuyển nhân viên; tạo ticket/lead và chờ người nhận. |
+| `human` | Admin | Mọi tin nhắn mới của khách chỉ hiện/chuyển cho admin; bot không phân tích để trả lời, không gọi tool, không gửi tin. |
+| `closed` | Bot khi khách nhắn lại | Công việc của admin đã đóng; bot được phục vụ lượt mới. |
+
+Luồng khách yêu cầu người thật:
+
+```text
+Khách: "Cho gặp nhân viên" / bot không chắc / việc cần quyền cao
+→ bot gửi đúng một câu: "Dạ em đã chuyển nhân viên hỗ trợ bạn ạ."
+→ tạo ticket hoặc LeadDraft, thông báo admin
+→ admin bấm "Nhận hội thoại" hoặc gửi câu trả lời từ inbox tích hợp
+→ trạng thái thành human
+→ khách nhắn tiếp: bot im lặng, chỉ chuyển tin cho đúng admin
+→ admin bấm "Kết thúc hỗ trợ" → trạng thái closed/bot theo chính sách
+```
+
+Không được tự bật bot lại chỉ vì khách gửi thêm tin khi admin đang xử lý. Chỉ admin được mở lại bot, hoặc có timeout do business đặt rõ (ví dụ sau khi admin đóng ticket), để tránh bot chen vào giữa cuộc trò chuyện thật.
+
+Để biết admin đã trả lời, cần một **admin inbox có nút Nhận/Kết thúc** hoặc webhook nhận được outgoing message của admin từ nền tảng chat. Cần kiểm tra khả năng event đó của Messenger/Meta trước khi chọn cách thứ hai. Nếu không nhận được event admin reply đáng tin, nút `Nhận hội thoại` là cách chắc chắn: bấm nhận trước khi admin trả lời thì bot đã bị khóa.
+
 ## 6. Một Decision Agent, không phải nhiều planner tranh quyền
 
 Tương lai chỉ có một model planner cho Page chatbot. Nó thay dần vai trò trùng lặp của:
@@ -160,6 +199,7 @@ Action contract ban đầu:
 | Hỏi cách dùng, bệnh cây, liều lượng | `agronomy_consultation` | Approved facts/RAG chuyên môn | Chỉ khi facts đủ; còn lại handoff |
 | Tra đơn/điểm | `order_status` / `loyalty_lookup` | Protected AMIS adapter | Chỉ sau xác minh sở hữu |
 | Khiếu nại | `complaint_intake` | SOP + handoff | Có, theo SOP |
+| Muốn gặp nhân viên hoặc việc model không đủ chắc | `human_handoff` | Ticket/Lead outbox | Có, chỉ xác nhận đã chuyển rồi im |
 | Không hiểu rõ | `clarification` | Không gọi tool rủi ro | Hỏi một câu ngắn nhất |
 | Ngoài phạm vi | `out_of_scope` | Không có | Nói rõ phạm vi hoặc bàn giao |
 
@@ -242,6 +282,19 @@ Mỗi action có feature flag riêng theo brand; failure, timeout hoặc decisio
 
 Xong khi: ví dụ “nhập phân, nhờ tư vấn” và các paraphrase được model xử lý đúng mà không tăng tỷ lệ handoff sai hoặc gọi tool không được phép.
 
+### Phase C.1 — Human takeover trước khi mở rộng Agent
+
+Mục tiêu: nhân viên có quyền tuyệt đối trên cuộc hội thoại mà họ đã nhận.
+
+1. Tạo `ConversationControl`: `owner_mode`, `assigned_admin_id`, `taken_over_at`, `last_admin_reply_at`, `ticket_id`, `resume_policy`.
+2. Tạo action `human_handoff`; bot chỉ gửi một acknowledgement, sau đó tạo outbox idempotent cho admin.
+3. Tạo endpoint/n8n contract cho ba thao tác: `claim`, `admin_reply`, `close`. Mọi thao tác ghi audit event.
+4. Chặn ngay tại đầu `chat_pipeline.py`: `owner_mode == human` thì không gọi Decision Agent, không gửi auto-reply; chỉ lưu và chuyển tin tới inbox/ticket.
+5. Kiểm tra kênh admin: nếu Messenger có event outgoing đáng tin thì đồng bộ `admin_reply`; nếu không, bắt buộc admin bấm Nhận hội thoại trước khi nhắn từ inbox được tích hợp.
+6. Test ít nhất: khách yêu cầu người thật; admin nhận; khách nhắn thêm 3 câu; bot gửi 0 câu; admin đóng; khách tạo câu hỏi mới thì bot trở lại đúng policy.
+
+Xong khi: không có auto-reply nào sau `human` takeover và ticket/lead chỉ được tạo một lần dù webhook bị retry.
+
 ### Phase D — Tool loop có kiểm soát
 
 Mục tiêu: từ một lần phân loại sang Agent biết làm nhiều bước nhỏ.
@@ -306,6 +359,7 @@ Không viết lại `chat_pipeline.py` một lần. Thay đổi theo lớp mỏn
 | `agent_contracts.py` mới | `SemanticIntake`, `AgentDecision`, action/tool/slot enums, schema validator, risk policy |
 | `decision_agent.py` mới | Prompt, provider gateway, redaction, JSON parse, timeout/cache |
 | `conversation_orchestrator.py` | Trở thành nơi build context và validate decision thống nhất |
+| `conversation_control.py` mới | Owner mode bot/waiting_admin/human/closed, audit, claim/close và timeout policy |
 | `cfc_semantic_planner.py` | Chuyển thành adapter shadow hoặc retire sau khi parity đạt |
 | `query_understanding.py` | Giữ normalize/entity/security hints; giảm vai trò quyết định intent toàn cục |
 | `dialogue_router.py` | Chọn tool từ `AgentDecision` sau policy validation |
@@ -324,14 +378,17 @@ Không viết lại `chat_pipeline.py` một lần. Thay đổi theo lớp mỏn
 6. Không dùng test mock để tuyên bố đã chạy production.
 7. Khi không hiểu, bot phải hỏi một câu ngắn đúng mục tiêu, không đẩy khách sang một chuyên môn khác.
 8. SĐT-only, mã đơn-only, ảnh-only hoặc “ok” phải được hiểu trong mục tiêu đang chờ; không route lại chỉ từ nội dung ngắn của chính tin nhắn.
+9. Sau khi admin nhận hội thoại, không được có bất kỳ auto-reply hay tool write nào của bot cho tới khi admin đóng hoặc chủ động trả bot về chế độ `bot`.
 
 ## 12. Thứ tự nên bắt đầu ngay
 
 1. Xác nhận action catalogue với business: đặc biệt phân biệt `sales_consultation`, `purchase_intake` và `agronomy_consultation`.
 2. Khóa hai regression multi-turn cho lỗi hiện tại: câu nhập phân → gửi SĐT; và câu mua/nhập → đổi chủ đề → quay lại gửi SĐT.
-3. Implement Phase A cho CFC local, giữ flags `off`.
-4. Chạy Qwen shadow trên các câu mới trước; dùng learning queue để lấy mẫu traffic thật theo tuần.
-5. Dùng kết quả shadow để quyết định Qwen có đủ hay cần cloud fallback cho nhóm câu nào.
+3. Xác nhận admin sẽ trả lời qua inbox nào và có nhận được event outgoing hay phải dùng nút Nhận hội thoại.
+4. Implement Phase A cho CFC local, giữ flags `off`.
+5. Làm Human takeover trước khi mở Assist cho khách thật.
+6. Chạy Qwen shadow trên các câu mới trước; dùng learning queue để lấy mẫu traffic thật theo tuần.
+7. Dùng kết quả shadow để quyết định Qwen có đủ hay cần cloud fallback cho nhóm câu nào.
 
 ## 13. Tham chiếu kiến trúc
 
