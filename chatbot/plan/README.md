@@ -13,6 +13,7 @@ Tài liệu này là điểm vào cho người hoặc AI cần hiểu và vận 
 7. [Plan khách hàng mới/cũ, tạo đơn CRM và dọn dẹp](../PLAN_KHACH_HANG_MOI_CU_TAO_DON_CRM_VA_DON_DEP_2026-08-31.md) — backlog nghiệp vụ đang chờ chủ hệ thống duyệt.
 8. [Rà soát toàn bộ `chatbot/server` cho CFC Agent](AUDIT_SERVER_CHO_CFC_AGENT_2026-09-09.md) — bằng chứng source, phần đã có, khoảng trống và giới hạn chưa được xác minh live.
 9. [Plan CFC Agent và CRM trên Mac M4 16GB](PLAN_CFC_AGENT_VA_CRM_2026-09-08.md) — plan kỹ thuật đã chỉnh sau source audit; chưa triển khai.
+10. [Plan Hybrid Agent: hiểu ngôn ngữ tự nhiên mà không bịa dữ liệu](PLAN_HYBRID_AGENT_CFC_HIEU_NGUON_NGU_TU_NHIEN_2026-09-17.md) — lộ trình chuyển từ route cứng sang model-driven decision + tool có kiểm soát.
 
 ## Lịch sử
 

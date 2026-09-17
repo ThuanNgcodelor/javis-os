@@ -12,7 +12,7 @@ Use `npx --yes n8nac` as the primary interface. Use `npx --yes @n8n-as-code/n8n-
 ## Context Root Protocol
 
 - Treat the current context root as the directory containing `n8nac-config.json`, `AGENTS.md`, `.agents/skills`, and the configured `workflowsPath`.
-- Generated context root hint: `/Users/hyden/Documents/David-nguyen/javis-os`. If this path exists, run workspace commands from there.
+- Generated context root hint: not embedded. Use the shell launch directory or the workspace path explicitly given by the user.
 - Before any n8n work, first run `npx --yes n8nac update-ai` from the context root, then read `AGENTS.md`. `update-ai` is designed to create or refresh the n8n-as-code block without destroying existing user or agent instructions.
 - Use the exact `n8nac command` and `n8n-manager command` listed in `AGENTS.md`. Those context-root commands override the portable examples in this skill.
 - Run every `npx --yes n8nac env ...`, `npx --yes n8nac workspace ...`, `npx --yes n8nac list`, `pull`, `push`, `validate`, `test`, and `update-ai` command from the context root unless the user explicitly gives another context root.
@@ -38,6 +38,7 @@ npx --yes n8nac env status --json
 
 - Treat `env status --json` as the source of effective workspace readiness.
 - Do not infer readiness from raw files, generated agent docs, or directory names.
+- A workspace `.env` holding `N8N_HOST` (plus any of `N8N_API_KEY`, `N8N_NATIVE_MCP_URL`, `N8N_NATIVE_MCP_TOKEN`) configures the `default` environment on first use: `env status --json` then resolves with no `env add`, `env auth set`, `env use`, or `native-mcp configure`.
 - If `env status --json` fails because the workspace is not configured, use `env add`, `env auth set`, and `env use` to create or select a V4 workspace environment.
 - Managed local instances remain machine-global runtime resources.
 - Workspace environments remain workspace-scoped and are managed through `npx --yes n8nac env ...`.
@@ -46,7 +47,7 @@ npx --yes n8nac env status --json
 
 1. `cd` to the context root.
 2. Run `npx --yes n8nac update-ai`, then read `AGENTS.md`.
-3. Run `npx --yes n8nac env status --json`.
+3. Run `npx --yes n8nac env status --json`. If it resolves with `accessStatus: "ready"`, the workspace is ready — skip steps 4-9. A resolution with `missing-api-key` or `invalid-api-key` means only the credential is missing: go to step 7.
 4. If the context root is not ready, inspect managed local instances with `npx --yes @n8n-as-code/n8n-manager instance list`.
 5. Reuse an existing environment or managed local instance when suitable.
 6. If no suitable environment exists, stop and ask the user whether they want to connect a remote n8n URL or create/reuse a managed local n8n instance. Do not create infrastructure by default. If the user chooses a managed local instance, ask separately whether they want a public tunnel.
@@ -81,6 +82,7 @@ npx --yes n8nac env use <name>
 ```
 
 - Prefer `--api-key-stdin` for API keys.
+- Prefer `env add --pin` to create and pin the default environment in one process instead of a separate `env use`.
 - Do not pass secrets inline in shell arguments.
 - `env auth set` binds the key to one environment, so several environments may share a base URL with one key each. Run it once per environment; `apiKeySource` in `env status --json` is `workspace-environment` when the environment uses its own key.
 - Do not ask for host/API key when the user wants a managed local Docker instance.
@@ -168,6 +170,7 @@ npx --yes n8nac push <path-to-workflow.workflow.ts> --verify
 ```
 
 - `push` requires the full workflow file path, either absolute or context-root-relative. Do not pass a bare filename.
+- On n8n 2.x, pushing to a **published** workflow also releases it to production — the API re-publishes on update. Treat every push to a published workflow as a deploy. Use `push --draft` when the user wants to check the change in n8n first: it re-pins the previously published version so production keeps running what it already ran.
 - For a new workflow, create the file inside the `workflowsPath` returned by `env status --json`, then confirm it with `npx --yes n8nac list --local`.
 - If push/pull reports a conflict, use explicit resolution commands. Do not overwrite remote changes blindly.
 - `pull` and conflict resolution operate on a single workflow ID.
@@ -198,8 +201,10 @@ npx --yes n8nac skills node-info <nodeName>
 npx --yes n8nac skills validate <workflow.workflow.ts>
 ```
 
+- Batch node queries: query multiple nodes in a single command using `npx --yes n8nac skills node-info <node1> <node2> ... --compact` to inspect essential properties, required parameters, and valid options in one fast, token-efficient turn.
 - Use exact node `type` and valid `typeVersion` values from `node-info`.
 - Use exact resource, operation, option, and parameter names from schema output.
+- Parameters of type `resourceLocator` must be structured as `{ __rl: true, value: '...', mode: 'list' | 'id' | 'url' }`.
 - Do not invent parameters, operations, credential types, or CLI flags.
 - Treat schema output as the absolute source of truth even if examples or memory disagree.
 - Prefer the highest valid `typeVersion` returned by schema output.
@@ -241,7 +246,12 @@ Native MCP assist is a complementary knowledge, live-state, and runtime enrichme
 
 ## Knowledge Commands
 
-Use these commands instead of guessing:
+If your runtime exposes `n8n-as-code` MCP tools (`search_n8n_knowledge`, `get_n8n_node_info`,
+`search_n8n_workflow_examples`, `validate_n8n_workflow`), prefer them over the commands below.
+They answer from a resident process that parses the ontology once, so every call after the
+first is effectively free, while each shell command pays a fresh process start.
+
+Otherwise, use these commands instead of guessing:
 
 ```bash
 npx --yes n8nac skills search "<node or capability>"
@@ -254,7 +264,11 @@ npx --yes n8nac skills examples info <id>
 npx --yes n8nac skills examples download <id>
 ```
 
+- Prefer `--compact` on `search`, `node-info`, and `node-schema`: same schemas, bounded output (required params + snippet + gating flags).
+- Prefer one `batch --compact` over N separate lookups: one process parses the ontology once. Pass `--calls '<json>'`, `--calls-file <path>` (file avoids shell-quoting), or pipe JSON via stdin. `--compact` applies to `search`, `node-info`, `node-schema`; `examples-search` and `examples-info` always return full workflow data. Example: `npx --yes n8nac skills batch --compact --calls '[{"cmd":"search","query":"gmail"},{"cmd":"node-info","name":"gmailTool"}]'`.
+- For several nodes at once, `node-info` and `node-schema` also take multiple names directly: `npx --yes n8nac skills node-info <node1> <node2> ... --compact`.
 - Start with `examples search` when the user asks for a common automation pattern.
+- Fetch community examples only when you do not know how to wire something, when the workflow is unusually complex, or when the user explicitly asks. Each download costs a full roundtrip: for routine tasks, local knowledge (`search`, `node-info`, `batch`) is faster and authoritative. Skip examples otherwise.
 - Use examples to learn patterns, not as authority over current node schemas.
 - If a command or flag is unfamiliar, run `npx --yes n8nac <subcommand> --help`; do not invent flags.
 
@@ -265,6 +279,7 @@ npx --yes n8nac skills examples download <id>
 - AI sub-nodes connect with `.uses()`, never `.out().to()`.
 - `ai_tool` and `ai_document` connections are arrays: `ai_tool: [this.Tool.output]`.
 - Other AI connection types are single refs, such as `ai_languageModel: this.Model.output`.
+- They also accept an array when a node exposes several inputs of the same type, where the position is the input index: `ai_languageModel: [this.Model.output, this.FallbackModel.output]` (fallback model, Model Selector).
 - Check `node-info` for connection-dependent boolean flags before declaring `.uses()` connections.
 
 Every `.workflow.ts` file starts with a `<workflow-map>` block. Read that map first, locate the property name you need, then read only the relevant class section.
@@ -371,8 +386,9 @@ defineRouting() {
 
 - Use `.uses()` for language models, memory, tools, parsers, embeddings, vector stores, retrievers, and other AI sub-nodes.
 - Never connect AI sub-nodes with `.out().to()`.
-- `ai_tool` and `ai_document` must be arrays.
-- Most other AI connection types are single refs.
+- `ai_tool` and `ai_document` must be arrays; every entry lands on input index 0.
+- Most other AI connection types are single refs, or an array when the node exposes several inputs of the same type — position = input index.
+- `needsFallback: true` (Agent, Basic LLM Chain) needs a second model on input 1: `ai_languageModel: [this.Model.output, this.FallbackModel.output]`. Same for the Model Selector node.
 - Some nodes require boolean flags to expose AI ports or gated parameters. Check `node-info` before declaring `.uses()`.
 
 ## Common Mistakes To Avoid
@@ -393,12 +409,13 @@ defineRouting() {
 
 ## Verify, Test, And Present
 
-After pushing:
+Prefer `push --verify`: it fetches the pushed workflow and validates it in the same process. A standalone `verify` right after `push --verify` re-checks the same state — skip it unless you pushed without `--verify`.
 
 ```bash
-npx --yes n8nac verify <workflowId>
+npx --yes n8nac push <path> --verify
 npx --yes n8nac test-plan <workflowId> --json
 ```
+
 
 For webhook, chat, or form workflows, prefer the production test sequence:
 
